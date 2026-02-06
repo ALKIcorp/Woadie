@@ -37,12 +37,19 @@ enum AppConfig {
 
 @MainActor
 final class AppModel: ObservableObject {
+    struct ChatItem: Identifiable {
+        let id = UUID()
+        let text: String
+        let isUser: Bool
+    }
+
     @Published var status: EngineStatus = .off
     @Published var voices: [String] = [AppConfig.defaultVoice]
     @Published var selectedVoice: String = AppConfig.defaultVoice
     @Published var inputText: String = ""
     @Published var lastLatencyMs: Int? = nil
     @Published var message: String = ""
+    @Published var chatItems: [ChatItem] = []
 
     private var process: Process?
     private var audioPlayer: AVAudioPlayer?
@@ -134,6 +141,7 @@ final class AppModel: ObservableObject {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         message = ""
+        chatItems.append(ChatItem(text: text, isUser: true))
 
         Task {
             do {
@@ -142,6 +150,7 @@ final class AppModel: ObservableObject {
             } catch {
                 status = .error
                 message = "Speak failed: \(error.localizedDescription)"
+                chatItems.append(ChatItem(text: "Error: \(error.localizedDescription)", isUser: false))
             }
         }
     }

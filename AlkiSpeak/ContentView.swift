@@ -8,6 +8,7 @@ struct ContentView: View {
             statusRow
             controlsRow
             inputRow
+            chatPanel
             if !model.message.isEmpty {
                 Text(model.message)
                     .font(.footnote)
@@ -66,6 +67,47 @@ struct ContentView: View {
             }
             .disabled(!model.canSpeak)
             .keyboardShortcut(.defaultAction)
+        }
+    }
+
+    private var chatPanel: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(model.chatItems) { item in
+                        HStack {
+                            if item.isUser {
+                                Spacer(minLength: 0)
+                                Text(item.text)
+                                    .padding(8)
+                                    .background(Color.accentColor.opacity(0.15))
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .frame(maxWidth: 360, alignment: .trailing)
+                            } else {
+                                Text(item.text)
+                                    .padding(8)
+                                    .background(Color.gray.opacity(0.15))
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .frame(maxWidth: 360, alignment: .leading)
+                                Spacer(minLength: 0)
+                            }
+                        }
+                        .id(item.id)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minHeight: 120, maxHeight: 200)
+            .background(Color.black.opacity(0.04))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.gray.opacity(0.2)))
+            .onChange(of: model.chatItems.count) {
+                if let last = model.chatItems.last {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(last.id, anchor: .bottom)
+                    }
+                }
+            }
         }
     }
 }
