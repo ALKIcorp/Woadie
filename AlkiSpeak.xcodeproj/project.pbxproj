@@ -1,8 +1,9 @@
 // !$*UTF8*$!
 {
 	archiveVersion = 1;
-	classes = {};
-	objectVersion = 56;
+	classes = {
+	};
+	objectVersion = 60;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -21,7 +22,25 @@
 		A2000006 /* AlkiSpeak.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = AlkiSpeak.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFrameworksBuildPhase section */
+		A6000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
 /* Begin PBXGroup section */
+		A3000000 = {
+			isa = PBXGroup;
+			children = (
+				A3000001 /* AlkiSpeak */,
+				A3000002 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
 		A3000001 /* AlkiSpeak */ = {
 			isa = PBXGroup;
 			children = (
@@ -40,14 +59,6 @@
 				A2000006 /* AlkiSpeak.app */,
 			);
 			name = Products;
-			sourceTree = "<group>";
-		};
-		A3000000 /* Main */ = {
-			isa = PBXGroup;
-			children = (
-				A3000001 /* AlkiSpeak */,
-				A3000002 /* Products */,
-			);
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -92,7 +103,7 @@
 				en,
 				Base,
 			);
-			mainGroup = A3000000 /* Main */;
+			mainGroup = A3000000;
 			productRefGroup = A3000002 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -126,16 +137,6 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
-/* Begin PBXFrameworksBuildPhase section */
-		A6000002 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXFrameworksBuildPhase section */
-
 /* Begin XCBuildConfiguration section */
 		A7000000 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -146,7 +147,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
-				INFOPLIST_FILE = "AlkiSpeak/Info.plist";
+				INFOPLIST_FILE = AlkiSpeak/Info.plist;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.alki.AlkiSpeak;
@@ -164,7 +165,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
-				INFOPLIST_FILE = "AlkiSpeak/Info.plist";
+				INFOPLIST_FILE = AlkiSpeak/Info.plist;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.alki.AlkiSpeak;
@@ -179,12 +180,12 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = "";
-				INFOPLIST_FILE = "AlkiSpeak/Info.plist";
+				INFOPLIST_FILE = AlkiSpeak/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.alki.AlkiSpeak;
 				PRODUCT_NAME = AlkiSpeak;
 				SWIFT_VERSION = 5.0;
@@ -197,12 +198,12 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = "";
-				INFOPLIST_FILE = "AlkiSpeak/Info.plist";
+				INFOPLIST_FILE = AlkiSpeak/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.alki.AlkiSpeak;
 				PRODUCT_NAME = AlkiSpeak;
 				SWIFT_VERSION = 5.0;

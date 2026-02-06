@@ -101,13 +101,37 @@ struct ContentView: View {
             .background(Color.black.opacity(0.04))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.gray.opacity(0.2)))
-            .onChange(of: model.chatItems.count) {
+            .groupedOnChangeForMacCompatibility(proxy: proxy, value: model.chatItems.count) {
                 if let last = model.chatItems.last {
                     withAnimation(.easeOut(duration: 0.2)) {
                         proxy.scrollTo(last.id, anchor: .bottom)
                     }
                 }
             }
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func groupedOnChangeForMacCompatibility<T: Equatable>(
+        proxy: ScrollViewProxy,
+        value: T,
+        perform: @escaping () -> Void
+    ) -> some View {
+        if #available(macOS 14.0, *) {
+            self.onChange(of: value, initial: true) { _, _ in
+                perform()
+            }
+        } else {
+            // Fallback on earlier macOS: use older onChange(of:) and trigger once on appear to emulate initial: true
+            self
+                .onChange(of: value) { _, _ in
+                    perform()
+                }
+                .onAppear {
+                    perform()
+                }
         }
     }
 }
