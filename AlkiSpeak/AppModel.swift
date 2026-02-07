@@ -36,10 +36,11 @@ enum AppConfig {
 }
 
 @MainActor
-final class AppModel: ObservableObject {
+final class AppModel: NSObject, ObservableObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate {
     struct ChatItem: Identifiable {
         let id = UUID()
         let text: String
+        let timestamp: Date
         let isUser: Bool
     }
 
@@ -57,6 +58,7 @@ final class AppModel: ObservableObject {
     @Published var lastCharCount: Int? = nil
     @Published var message: String = ""
     @Published var chatItems: [ChatItem] = []
+    @Published var playingId: UUID? = nil
     @Published var showPortInUseAlert: Bool = false
     @Published var portInUsePids: [Int32] = []
 
@@ -93,13 +95,32 @@ final class AppModel: ObservableObject {
         return "—"
     }
 
+    var selectedVoiceLabel: String {
+        voiceOptions.first(where: { $0.id == selectedVoice })?.label ?? "Select Voice"
+    }
+
+    var voiceCategories: [(title: String, voices: [VoiceOption])] {
+        let local = voiceOptions.filter { $0.isLocal }
+        let remote = voiceOptions.filter { !$0.isLocal }
+        var categories: [(title: String, voices: [VoiceOption])] = []
+        if !local.isEmpty {
+            categories.append((title: "Apple", voices: local))
+        }
+        if !remote.isEmpty {
+            categories.append((title: "Kokoro", voices: remote))
+        }
+        return categories
+    }
+
     private var isSelectedVoiceLocal: Bool {
         selectedVoice.hasPrefix("apple:")
     }
 
-    init() {
+    override init() {
+        super.init()
         loadLocalVoices()
         mergeVoiceOptions(remote: [])
+        speechSynthesizer.delegate = self
     }
 
     func startEngine() {
@@ -132,10 +153,12 @@ final class AppModel: ObservableObject {
                     self.isStopping = false
                     self.process = nil
                     self.status = .off
+                    self.playingId = nil
                     return
                 }
                 self.process = nil
                 self.status = .error
+                self.playingId = nil
                 self.message = "Engine stopped unexpectedly (code \(process.terminationStatus))."
             }
         }
@@ -155,6 +178,7 @@ final class AppModel: ObservableObject {
         isStopping = true
         message = ""
         status = .off
+        stopPlayback()
         process.terminate()
         self.process = nil
     }
@@ -175,24 +199,51 @@ final class AppModel: ObservableObject {
     }
 
     func speak() {
+        speak(text: inputText, addToHistory: true, targetId: nil)
+    }
+
+    func replay(item: ChatItem) {
+        speak(text: item.text, addToHistory: false, targetId: item.id)
+    }
+
+    func stopPlayback() {
+        audioPlayer?.stop()
+        audioPlayer = nil
+        speechSynthesizer.stopSpeaking(at: .immediate)
+        playingId = nil
+    }
+
+    private func speak(text: String, addToHistory: Bool, targetId: UUID?) {
         guard canSpeak else { return }
-        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
         message = ""
-        chatItems.append(ChatItem(text: text, isUser: true))
+
+        let id: UUID
+        if addToHistory {
+            let item = ChatItem(text: trimmed, timestamp: Date(), isUser: true)
+            chatItems.insert(item, at: 0)
+            id = item.id
+        } else if let targetId {
+            id = targetId
+        } else {
+            id = UUID()
+        }
+
+        playingId = id
 
         Task {
             if isSelectedVoiceLocal {
-                speakLocal(text: text)
+                speakLocal(text: trimmed)
                 return
             }
             do {
-                let data = try await postSpeak(text: text, voice: selectedVoice)
+                let data = try await postSpeak(text: trimmed, voice: selectedVoice)
                 try playAudio(data: data)
             } catch {
                 status = .error
+                playingId = nil
                 message = "Speak failed: \(error.localizedDescription)"
-                chatItems.append(ChatItem(text: "Error: \(error.localizedDescription)", isUser: false))
             }
         }
     }
@@ -276,6 +327,7 @@ final class AppModel: ObservableObject {
 
     private func playAudio(data: Data) throws {
         audioPlayer = try AVAudioPlayer(data: data)
+        audioPlayer?.delegate = self
         audioPlayer?.prepareToPlay()
         audioPlayer?.play()
     }
@@ -313,7 +365,7 @@ final class AppModel: ObservableObject {
         let identifier = selectedVoice.replacingOccurrences(of: "apple:", with: "")
         guard let voice = AVSpeechSynthesisVoice(identifier: identifier) ?? localVoiceLookup[identifier] else {
             message = "Selected Apple voice not available."
-            chatItems.append(ChatItem(text: "Error: Apple voice not available.", isUser: false))
+            playingId = nil
             return
         }
 
@@ -321,6 +373,18 @@ final class AppModel: ObservableObject {
         utterance.voice = voice
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         speechSynthesizer.speak(utterance)
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in
+            self.playingId = nil
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            self.playingId = nil
+        }
     }
 
     func confirmPortSwitchAndStart() {

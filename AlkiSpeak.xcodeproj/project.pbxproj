@@ -11,6 +11,21 @@
 		A1000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002 /* ContentView.swift */; };
 		A1000003 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000003 /* AppModel.swift */; };
 		A1000004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000004 /* Assets.xcassets */; };
+		A1000005 /* WoadieTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000007 /* WoadieTheme.swift */; };
+		A1000006 /* WoadieBackground.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000008 /* WoadieBackground.swift */; };
+		A1000007 /* WoadieButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000009 /* WoadieButton.swift */; };
+		A1000008 /* StatusIndicatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000A /* StatusIndicatorView.swift */; };
+		A1000009 /* VoicePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000B /* VoicePickerView.swift */; };
+		A100000A /* WoadieTextEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000C /* WoadieTextEditor.swift */; };
+		A100000B /* IconActionButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000D /* IconActionButton.swift */; };
+		A100000C /* WoadieHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000E /* WoadieHeaderView.swift */; };
+		A100000D /* WoadieControlsBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000F /* WoadieControlsBar.swift */; };
+		A100000E /* WoadiePlaybackPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000010 /* WoadiePlaybackPanel.swift */; };
+		A100000F /* WoadieWaveformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000011 /* WoadieWaveformView.swift */; };
+		A1000010 /* WoadieInputRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000012 /* WoadieInputRow.swift */; };
+		A1000011 /* SpeechLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000013 /* SpeechLogView.swift */; };
+		A1000012 /* SpeechLogItemView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000014 /* SpeechLogItemView.swift */; };
+		A1000013 /* WoadieFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000015 /* WoadieFooter.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -20,6 +35,21 @@
 		A2000004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A2000005 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A2000006 /* Woadie.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = Woadie.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000007 /* WoadieTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieTheme.swift; sourceTree = "<group>"; };
+		A2000008 /* WoadieBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieBackground.swift; sourceTree = "<group>"; };
+		A2000009 /* WoadieButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieButton.swift; sourceTree = "<group>"; };
+		A200000A /* StatusIndicatorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusIndicatorView.swift; sourceTree = "<group>"; };
+		A200000B /* VoicePickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePickerView.swift; sourceTree = "<group>"; };
+		A200000C /* WoadieTextEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieTextEditor.swift; sourceTree = "<group>"; };
+		A200000D /* IconActionButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IconActionButton.swift; sourceTree = "<group>"; };
+		A200000E /* WoadieHeaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieHeaderView.swift; sourceTree = "<group>"; };
+		A200000F /* WoadieControlsBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieControlsBar.swift; sourceTree = "<group>"; };
+		A2000010 /* WoadiePlaybackPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadiePlaybackPanel.swift; sourceTree = "<group>"; };
+		A2000011 /* WoadieWaveformView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieWaveformView.swift; sourceTree = "<group>"; };
+		A2000012 /* WoadieInputRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieInputRow.swift; sourceTree = "<group>"; };
+		A2000013 /* SpeechLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechLogView.swift; sourceTree = "<group>"; };
+		A2000014 /* SpeechLogItemView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechLogItemView.swift; sourceTree = "<group>"; };
+		A2000015 /* WoadieFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieFooter.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -45,12 +75,59 @@
 			isa = PBXGroup;
 			children = (
 				A2000001 /* AlkiSpeakApp.swift */,
-				A2000002 /* ContentView.swift */,
 				A2000003 /* AppModel.swift */,
+				A3000003 /* Views */,
+				A3000004 /* Theme */,
 				A2000004 /* Assets.xcassets */,
 				A2000005 /* Info.plist */,
 			);
 			path = AlkiSpeak;
+			sourceTree = "<group>";
+		};
+		A3000003 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A2000002 /* ContentView.swift */,
+				A3000005 /* Components */,
+				A3000006 /* Sections */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		A3000004 /* Theme */ = {
+			isa = PBXGroup;
+			children = (
+				A2000007 /* WoadieTheme.swift */,
+			);
+			path = Theme;
+			sourceTree = "<group>";
+		};
+		A3000005 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				A2000008 /* WoadieBackground.swift */,
+				A2000009 /* WoadieButton.swift */,
+				A200000A /* StatusIndicatorView.swift */,
+				A200000B /* VoicePickerView.swift */,
+				A200000C /* WoadieTextEditor.swift */,
+				A200000D /* IconActionButton.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+		A3000006 /* Sections */ = {
+			isa = PBXGroup;
+			children = (
+				A200000E /* WoadieHeaderView.swift */,
+				A200000F /* WoadieControlsBar.swift */,
+				A2000010 /* WoadiePlaybackPanel.swift */,
+				A2000011 /* WoadieWaveformView.swift */,
+				A2000012 /* WoadieInputRow.swift */,
+				A2000013 /* SpeechLogView.swift */,
+				A2000014 /* SpeechLogItemView.swift */,
+				A2000015 /* WoadieFooter.swift */,
+			);
+			path = Sections;
 			sourceTree = "<group>";
 		};
 		A3000002 /* Products */ = {
@@ -132,6 +209,21 @@
 				A1000001 /* AlkiSpeakApp.swift in Sources */,
 				A1000002 /* ContentView.swift in Sources */,
 				A1000003 /* AppModel.swift in Sources */,
+				A1000005 /* WoadieTheme.swift in Sources */,
+				A1000006 /* WoadieBackground.swift in Sources */,
+				A1000007 /* WoadieButton.swift in Sources */,
+				A1000008 /* StatusIndicatorView.swift in Sources */,
+				A1000009 /* VoicePickerView.swift in Sources */,
+				A100000A /* WoadieTextEditor.swift in Sources */,
+				A100000B /* IconActionButton.swift in Sources */,
+				A100000C /* WoadieHeaderView.swift in Sources */,
+				A100000D /* WoadieControlsBar.swift in Sources */,
+				A100000E /* WoadiePlaybackPanel.swift in Sources */,
+				A100000F /* WoadieWaveformView.swift in Sources */,
+				A1000010 /* WoadieInputRow.swift in Sources */,
+				A1000011 /* SpeechLogView.swift in Sources */,
+				A1000012 /* SpeechLogItemView.swift in Sources */,
+				A1000013 /* WoadieFooter.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
