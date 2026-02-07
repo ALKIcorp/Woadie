@@ -31,7 +31,8 @@ struct WoadieControlsBar: View {
 
             VoicePickerView(
                 selection: $model.selectedVoice,
-                options: model.voiceOptions
+                selectedLabel: model.selectedVoiceLabel,
+                categories: model.voiceCategories
             )
         }
         .padding(12)

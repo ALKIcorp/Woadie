@@ -2,7 +2,8 @@ import SwiftUI
 
 struct VoicePickerView: View {
     @Binding var selection: String
-    let options: [AppModel.VoiceOption]
+    let selectedLabel: String
+    let categories: [(title: String, voices: [AppModel.VoiceOption])]
 
     var body: some View {
         HStack(spacing: 10) {
@@ -13,9 +14,19 @@ struct VoicePickerView: View {
                 .tracking(1.2)
 
             Menu {
-                ForEach(options) { option in
-                    Button(option.label) {
-                        selection = option.id
+                ForEach(categories, id: \.title) { category in
+                    Menu(category.title) {
+                        ForEach(category.voices) { option in
+                            Button {
+                                selection = option.id
+                            } label: {
+                                if option.id == selection {
+                                    Label(option.label, systemImage: "checkmark")
+                                } else {
+                                    Text(option.label)
+                                }
+                            }
+                        }
                     }
                 }
             } label: {
@@ -40,9 +51,5 @@ struct VoicePickerView: View {
             .menuStyle(.borderlessButton)
             .frame(maxWidth: 260)
         }
-    }
-
-    private var selectedLabel: String {
-        options.first(where: { $0.id == selection })?.label ?? "Select Voice"
     }
 }

@@ -24,6 +24,7 @@ struct AlkiSpeakApp: App {
             ContentView()
                 .environmentObject(model)
         }
-        .windowStyle(.titleBar)
+        .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unified(showsTitle: false))
     }
 }
