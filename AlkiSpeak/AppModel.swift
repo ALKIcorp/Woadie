@@ -73,12 +73,20 @@ final class AppModel: NSObject, ObservableObject, AVAudioPlayerDelegate, AVSpeec
         return hasText && (status == .on || isSelectedVoiceLocal)
     }
 
+    var canEditText: Bool {
+        status == .on || isSelectedVoiceLocal
+    }
+
     var isEngineRunning: Bool {
         process != nil
     }
 
     var startStopLabel: String {
-        isEngineRunning ? "Stop Engine" : "Start Engine"
+        status == .on || status == .warmingUp ? "Stop Engine" : "Start Engine"
+    }
+
+    var startStopSystemImage: String {
+        status == .on || status == .warmingUp ? "stop.fill" : "power"
     }
 
     var lastLatencyMsText: String {
@@ -121,6 +129,7 @@ final class AppModel: NSObject, ObservableObject, AVAudioPlayerDelegate, AVSpeec
         loadLocalVoices()
         mergeVoiceOptions(remote: [])
         speechSynthesizer.delegate = self
+        Task { await syncEngineStatusOnLaunch() }
     }
 
     func startEngine() {
@@ -273,6 +282,16 @@ final class AppModel: NSObject, ObservableObject, AVAudioPlayerDelegate, AVSpeec
             return (obj?["ok"] as? Bool) == true
         } catch {
             return false
+        }
+    }
+
+    private func syncEngineStatusOnLaunch() async {
+        if await checkHealth() {
+            status = .on
+            message = ""
+            await fetchVoices()
+        } else {
+            status = .off
         }
     }
 

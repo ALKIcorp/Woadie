@@ -8,7 +8,7 @@ struct WoadieInputRow: View {
             WoadieTextEditor(
                 text: $model.inputText,
                 placeholder: "Enter text to speak...",
-                isDisabled: model.status != .on
+                isDisabled: !model.canEditText
             )
 
             WoadieButton(

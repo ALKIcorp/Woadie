@@ -7,12 +7,11 @@ struct WoadieControlsBar: View {
         HStack(spacing: 12) {
             WoadieButton(
                 title: model.startStopLabel,
-                systemImage: "stop.fill",
+                systemImage: model.startStopSystemImage,
                 variant: .default
             ) {
                 model.toggleEngine()
             }
-            .disabled(model.status == .warmingUp)
             .keyboardShortcut("r", modifiers: [.command, .shift])
 
             WoadieButton(

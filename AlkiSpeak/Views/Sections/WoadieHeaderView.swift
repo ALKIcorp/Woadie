@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct WoadieHeaderView: View {
-    let model: AppModel
+    @ObservedObject var model: AppModel
 
     var body: some View {
         HStack(spacing: 16) {

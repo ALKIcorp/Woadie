@@ -5,7 +5,7 @@ import { ControlButton } from "./ControlButton";
 import { VoiceSelect } from "./VoiceSelect";
 import { TextInput } from "./TextInput";
 import { SpeechLog } from "./SpeechLog";
-import { Square, RefreshCw, Mic, Zap } from "lucide-react";
+import { Power, RefreshCw, Mic, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const MOCK_VOICES = [
@@ -130,7 +130,8 @@ export const WoadieApp = () => {
         >
           <ControlButton
             onClick={handleToggleEngine}
-            icon={<Square className="h-3.5 w-3.5" />}
+            icon={<Power className="h-3.5 w-3.5" />}
+            variant={engineStatus === "off" ? "primary" : "default"}
             disabled={engineStatus === "loading"}
           >
             {engineStatus === "on" ? "Stop Engine" : "Start Engine"}
