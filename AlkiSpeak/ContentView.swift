@@ -19,6 +19,14 @@ struct ContentView: View {
         }
         .padding(16)
         .frame(minWidth: 520, minHeight: 220)
+        .alert("Port In Use", isPresented: $model.showPortInUseAlert) {
+            Button("Switch and Start") {
+                model.confirmPortSwitchAndStart()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Port 7777 is already in use. Switch to this engine by stopping the existing service?")
+        }
     }
 
     private var statusRow: some View {

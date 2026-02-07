@@ -50,6 +50,8 @@ final class AppModel: ObservableObject {
     @Published var lastLatencyMs: Int? = nil
     @Published var message: String = ""
     @Published var chatItems: [ChatItem] = []
+    @Published var showPortInUseAlert: Bool = false
+    @Published var portInUsePids: [Int32] = []
 
     private var process: Process?
     private var audioPlayer: AVAudioPlayer?
@@ -78,6 +80,15 @@ final class AppModel: ObservableObject {
         guard process == nil else { return }
         message = ""
         status = .warmingUp
+
+        let pids = findListeningPidsOnPort()
+        if !pids.isEmpty {
+            status = .off
+            message = "Port 7777 is already in use."
+            portInUsePids = pids
+            showPortInUseAlert = true
+            return
+        }
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -236,5 +247,72 @@ final class AppModel: ObservableObject {
         audioPlayer = try AVAudioPlayer(data: data)
         audioPlayer?.prepareToPlay()
         audioPlayer?.play()
+    }
+
+    func confirmPortSwitchAndStart() {
+        Task {
+            await terminatePortUsers()
+            startEngine()
+        }
+    }
+
+    private func findListeningPidsOnPort() -> [Int32] {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        proc.arguments = [
+            "-tiTCP:7777",
+            "-sTCP:LISTEN"
+        ]
+
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+
+        do {
+            try proc.run()
+        } catch {
+            return []
+        }
+
+        proc.waitUntilExit()
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
+        return output
+            .split(whereSeparator: \.isNewline)
+            .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    }
+
+    private func terminatePortUsers() async {
+        let pids = portInUsePids
+        guard !pids.isEmpty else { return }
+
+        // Try graceful shutdown first.
+        _ = runKill(signal: "-TERM", pids: pids)
+
+        let deadline = Date().addingTimeInterval(2.0)
+        while Date() < deadline {
+            if findListeningPidsOnPort().isEmpty {
+                portInUsePids = []
+                return
+            }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+
+        // Force kill if still listening.
+        _ = runKill(signal: "-KILL", pids: pids)
+        portInUsePids = []
+    }
+
+    private func runKill(signal: String, pids: [Int32]) -> Bool {
+        guard !pids.isEmpty else { return true }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/kill")
+        proc.arguments = [signal] + pids.map { String($0) }
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            return proc.terminationStatus == 0
+        } catch {
+            return false
+        }
     }
 }

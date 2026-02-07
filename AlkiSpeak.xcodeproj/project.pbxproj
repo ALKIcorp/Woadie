@@ -151,7 +151,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.alki.AlkiSpeak;
-				PRODUCT_NAME = AlkiSpeak;
+				PRODUCT_NAME = "Woadie GPT";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
@@ -169,7 +169,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.alki.AlkiSpeak;
-				PRODUCT_NAME = AlkiSpeak;
+				PRODUCT_NAME = "Woadie GPT";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
@@ -177,10 +177,13 @@
 		A7000002 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = "";
 				INFOPLIST_FILE = AlkiSpeak/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Woadie GPT";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -195,10 +198,13 @@
 		A7000003 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = "";
 				INFOPLIST_FILE = AlkiSpeak/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Woadie GPT";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
