@@ -43,11 +43,18 @@ final class AppModel: ObservableObject {
         let isUser: Bool
     }
 
+    struct VoiceOption: Identifiable, Hashable {
+        let id: String
+        let label: String
+        let isLocal: Bool
+    }
+
     @Published var status: EngineStatus = .off
-    @Published var voices: [String] = [AppConfig.defaultVoice]
+    @Published var voiceOptions: [VoiceOption] = []
     @Published var selectedVoice: String = AppConfig.defaultVoice
     @Published var inputText: String = ""
     @Published var lastLatencyMs: Int? = nil
+    @Published var lastCharCount: Int? = nil
     @Published var message: String = ""
     @Published var chatItems: [ChatItem] = []
     @Published var showPortInUseAlert: Bool = false
@@ -55,10 +62,13 @@ final class AppModel: ObservableObject {
 
     private var process: Process?
     private var audioPlayer: AVAudioPlayer?
+    private let speechSynthesizer = AVSpeechSynthesizer()
     private var isStopping = false
+    private var localVoiceLookup: [String: AVSpeechSynthesisVoice] = [:]
 
     var canSpeak: Bool {
-        status == .on && !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasText = !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return hasText && (status == .on || isSelectedVoiceLocal)
     }
 
     var isEngineRunning: Bool {
@@ -74,6 +84,22 @@ final class AppModel: ObservableObject {
             return "\(lastLatencyMs) ms"
         }
         return "—"
+    }
+
+    var lastCharCountText: String {
+        if let lastCharCount {
+            return "\(lastCharCount)"
+        }
+        return "—"
+    }
+
+    private var isSelectedVoiceLocal: Bool {
+        selectedVoice.hasPrefix("apple:")
+    }
+
+    init() {
+        loadLocalVoices()
+        mergeVoiceOptions(remote: [])
     }
 
     func startEngine() {
@@ -143,6 +169,7 @@ final class AppModel: ObservableObject {
 
     func refreshVoices() {
         Task {
+            loadLocalVoices()
             await fetchVoices()
         }
     }
@@ -155,6 +182,10 @@ final class AppModel: ObservableObject {
         chatItems.append(ChatItem(text: text, isUser: true))
 
         Task {
+            if isSelectedVoiceLocal {
+                speakLocal(text: text)
+                return
+            }
             do {
                 let data = try await postSpeak(text: text, voice: selectedVoice)
                 try playAudio(data: data)
@@ -209,10 +240,7 @@ final class AppModel: ObservableObject {
                 message = "Voice list empty. Using last voice."
                 return
             }
-            self.voices = voices
-            if !voices.contains(selectedVoice) {
-                selectedVoice = voices.first ?? AppConfig.defaultVoice
-            }
+            mergeVoiceOptions(remote: voices)
         } catch {
             message = "Failed to fetch voices: \(error.localizedDescription)"
         }
@@ -237,6 +265,9 @@ final class AppModel: ObservableObject {
         if let msString = http.value(forHTTPHeaderField: "X-Gen-ms"), let ms = Int(msString) {
             lastLatencyMs = ms
         }
+        if let countString = http.value(forHTTPHeaderField: "X-Char-Count"), let count = Int(countString) {
+            lastCharCount = count
+        }
         guard http.statusCode == 200 else {
             throw NSError(domain: "AlkiSpeak", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server returned \(http.statusCode)"]) 
         }
@@ -247,6 +278,49 @@ final class AppModel: ObservableObject {
         audioPlayer = try AVAudioPlayer(data: data)
         audioPlayer?.prepareToPlay()
         audioPlayer?.play()
+    }
+
+    private func loadLocalVoices() {
+        let voices = AVSpeechSynthesisVoice.speechVoices()
+        localVoiceLookup = Dictionary(uniqueKeysWithValues: voices.map { ($0.identifier, $0) })
+    }
+
+    private func mergeVoiceOptions(remote: [String]) {
+        let localOptions = localVoiceLookup.values
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .map { voice in
+                let label = "Apple - \(voice.name) [\(voice.language)]"
+                return VoiceOption(
+                    id: "apple:\(voice.identifier)",
+                    label: label,
+                    isLocal: true
+                )
+            }
+        let remoteOptions = remote.map { name in
+            VoiceOption(id: name, label: "Kokoro - \(name)", isLocal: false)
+        }
+        voiceOptions = localOptions + remoteOptions
+        if !voiceOptions.contains(where: { $0.id == selectedVoice }) {
+            if let first = voiceOptions.first {
+                selectedVoice = first.id
+            } else {
+                selectedVoice = AppConfig.defaultVoice
+            }
+        }
+    }
+
+    private func speakLocal(text: String) {
+        let identifier = selectedVoice.replacingOccurrences(of: "apple:", with: "")
+        guard let voice = AVSpeechSynthesisVoice(identifier: identifier) ?? localVoiceLookup[identifier] else {
+            message = "Selected Apple voice not available."
+            chatItems.append(ChatItem(text: "Error: Apple voice not available.", isUser: false))
+            return
+        }
+
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = voice
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        speechSynthesizer.speak(utterance)
     }
 
     func confirmPortSwitchAndStart() {

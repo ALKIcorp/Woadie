@@ -35,9 +35,12 @@ struct ContentView: View {
                 .font(.headline)
                 .foregroundStyle(model.status.color)
             Spacer()
-            Text("Gen: \(model.lastLatencyMsText)")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Text("Gen: \(model.lastLatencyMsText)")
+                Text("Chars: \(model.lastCharCountText)")
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -54,8 +57,8 @@ struct ContentView: View {
             .disabled(model.status != .on)
 
             Picker("Voice", selection: $model.selectedVoice) {
-                ForEach(model.voices, id: \.self) { voice in
-                    Text(voice).tag(voice)
+                ForEach(model.voiceOptions) { voice in
+                    Text(voice.label).tag(voice.id)
                 }
             }
             .frame(width: 220)

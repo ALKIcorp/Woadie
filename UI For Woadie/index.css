@@ -1,0 +1,170 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/600.css";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+
+@layer base {
+  :root {
+    /* Dark theme by default - Woadie aesthetic */
+    --background: 220 15% 5%;
+    --background-elevated: 220 12% 8%;
+    --background-surface: 220 10% 10%;
+    --background-glass: 220 10% 12%;
+    
+    --foreground: 210 20% 95%;
+    --foreground-muted: 215 15% 55%;
+    --foreground-subtle: 215 10% 35%;
+
+    --card: 220 12% 8%;
+    --card-foreground: 210 20% 95%;
+
+    --popover: 220 12% 10%;
+    --popover-foreground: 210 20% 95%;
+
+    /* Primary accent - muted cyan/teal */
+    --primary: 175 60% 45%;
+    --primary-glow: 175 70% 50%;
+    --primary-foreground: 220 15% 5%;
+
+    /* Secondary - subtle warm tone */
+    --secondary: 220 10% 15%;
+    --secondary-foreground: 210 20% 85%;
+
+    --muted: 220 10% 15%;
+    --muted-foreground: 215 15% 50%;
+
+    --accent: 175 40% 20%;
+    --accent-foreground: 175 60% 70%;
+
+    /* Status colors */
+    --success: 145 60% 45%;
+    --success-glow: 145 70% 55%;
+    --warning: 35 90% 55%;
+    --destructive: 0 70% 55%;
+    --destructive-foreground: 210 20% 95%;
+
+    --border: 220 10% 18%;
+    --border-subtle: 220 8% 14%;
+    --input: 220 10% 12%;
+    --ring: 175 60% 45%;
+
+    --radius: 0.75rem;
+
+    /* Custom gradients */
+    --gradient-surface: linear-gradient(135deg, hsl(220 12% 9%) 0%, hsl(220 10% 7%) 100%);
+    --gradient-glow: radial-gradient(ellipse at center, hsl(175 60% 45% / 0.15) 0%, transparent 70%);
+    --gradient-accent: linear-gradient(135deg, hsl(175 60% 45%) 0%, hsl(175 50% 35%) 100%);
+    
+    /* Shadows */
+    --shadow-sm: 0 1px 2px hsl(220 20% 2% / 0.5);
+    --shadow-md: 0 4px 12px hsl(220 20% 2% / 0.6);
+    --shadow-lg: 0 8px 24px hsl(220 20% 2% / 0.7);
+    --shadow-glow: 0 0 20px hsl(175 60% 45% / 0.2);
+    --shadow-success: 0 0 12px hsl(145 60% 45% / 0.4);
+
+    /* Sidebar - keeping for compatibility */
+    --sidebar-background: 220 15% 6%;
+    --sidebar-foreground: 210 20% 85%;
+    --sidebar-primary: 175 60% 45%;
+    --sidebar-primary-foreground: 220 15% 5%;
+    --sidebar-accent: 220 10% 12%;
+    --sidebar-accent-foreground: 210 20% 85%;
+    --sidebar-border: 220 10% 15%;
+    --sidebar-ring: 175 60% 45%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Monospace utility */
+  .font-mono {
+    font-family: 'JetBrains Mono', 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+  }
+}
+
+@layer utilities {
+  /* Glass effect */
+  .glass {
+    background: hsl(var(--background-glass) / 0.8);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  /* Subtle noise texture */
+  .noise {
+    position: relative;
+  }
+  .noise::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+    opacity: 0.02;
+    pointer-events: none;
+  }
+
+  /* Glow effects */
+  .glow-primary {
+    box-shadow: var(--shadow-glow);
+  }
+
+  .glow-success {
+    box-shadow: var(--shadow-success);
+  }
+
+  /* Status pulse animation */
+  @keyframes pulse-glow {
+    0%, 100% {
+      opacity: 1;
+      box-shadow: 0 0 8px hsl(var(--success) / 0.6);
+    }
+    50% {
+      opacity: 0.8;
+      box-shadow: 0 0 16px hsl(var(--success) / 0.4);
+    }
+  }
+
+  .animate-pulse-glow {
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+
+  /* Typing cursor blink */
+  @keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+  }
+
+  .animate-blink {
+    animation: blink 1s step-end infinite;
+  }
+
+  /* Subtle fade in */
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .animate-fade-in {
+    animation: fade-in 0.3s ease-out forwards;
+  }
+}
