@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDisplayName</key>
-    <string>AlkiSpeak</string>
+    <string>Woadie</string>
     <key>CFBundleName</key>
-    <string>AlkiSpeak</string>
+    <string>Woadie</string>
     <key>CFBundleIdentifier</key>
-    <string>com.alki.AlkiSpeak</string>
+    <string>com.alki.Woadie</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
