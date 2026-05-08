@@ -108,26 +108,34 @@ final class AppModel: ObservableObject {
         store.clearErrorMessage()
         store.engineStatus = .starting
 
-        do {
-            try dependencies.engineSupervisor.start()
-            refreshTelemetry()
-        } catch {
-            if let appError = error as? AlkiSpeakError, appError.code == "engine.port-in-use" {
-                store.portInUsePids = dependencies.engineSupervisor.findListeningPidsOnEnginePort()
-                store.showPortInUseAlert = true
-                record(appError)
-            } else {
-                record(
-                    .engine(
-                        code: "start-failed",
-                        title: "Engine Start Failed",
-                        message: "Failed to start the speech engine.",
-                        recoverySuggestion: "Verify the Kokoro checkout and virtual environment path, then try again.",
-                        underlyingError: error
+        let supervisor = dependencies.engineSupervisor
+        Task {
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try supervisor.start()
+                }.value
+                refreshTelemetry()
+            } catch {
+                if let appError = error as? AlkiSpeakError, appError.code == "engine.port-in-use" {
+                    let pids = await Task.detached(priority: .userInitiated) {
+                        supervisor.findListeningPidsOnEnginePort()
+                    }.value
+                    store.portInUsePids = pids
+                    store.showPortInUseAlert = true
+                    record(appError)
+                } else {
+                    record(
+                        .engine(
+                            code: "start-failed",
+                            title: "Engine Start Failed",
+                            message: "Failed to start the speech engine.",
+                            recoverySuggestion: "Verify the Kokoro checkout and virtual environment path, then try again.",
+                            underlyingError: error
+                        )
                     )
-                )
+                }
+                store.engineStatus = .failed
             }
-            store.engineStatus = .failed
         }
     }
 

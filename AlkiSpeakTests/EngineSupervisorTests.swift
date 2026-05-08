@@ -86,13 +86,14 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     @MainActor
-    func testAppStartupDelegatesPortRecoveryToSupervisorWithoutShowingAlert() {
+    func testAppStartupDelegatesPortRecoveryToSupervisorWithoutShowingAlert() async {
         let supervisor = FakeEngineSupervisor()
         supervisor.portUsers = [123]
         let store = AppStore()
         let model = AppModel(store: store, dependencies: .test(engineSupervisor: supervisor))
 
         model.startEngine()
+        try? await Task.sleep(nanoseconds: 100_000_000)
 
         XCTAssertTrue(supervisor.startCalled)
         XCTAssertFalse(store.showPortInUseAlert)
