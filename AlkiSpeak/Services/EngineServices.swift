@@ -233,10 +233,17 @@ final class ProcessEngineSupervisor: EngineSupervising {
         }
 
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        proc.executableURL = URL(fileURLWithPath: AppConfig.kokoroPath)
+            .appendingPathComponent(".venv/bin/python")
+        proc.currentDirectoryURL = URL(fileURLWithPath: AppConfig.kokoroPath)
         proc.arguments = [
-            "-lc",
-            "cd \"\(AppConfig.kokoroPath)\"; source .venv/bin/activate; uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort)"
+            "-m",
+            "uvicorn",
+            "kokoro_server:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "\(AppConfig.enginePort)"
         ]
 
         let stderr = Pipe()
@@ -253,9 +260,36 @@ final class ProcessEngineSupervisor: EngineSupervising {
             self?.handleTermination(statusCode: process.terminationStatus)
         }
 
+        let prelaunchSummary = queue.sync { () -> EngineHealthSummary in
+            if resetRetryCount {
+                state.retryCount = 0
+                state.recentIssues = []
+                state.latestIssue = nil
+            }
+            isStopping = false
+            process = proc
+            adoptedProcessIdentifier = nil
+            state.status = .starting
+            state.pid = nil
+            state.startedAt = Date()
+            state.port = AppConfig.enginePort
+            state.baseURL = AppConfig.serverBaseURL
+            state.lastHealthCheckAt = nil
+            state.lastSuccessfulHealthCheckAt = nil
+            state.consecutiveHealthFailures = 0
+            return state
+        }
+        onHealthChanged?(prelaunchSummary)
+
         do {
             try proc.run()
         } catch {
+            queue.sync {
+                if process === proc {
+                    process = nil
+                    state.pid = nil
+                }
+            }
             let issue = EngineIssue(
                 code: "engine.launch-failed",
                 title: "Engine Launch Failed",
@@ -269,20 +303,10 @@ final class ProcessEngineSupervisor: EngineSupervising {
         }
 
         let summary = queue.sync { () -> EngineHealthSummary in
-            if resetRetryCount {
-                state.retryCount = 0
-                state.recentIssues = []
-                state.latestIssue = nil
+            guard process === proc, state.status == .starting else {
+                return state
             }
-            isStopping = false
-            process = proc
-            adoptedProcessIdentifier = nil
-            state.status = .starting
             state.pid = proc.processIdentifier
-            state.startedAt = Date()
-            state.port = AppConfig.enginePort
-            state.baseURL = AppConfig.serverBaseURL
-            state.consecutiveHealthFailures = 0
             return state
         }
 
@@ -381,9 +405,18 @@ final class ProcessEngineSupervisor: EngineSupervising {
 
         let isStillStarting = queue.sync { state.status == .starting || state.status == .retrying }
         if isStillStarting {
+            let failureCount = queue.sync { state.consecutiveHealthFailures + 1 }
             publish { summary in
                 summary.lastHealthCheckAt = Date()
-                summary.consecutiveHealthFailures += 1
+                summary.consecutiveHealthFailures = failureCount
+            }
+            let shouldTimeoutStartup = queue.sync {
+                state.status == .starting
+                    && restartTask == nil
+                    && failureCount >= startupHealthFailureLimit
+            }
+            if shouldTimeoutStartup {
+                handleStartupHealthFailuresExceeded(failureCount: failureCount, rawError: rawError)
             }
             return
         }
@@ -424,6 +457,30 @@ final class ProcessEngineSupervisor: EngineSupervising {
             subsystem: "engine.lifecycle",
             retryCount: healthSummary.retryCount,
             context: ["timeoutSeconds": "\(timeoutPolicy.startupTimeout)"]
+        )
+        record(issue, status: .timedOut)
+        forceTerminateForRecovery()
+        scheduleRestart(cause: issue)
+    }
+
+    private var startupHealthFailureLimit: Int {
+        max(1, Int(ceil(timeoutPolicy.startupTimeout / AppConfig.healthCheckIntervalSeconds)))
+    }
+
+    private func handleStartupHealthFailuresExceeded(failureCount: Int, rawError: String) {
+        let issue = EngineIssue(
+            code: "engine.startup-health-timeout",
+            title: "Engine Startup Health Timed Out",
+            description: "The engine did not pass a health check after \(failureCount) startup attempts.",
+            probableCause: "The server process is alive but not serving healthy responses on localhost.",
+            subsystem: "engine.health",
+            retryCount: healthSummary.retryCount,
+            rawError: rawError,
+            context: [
+                "failureCount": "\(failureCount)",
+                "port": "\(AppConfig.enginePort)",
+                "timeoutSeconds": "\(timeoutPolicy.startupTimeout)"
+            ]
         )
         record(issue, status: .timedOut)
         forceTerminateForRecovery()
