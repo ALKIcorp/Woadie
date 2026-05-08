@@ -76,6 +76,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
     private var healthTask: Task<Void, Never>?
     private var startupTask: Task<Void, Never>?
     private var restartTask: Task<Void, Never>?
+    private var adoptedProcessIdentifier: Int32?
     private var state: EngineHealthSummary = .stopped
 
     var onHealthChanged: ((EngineHealthSummary) -> Void)?
@@ -86,11 +87,11 @@ final class ProcessEngineSupervisor: EngineSupervising {
     }
 
     var isRunning: Bool {
-        queue.sync { process?.isRunning == true }
+        queue.sync { process?.isRunning == true || adoptedProcessIdentifier != nil }
     }
 
     var processIdentifier: Int32? {
-        queue.sync { process?.processIdentifier }
+        queue.sync { process?.processIdentifier ?? adoptedProcessIdentifier }
     }
 
     var healthSummary: EngineHealthSummary {
@@ -110,7 +111,11 @@ final class ProcessEngineSupervisor: EngineSupervising {
         let stopped = queue.sync { () -> EngineHealthSummary in
             isStopping = true
             process?.terminate()
+            if let adoptedProcessIdentifier {
+                _ = runKill(signal: "-TERM", pids: [adoptedProcessIdentifier])
+            }
             process = nil
+            adoptedProcessIdentifier = nil
             state.status = .stopped
             state.pid = nil
             state.startedAt = nil
@@ -179,27 +184,52 @@ final class ProcessEngineSupervisor: EngineSupervising {
     }
 
     private func launchProcess(resetRetryCount: Bool) throws {
-        let alreadyRunning = queue.sync { process?.isRunning == true || state.status == .starting }
+        let alreadyRunning = queue.sync { process?.isRunning == true || adoptedProcessIdentifier != nil || state.status == .starting }
         guard !alreadyRunning else { return }
 
         let portUsers = findListeningPidsOnEnginePort()
         if !portUsers.isEmpty {
-            let issue = EngineIssue(
-                code: "engine.port-in-use",
-                title: "Engine Port In Use",
-                description: "Port \(AppConfig.enginePort) is already owned by another process.",
-                probableCause: "A previous engine instance or another local service is still listening on the Kokoro port.",
-                subsystem: "engine.lifecycle",
-                context: ["port": "\(AppConfig.enginePort)", "pids": portUsers.map(String.init).joined(separator: ",")]
-            )
-            record(issue, status: .failed)
-            throw AlkiSpeakError.engine(
-                code: "port-in-use",
-                title: issue.title,
-                message: issue.description,
-                recoverySuggestion: issue.probableCause,
-                context: issue.context
-            )
+            if canAdoptRunningEngine(portUsers: portUsers) {
+                adoptExistingEngine(portUsers: portUsers, resetRetryCount: resetRetryCount)
+                return
+            }
+
+            if isLikelyRecoverableEngineOwner(portUsers: portUsers) {
+                record(
+                    EngineIssue(
+                        code: "engine.reclaiming-orphan",
+                        title: "Reclaiming Previous Engine",
+                        description: "A previous local engine was still bound to port \(AppConfig.enginePort) after the app quit.",
+                        probableCause: "The app was force quit, so macOS did not deliver the normal termination callback.",
+                        subsystem: "engine.lifecycle",
+                        context: ["port": "\(AppConfig.enginePort)", "pids": portUsers.map(String.init).joined(separator: ",")]
+                    ),
+                    status: .retrying,
+                    notifyUser: false
+                )
+                reclaimPortUsers(portUsers)
+            } else {
+                let issue = EngineIssue(
+                    code: "engine.port-in-use",
+                    title: "Engine Port In Use",
+                    description: "Port \(AppConfig.enginePort) is already owned by another non-engine process.",
+                    probableCause: "Another local service is listening on the Kokoro port.",
+                    subsystem: "engine.lifecycle",
+                    context: [
+                        "port": "\(AppConfig.enginePort)",
+                        "pids": portUsers.map(String.init).joined(separator: ","),
+                        "commands": portUsers.map { processCommandLine(for: $0) }.joined(separator: "\n")
+                    ]
+                )
+                record(issue, status: .failed)
+                throw AlkiSpeakError.engine(
+                    code: "port-in-use",
+                    title: issue.title,
+                    message: issue.description,
+                    recoverySuggestion: issue.probableCause,
+                    context: issue.context
+                )
+            }
         }
 
         let proc = Process()
@@ -246,6 +276,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
             }
             isStopping = false
             process = proc
+            adoptedProcessIdentifier = nil
             state.status = .starting
             state.pid = proc.processIdentifier
             state.startedAt = Date()
@@ -302,6 +333,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
                     summary.lastHealthCheckAt = Date()
                     summary.lastSuccessfulHealthCheckAt = Date()
                     summary.consecutiveHealthFailures = 0
+                    summary.latestIssue = nil
                 }
             } else {
                 handleHealthFailure(rawError: "Health endpoint did not return ok=true")
@@ -367,6 +399,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
             let stopped = queue.sync { () -> EngineHealthSummary in
                 isStopping = false
                 process = nil
+                adoptedProcessIdentifier = nil
                 state.status = .stopped
                 state.pid = nil
                 return state
@@ -396,6 +429,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
             isStopping = false
             process?.terminate()
             process = nil
+            adoptedProcessIdentifier = nil
             state.pid = nil
         }
     }
@@ -446,7 +480,12 @@ final class ProcessEngineSupervisor: EngineSupervising {
         }
     }
 
-    private func record(_ issue: EngineIssue, status: EngineStatus, mutate: ((inout EngineHealthSummary) -> Void)? = nil) {
+    private func record(
+        _ issue: EngineIssue,
+        status: EngineStatus,
+        notifyUser: Bool = true,
+        mutate: ((inout EngineHealthSummary) -> Void)? = nil
+    ) {
         logger.error("\(issue.code, privacy: .public): \(issue.description, privacy: .public)")
         let summary = queue.sync { () -> EngineHealthSummary in
             state.status = status
@@ -458,7 +497,9 @@ final class ProcessEngineSupervisor: EngineSupervising {
             mutate?(&state)
             return state
         }
-        onIssue?(issue)
+        if notifyUser {
+            onIssue?(issue)
+        }
         onHealthChanged?(summary)
     }
 
@@ -482,6 +523,105 @@ final class ProcessEngineSupervisor: EngineSupervising {
         } catch {
             return false
         }
+    }
+
+    private func canAdoptRunningEngine(portUsers: [Int32]) -> Bool {
+        guard isLikelyRecoverableEngineOwner(portUsers: portUsers) else { return false }
+        return checkHealthSynchronously(timeout: timeoutPolicy.healthCheckTimeout)
+    }
+
+    private func adoptExistingEngine(portUsers: [Int32], resetRetryCount: Bool) {
+        let pid = portUsers.first
+        let summary = queue.sync { () -> EngineHealthSummary in
+            if resetRetryCount {
+                state.retryCount = 0
+            }
+            process = nil
+            adoptedProcessIdentifier = pid
+            isStopping = false
+            state.status = .running
+            state.pid = pid
+            state.startedAt = state.startedAt ?? Date()
+            state.port = AppConfig.enginePort
+            state.baseURL = AppConfig.serverBaseURL
+            state.lastHealthCheckAt = Date()
+            state.lastSuccessfulHealthCheckAt = Date()
+            state.consecutiveHealthFailures = 0
+            state.latestIssue = nil
+            return state
+        }
+        logger.info("Adopted existing engine pid=\(pid ?? -1) port=\(AppConfig.enginePort)")
+        onHealthChanged?(summary)
+        startMonitoring()
+    }
+
+    private func reclaimPortUsers(_ pids: [Int32]) {
+        guard !pids.isEmpty else { return }
+        _ = runKill(signal: "-TERM", pids: pids)
+        let deadline = Date().addingTimeInterval(2.0)
+        while Date() < deadline {
+            if findListeningPidsOnEnginePort().isEmpty {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        _ = runKill(signal: "-KILL", pids: pids)
+    }
+
+    private func isLikelyRecoverableEngineOwner(portUsers: [Int32]) -> Bool {
+        portUsers.contains { pid in
+            let command = processCommandLine(for: pid).lowercased()
+            return command.contains("kokoro_server")
+                || command.contains("uvicorn")
+                || command.contains(AppConfig.kokoroPath.lowercased())
+                || command.contains("kokoro")
+        }
+    }
+
+    private func processCommandLine(for pid: Int32) -> String {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/ps")
+        proc.arguments = ["-p", "\(pid)", "-o", "command="]
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+
+        do {
+            try proc.run()
+        } catch {
+            return ""
+        }
+
+        proc.waitUntilExit()
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private func checkHealthSynchronously(timeout: TimeInterval) -> Bool {
+        var request = URLRequest(url: AppConfig.serverBaseURL.appendingPathComponent("health"))
+        request.httpMethod = "GET"
+        request.timeoutInterval = timeout
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var isHealthy = false
+        let task = URLSession.shared.dataTask(with: request) { data, response, _ in
+            defer { semaphore.signal() }
+            guard
+                let data,
+                let http = response as? HTTPURLResponse,
+                http.statusCode == 200,
+                let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                return
+            }
+            isHealthy = (object["ok"] as? Bool) == true
+        }
+        task.resume()
+
+        if semaphore.wait(timeout: .now() + timeout) == .timedOut {
+            task.cancel()
+            return false
+        }
+        return isHealthy
     }
 }
 

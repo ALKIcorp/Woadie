@@ -84,4 +84,108 @@ final class EngineSupervisorTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+
+    @MainActor
+    func testAppStartupDelegatesPortRecoveryToSupervisorWithoutShowingAlert() {
+        let supervisor = FakeEngineSupervisor()
+        supervisor.portUsers = [123]
+        let store = AppStore()
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: supervisor))
+
+        model.startEngine()
+
+        XCTAssertTrue(supervisor.startCalled)
+        XCTAssertFalse(store.showPortInUseAlert)
+        XCTAssertEqual(store.engineStatus, .starting)
+    }
+}
+
+private final class FakeEngineSupervisor: EngineSupervising {
+    var isRunning = false
+    var processIdentifier: Int32?
+    var healthSummary: EngineHealthSummary = .stopped
+    var onHealthChanged: ((EngineHealthSummary) -> Void)?
+    var onIssue: ((EngineIssue) -> Void)?
+    var portUsers: [Int32] = []
+    var startCalled = false
+
+    func start() throws {
+        startCalled = true
+    }
+
+    func stop() {}
+    func noteRequestStarted(jobID: UUID) {}
+    func noteRequestFinished(jobID: UUID) {}
+    func findListeningPidsOnEnginePort() -> [Int32] { portUsers }
+    func terminatePortUsers(_ pids: [Int32]) async {}
+}
+
+private final class FakeSpeechGenerating: SpeechGenerating {
+    func checkHealth() async -> Bool { false }
+    func fetchVoices() async throws -> [String] { [] }
+    func synthesize(text: String, voice: String, jobID: UUID?) async throws -> SpeechGenerationResult {
+        SpeechGenerationResult(audioData: Data(), latencyMs: nil, charCount: text.count)
+    }
+}
+
+private final class FakePlaybackCoordinating: PlaybackCoordinating {
+    func play(audioData: Data) throws {}
+    func stop() {}
+}
+
+private final class FakeLocalSpeechSynthesizing: LocalSpeechSynthesizing {
+    var voiceOptions: [VoiceOption] = [VoiceOption(id: "apple:test", label: "Apple Test", isLocal: true)]
+    func refreshVoices() {}
+    func speak(text: String, voiceID: String) throws {}
+    func stop() {}
+}
+
+private final class FakeTelemetryCapturing: TelemetryCapturing {
+    func capture(engineProcessID: Int32?) -> ResourceSnapshot { .empty }
+}
+
+private final class FakeWorkspaceStore: ActiveWorkspacePersisting {
+    func loadActiveWorkspace() throws -> WorkspaceSession? { nil }
+    func saveActiveWorkspace(_ workspace: WorkspaceSession) throws {}
+}
+
+private final class FakeLogStore: SavedLogPersisting {
+    func loadLogs(for workspaceID: UUID) throws -> [SavedLogEntry] { [] }
+    func saveLog(_ entry: SavedLogEntry, workspaceID: UUID) throws {}
+    func replaceLogs(_ entries: [SavedLogEntry], workspaceID: UUID) throws {}
+}
+
+private final class FakeClipStore: SegmentedClipStoring {
+    func writeClip(data: Data, segmentID: UUID, workspaceID: UUID) throws -> URL {
+        URL(fileURLWithPath: "/tmp/\(segmentID.uuidString).wav")
+    }
+
+    func removeClip(segmentID: UUID, workspaceID: UUID) throws {}
+}
+
+private final class FakePackageStore: SpeechPackageImportExporting {
+    func exportPackage(_ package: SavedSpeechPackage) throws -> URL {
+        URL(fileURLWithPath: "/tmp/\(package.id.uuidString).alkispeak")
+    }
+
+    func importPackage(from url: URL) throws -> SavedSpeechPackage {
+        SavedSpeechPackage(name: "Test", workspaceID: UUID(), jobs: [], logEntries: [])
+    }
+}
+
+@MainActor
+private extension AppDependencies {
+    static func test(engineSupervisor: EngineSupervising) -> AppDependencies {
+        AppDependencies(
+            engineSupervisor: engineSupervisor,
+            generationService: FakeSpeechGenerating(),
+            playbackCoordinator: FakePlaybackCoordinating(),
+            localSpeechService: FakeLocalSpeechSynthesizing(),
+            telemetryService: FakeTelemetryCapturing(),
+            workspaceStore: FakeWorkspaceStore(),
+            logStore: FakeLogStore(),
+            clipStore: FakeClipStore(),
+            packageStore: FakePackageStore()
+        )
+    }
 }

@@ -108,28 +108,25 @@ final class AppModel: ObservableObject {
         store.clearErrorMessage()
         store.engineStatus = .starting
 
-        let pids = dependencies.engineSupervisor.findListeningPidsOnEnginePort()
-        if !pids.isEmpty {
-            store.engineStatus = .stopped
-            store.userMessage = "Port \(AppConfig.enginePort) is already in use."
-            store.portInUsePids = pids
-            store.showPortInUseAlert = true
-            return
-        }
-
         do {
             try dependencies.engineSupervisor.start()
             refreshTelemetry()
         } catch {
-            record(
-                .engine(
-                    code: "start-failed",
-                    title: "Engine Start Failed",
-                    message: "Failed to start the speech engine.",
-                    recoverySuggestion: "Verify the Kokoro checkout and virtual environment path, then try again.",
-                    underlyingError: error
+            if let appError = error as? AlkiSpeakError, appError.code == "engine.port-in-use" {
+                store.portInUsePids = dependencies.engineSupervisor.findListeningPidsOnEnginePort()
+                store.showPortInUseAlert = true
+                record(appError)
+            } else {
+                record(
+                    .engine(
+                        code: "start-failed",
+                        title: "Engine Start Failed",
+                        message: "Failed to start the speech engine.",
+                        recoverySuggestion: "Verify the Kokoro checkout and virtual environment path, then try again.",
+                        underlyingError: error
+                    )
                 )
-            )
+            }
             store.engineStatus = .failed
         }
     }
