@@ -313,6 +313,9 @@ final class AppModel: ObservableObject {
                 self.store.engineStatus = summary.status
                 self.refreshTelemetry()
                 if summary.status == .idle || summary.status == .running {
+                    if self.store.lastError?.code.hasPrefix("engine.") == true {
+                        self.store.clearErrorMessage()
+                    }
                     await self.fetchVoices()
                 }
             }

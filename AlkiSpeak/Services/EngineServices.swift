@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import os
 
 struct EngineTimeoutPolicy: Hashable {
@@ -344,6 +345,42 @@ final class ProcessEngineSupervisor: EngineSupervising {
     }
 
     private func handleHealthFailure(rawError: String) {
+        let portUsers = findListeningPidsOnEnginePort()
+        let adoptedPID = queue.sync { adoptedProcessIdentifier }
+        let adoptedProcessDisappeared = adoptedPID.map { !processExists(pid: $0) } ?? false
+        if portUsers.isEmpty || adoptedProcessDisappeared {
+            let issue = EngineIssue(
+                code: "engine.listener-missing",
+                title: "Engine Listener Missing",
+                description: "The local engine is no longer listening on port \(AppConfig.enginePort).",
+                probableCause: "A previously adopted engine exited after a force quit or was killed outside the app.",
+                subsystem: "engine.lifecycle",
+                retryCount: healthSummary.retryCount,
+                rawError: rawError,
+                context: [
+                    "port": "\(AppConfig.enginePort)",
+                    "adoptedPID": adoptedPID.map(String.init) ?? ""
+                ]
+            )
+            record(issue, status: .retrying, notifyUser: false) { summary in
+                summary.pid = nil
+                summary.activeJobID = nil
+                summary.consecutiveHealthFailures = 0
+            }
+            forceTerminateForRecovery()
+            scheduleRestart(cause: issue)
+            return
+        }
+
+        let isStillStarting = queue.sync { state.status == .starting || state.status == .retrying }
+        if isStillStarting {
+            publish { summary in
+                summary.lastHealthCheckAt = Date()
+                summary.consecutiveHealthFailures += 1
+            }
+            return
+        }
+
         let failureCount = queue.sync { state.consecutiveHealthFailures + 1 }
         let status: EngineStatus = failureCount >= 3 ? .stalled : .degraded
         let issue = EngineIssue(
@@ -594,6 +631,10 @@ final class ProcessEngineSupervisor: EngineSupervising {
         proc.waitUntilExit()
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private func processExists(pid: Int32) -> Bool {
+        kill(pid, 0) == 0 || errno == EPERM
     }
 
     private func checkHealthSynchronously(timeout: TimeInterval) -> Bool {
