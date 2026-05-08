@@ -311,7 +311,15 @@ final class ProcessEngineSupervisor: EngineSupervising {
     }
 
     private func performHealthCheck() async {
-        guard isRunning else { return }
+        guard isRunning else {
+            let shouldRecover = queue.sync {
+                (state.status == .starting || state.status == .retrying) && restartTask == nil
+            }
+            if shouldRecover {
+                handleStartupProcessUnavailable(rawError: "The engine process is not running while startup is pending.")
+            }
+            return
+        }
         var request = URLRequest(url: AppConfig.serverBaseURL.appendingPathComponent("health"))
         request.httpMethod = "GET"
         request.timeoutInterval = timeoutPolicy.healthCheckTimeout
@@ -405,7 +413,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
 
     private func handleStartupDeadline() async {
         let shouldFail = queue.sync {
-            state.status == .starting && state.lastSuccessfulHealthCheckAt == nil && process?.isRunning == true
+            state.status == .starting && state.lastSuccessfulHealthCheckAt == nil
         }
         guard shouldFail else { return }
         let issue = EngineIssue(
@@ -418,6 +426,26 @@ final class ProcessEngineSupervisor: EngineSupervising {
             context: ["timeoutSeconds": "\(timeoutPolicy.startupTimeout)"]
         )
         record(issue, status: .timedOut)
+        forceTerminateForRecovery()
+        scheduleRestart(cause: issue)
+    }
+
+    private func handleStartupProcessUnavailable(rawError: String) {
+        let issue = EngineIssue(
+            code: "engine.startup-process-exited",
+            title: "Engine Startup Exited",
+            description: "The engine process exited before it became healthy.",
+            probableCause: "The Kokoro startup command failed, dependencies are missing, or the process was killed during clean-slate recovery.",
+            subsystem: "engine.lifecycle",
+            retryCount: healthSummary.retryCount,
+            rawError: rawError,
+            context: ["port": "\(AppConfig.enginePort)"]
+        )
+        record(issue, status: .retrying, notifyUser: false) { summary in
+            summary.pid = nil
+            summary.activeJobID = nil
+            summary.consecutiveHealthFailures = 0
+        }
         forceTerminateForRecovery()
         scheduleRestart(cause: issue)
     }
