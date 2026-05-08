@@ -14,7 +14,9 @@ struct AlkiSpeakApp: App {
     @StateObject private var model: AppModel
 
     init() {
-        let m = AppModel()
+        let store = AppStore()
+        let dependencies = AppDependencies.live()
+        let m = AppModel(store: store, dependencies: dependencies)
         _model = StateObject(wrappedValue: m)
         appDelegate.model = m
     }

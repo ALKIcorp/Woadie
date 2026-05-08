@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 struct SpeechLogItemView: View {
-    let entry: AppModel.ChatItem
+    let entry: SavedLogEntry
     let isPlaying: Bool
     let onReplay: () -> Void
     @State private var isHovered = false

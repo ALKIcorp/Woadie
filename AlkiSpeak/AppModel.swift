@@ -1,72 +1,30 @@
+import Combine
 import Foundation
-import AVFoundation
-import SwiftUI
-
-enum EngineStatus: String {
-    case off
-    case warmingUp
-    case on
-    case error
-
-    var label: String {
-        switch self {
-        case .off: return "OFF"
-        case .warmingUp: return "WARMING UP"
-        case .on: return "ON"
-        case .error: return "ERROR"
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .off: return .secondary
-        case .warmingUp: return .orange
-        case .on: return .green
-        case .error: return .red
-        }
-    }
-}
-
-enum AppConfig {
-    static let kokoroPath = "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro"
-    static let serverBaseURL = URL(string: "http://127.0.0.1:7777")!
-    static let defaultVoice = "af_heart"
-    static let defaultRate = 24000
-    static let healthTimeoutSeconds: TimeInterval = 20
-}
 
 @MainActor
-final class AppModel: NSObject, ObservableObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate {
-    struct ChatItem: Identifiable {
-        let id = UUID()
-        let text: String
-        let timestamp: Date
-        let isUser: Bool
+final class AppModel: ObservableObject {
+    let store: AppStore
+    private let dependencies: AppDependencies
+    private var cancellables: Set<AnyCancellable> = []
+
+    var status: EngineStatus { store.engineStatus }
+    var voiceOptions: [VoiceOption] { store.voiceOptions }
+    var inputText: String {
+        get { store.composerText }
+        set { store.composerText = newValue }
     }
-
-    struct VoiceOption: Identifiable, Hashable {
-        let id: String
-        let label: String
-        let isLocal: Bool
+    var selectedVoice: String {
+        get { store.selectedVoiceID }
+        set { store.selectedVoiceID = newValue }
     }
-
-    @Published var status: EngineStatus = .off
-    @Published var voiceOptions: [VoiceOption] = []
-    @Published var selectedVoice: String = AppConfig.defaultVoice
-    @Published var inputText: String = ""
-    @Published var lastLatencyMs: Int? = nil
-    @Published var lastCharCount: Int? = nil
-    @Published var message: String = ""
-    @Published var chatItems: [ChatItem] = []
-    @Published var playingId: UUID? = nil
-    @Published var showPortInUseAlert: Bool = false
-    @Published var portInUsePids: [Int32] = []
-
-    private var process: Process?
-    private var audioPlayer: AVAudioPlayer?
-    private let speechSynthesizer = AVSpeechSynthesizer()
-    private var isStopping = false
-    private var localVoiceLookup: [String: AVSpeechSynthesisVoice] = [:]
+    var message: String { store.userMessage }
+    var chatItems: [SavedLogEntry] { store.savedLogEntries }
+    var playingId: UUID? { store.playback.activeLogEntryID }
+    var showPortInUseAlert: Bool {
+        get { store.showPortInUseAlert }
+        set { store.showPortInUseAlert = newValue }
+    }
+    var portInUsePids: [Int32] { store.portInUsePids }
 
     var canSpeak: Bool {
         let hasText = !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -78,7 +36,7 @@ final class AppModel: NSObject, ObservableObject, AVAudioPlayerDelegate, AVSpeec
     }
 
     var isEngineRunning: Bool {
-        process != nil
+        dependencies.engineSupervisor.isRunning
     }
 
     var startStopLabel: String {
@@ -90,17 +48,17 @@ final class AppModel: NSObject, ObservableObject, AVAudioPlayerDelegate, AVSpeec
     }
 
     var lastLatencyMsText: String {
-        if let lastLatencyMs {
+        if let lastLatencyMs = store.dashboardTelemetry.lastLatencyMs {
             return "\(lastLatencyMs) ms"
         }
-        return "—"
+        return "-"
     }
 
     var lastCharCountText: String {
-        if let lastCharCount {
+        if let lastCharCount = store.dashboardTelemetry.lastCharCount {
             return "\(lastCharCount)"
         }
-        return "—"
+        return "-"
     }
 
     var selectedVoiceLabel: String {
@@ -124,76 +82,62 @@ final class AppModel: NSObject, ObservableObject, AVAudioPlayerDelegate, AVSpeec
         selectedVoice.hasPrefix("apple:")
     }
 
-    override init() {
-        super.init()
-        loadLocalVoices()
-        mergeVoiceOptions(remote: [])
-        speechSynthesizer.delegate = self
+    init(store: AppStore, dependencies: AppDependencies) {
+        self.store = store
+        self.dependencies = dependencies
+
+        store.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        wireServiceCallbacks()
+        loadWorkspace()
+        refreshLocalVoices()
         Task { await syncEngineStatusOnLaunch() }
     }
 
     func startEngine() {
-        guard process == nil else { return }
-        message = ""
-        status = .warmingUp
+        guard !dependencies.engineSupervisor.isRunning else { return }
+        store.clearErrorMessage()
+        store.engineStatus = .warmingUp
 
-        let pids = findListeningPidsOnPort()
+        let pids = dependencies.engineSupervisor.findListeningPidsOnEnginePort()
         if !pids.isEmpty {
-            status = .off
-            message = "Port 7777 is already in use."
-            portInUsePids = pids
-            showPortInUseAlert = true
+            store.engineStatus = .off
+            store.userMessage = "Port \(AppConfig.enginePort) is already in use."
+            store.portInUsePids = pids
+            store.showPortInUseAlert = true
             return
         }
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        proc.arguments = [
-            "-lc",
-            "cd \"\(AppConfig.kokoroPath)\"; source .venv/bin/activate; uvicorn kokoro_server:app --host 127.0.0.1 --port 7777"
-        ]
-        let stderrPipe = Pipe()
-        proc.standardError = stderrPipe
-
-        proc.terminationHandler = { [weak self] process in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if self.isStopping {
-                    self.isStopping = false
-                    self.process = nil
-                    self.status = .off
-                    self.playingId = nil
-                    return
-                }
-                self.process = nil
-                self.status = .error
-                self.playingId = nil
-                self.message = "Engine stopped unexpectedly (code \(process.terminationStatus))."
-            }
-        }
-
         do {
-            try proc.run()
-            process = proc
+            try dependencies.engineSupervisor.start()
+            refreshTelemetry()
             Task { await waitForHealth() }
         } catch {
-            status = .error
-            message = "Failed to start engine: \(error.localizedDescription)"
+            record(
+                .engine(
+                    code: "start-failed",
+                    title: "Engine Start Failed",
+                    message: "Failed to start the speech engine.",
+                    recoverySuggestion: "Verify the Kokoro checkout and virtual environment path, then try again.",
+                    underlyingError: error
+                )
+            )
+            store.engineStatus = .error
         }
     }
 
     func stopEngine() {
-        guard let process else { return }
-        isStopping = true
-        message = ""
-        status = .off
+        store.clearErrorMessage()
         stopPlayback()
-        process.terminate()
-        self.process = nil
+        dependencies.engineSupervisor.stop()
+        store.engineStatus = .off
+        refreshTelemetry()
     }
 
     func toggleEngine() {
-        if isEngineRunning {
+        if dependencies.engineSupervisor.isRunning {
             stopEngine()
         } else {
             startEngine()
@@ -202,274 +146,315 @@ final class AppModel: NSObject, ObservableObject, AVAudioPlayerDelegate, AVSpeec
 
     func refreshVoices() {
         Task {
-            loadLocalVoices()
+            refreshLocalVoices()
             await fetchVoices()
         }
     }
 
     func speak() {
-        speak(text: inputText, addToHistory: true, targetId: nil)
+        speak(text: inputText, addToHistory: true, targetLogEntryID: nil)
     }
 
-    func replay(item: ChatItem) {
-        speak(text: item.text, addToHistory: false, targetId: item.id)
+    func replay(item: SavedLogEntry) {
+        speak(text: item.text, addToHistory: false, targetLogEntryID: item.id)
     }
 
     func stopPlayback() {
-        audioPlayer?.stop()
-        audioPlayer = nil
-        speechSynthesizer.stopSpeaking(at: .immediate)
-        playingId = nil
+        dependencies.playbackCoordinator.stop()
+        dependencies.localSpeechService.stop()
+        store.playback = .idle
+        markActiveJobsCompleted()
     }
 
-    private func speak(text: String, addToHistory: Bool, targetId: UUID?) {
+    func confirmPortSwitchAndStart() {
+        Task {
+            await dependencies.engineSupervisor.terminatePortUsers(store.portInUsePids)
+            store.portInUsePids = []
+            store.showPortInUseAlert = false
+            startEngine()
+        }
+    }
+
+    private func speak(text: String, addToHistory: Bool, targetLogEntryID: UUID?) {
         guard canSpeak else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        message = ""
+        store.clearErrorMessage()
 
-        let id: UUID
+        let segment = SpeechSegment(index: 0, text: trimmed)
+        let logEntryID: UUID
+        let jobID = UUID()
+
         if addToHistory {
-            let item = ChatItem(text: trimmed, timestamp: Date(), isUser: true)
-            chatItems.insert(item, at: 0)
-            id = item.id
-        } else if let targetId {
-            id = targetId
+            let entry = SavedLogEntry(id: UUID(), text: trimmed, isUser: true, jobID: jobID, segments: [segment])
+            store.savedLogEntries.insert(entry, at: 0)
+            try? dependencies.logStore.saveLog(entry, workspaceID: store.activeWorkspace.id)
+            logEntryID = entry.id
+        } else if let targetLogEntryID {
+            logEntryID = targetLogEntryID
         } else {
-            id = UUID()
+            logEntryID = UUID()
         }
 
-        playingId = id
+        let job = SpeechJob(
+            id: jobID,
+            text: trimmed,
+            voiceID: selectedVoice,
+            segments: [segment],
+            status: .generating,
+            logEntryID: logEntryID
+        )
+        store.speechJobs.insert(job, at: 0)
+        store.playback = PlaybackSnapshot(
+            state: .preparing,
+            activeJobID: job.id,
+            activeLogEntryID: logEntryID,
+            currentSegmentID: segment.id,
+            elapsedTime: 0,
+            duration: nil
+        )
 
         Task {
             if isSelectedVoiceLocal {
-                speakLocal(text: trimmed)
+                speakLocal(text: trimmed, jobID: job.id, logEntryID: logEntryID)
                 return
             }
-            do {
-                let data = try await postSpeak(text: trimmed, voice: selectedVoice)
-                try playAudio(data: data)
-            } catch {
-                status = .error
-                playingId = nil
-                message = "Speak failed: \(error.localizedDescription)"
-            }
+            await speakRemote(text: trimmed, voice: selectedVoice, jobID: job.id, logEntryID: logEntryID)
+        }
+    }
+
+    private func speakRemote(text: String, voice: String, jobID: UUID, logEntryID: UUID) async {
+        do {
+            let result = try await dependencies.generationService.synthesize(text: text, voice: voice)
+            store.dashboardTelemetry.lastLatencyMs = result.latencyMs
+            store.dashboardTelemetry.lastCharCount = result.charCount
+            updateJob(jobID, status: .playing, error: nil)
+            store.playback.state = .playing
+            try dependencies.playbackCoordinator.play(audioData: result.audioData)
+        } catch {
+            let appError = normalizeGenerationError(error)
+            failPlayback(jobID: jobID, logEntryID: logEntryID, error: appError)
+        }
+    }
+
+    private func speakLocal(text: String, jobID: UUID, logEntryID: UUID) {
+        do {
+            updateJob(jobID, status: .playing, error: nil)
+            store.playback.state = .playing
+            try dependencies.localSpeechService.speak(text: text, voiceID: selectedVoice)
+        } catch {
+            failPlayback(jobID: jobID, logEntryID: logEntryID, error: normalizePlaybackError(error))
         }
     }
 
     private func waitForHealth() async {
         let deadline = Date().addingTimeInterval(AppConfig.healthTimeoutSeconds)
         while Date() < deadline {
-            if await checkHealth() {
-                status = .on
-                message = ""
+            if await dependencies.generationService.checkHealth() {
+                store.engineStatus = .on
+                store.clearErrorMessage()
                 await fetchVoices()
+                refreshTelemetry()
                 return
             }
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
-        status = .error
-        message = "Engine health check timed out."
-    }
-
-    private func checkHealth() async -> Bool {
-        var req = URLRequest(url: AppConfig.serverBaseURL.appendingPathComponent("health"))
-        req.httpMethod = "GET"
-        do {
-            let (data, response) = try await URLSession.shared.data(for: req)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return false }
-            let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            return (obj?["ok"] as? Bool) == true
-        } catch {
-            return false
-        }
+        record(
+            .engine(
+                code: "health-timeout",
+                title: "Engine Timeout",
+                message: "Engine health check timed out.",
+                recoverySuggestion: "Stop the engine, confirm the Kokoro server can start manually, and try again."
+            )
+        )
+        store.engineStatus = .error
     }
 
     private func syncEngineStatusOnLaunch() async {
-        if await checkHealth() {
-            status = .on
-            message = ""
+        if await dependencies.generationService.checkHealth() {
+            store.engineStatus = .on
+            store.clearErrorMessage()
             await fetchVoices()
         } else {
-            status = .off
+            store.engineStatus = .off
         }
+        refreshTelemetry()
     }
 
     private func fetchVoices() async {
-        var req = URLRequest(url: AppConfig.serverBaseURL.appendingPathComponent("voices"))
-        req.httpMethod = "GET"
         do {
-            let (data, response) = try await URLSession.shared.data(for: req)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                message = "Failed to fetch voices."
-                return
+            let remote = try await dependencies.generationService.fetchVoices()
+            if remote.isEmpty {
+                store.userMessage = "Voice list empty. Using last voice."
             }
-            let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            let voices = obj?["voices"] as? [String] ?? []
-            if voices.isEmpty {
-                message = "Voice list empty. Using last voice."
-                return
-            }
-            mergeVoiceOptions(remote: voices)
+            mergeVoiceOptions(remote: remote)
         } catch {
-            message = "Failed to fetch voices: \(error.localizedDescription)"
+            record(normalizeEngineError(error))
         }
     }
 
-    private func postSpeak(text: String, voice: String) async throws -> Data {
-        var req = URLRequest(url: AppConfig.serverBaseURL.appendingPathComponent("speak"))
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let payload: [String: Any] = [
-            "text": text,
-            "voice": voice,
-            "rate": AppConfig.defaultRate
-        ]
-        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
-
-        let (data, response) = try await URLSession.shared.data(for: req)
-        guard let http = response as? HTTPURLResponse else {
-            throw NSError(domain: "AlkiSpeak", code: -1, userInfo: [NSLocalizedDescriptionKey: "No HTTP response"]) 
-        }
-        if let msString = http.value(forHTTPHeaderField: "X-Gen-ms"), let ms = Int(msString) {
-            lastLatencyMs = ms
-        }
-        if let countString = http.value(forHTTPHeaderField: "X-Char-Count"), let count = Int(countString) {
-            lastCharCount = count
-        }
-        guard http.statusCode == 200 else {
-            throw NSError(domain: "AlkiSpeak", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server returned \(http.statusCode)"]) 
-        }
-        return data
-    }
-
-    private func playAudio(data: Data) throws {
-        audioPlayer = try AVAudioPlayer(data: data)
-        audioPlayer?.delegate = self
-        audioPlayer?.prepareToPlay()
-        audioPlayer?.play()
-    }
-
-    private func loadLocalVoices() {
-        let voices = AVSpeechSynthesisVoice.speechVoices()
-        localVoiceLookup = Dictionary(uniqueKeysWithValues: voices.map { ($0.identifier, $0) })
+    private func refreshLocalVoices() {
+        dependencies.localSpeechService.refreshVoices()
+        mergeVoiceOptions(remote: store.voiceOptions.filter { !$0.isLocal }.map(\.id))
     }
 
     private func mergeVoiceOptions(remote: [String]) {
-        let localOptions = localVoiceLookup.values
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            .map { voice in
-                let label = "Apple - \(voice.name) [\(voice.language)]"
-                return VoiceOption(
-                    id: "apple:\(voice.identifier)",
-                    label: label,
-                    isLocal: true
-                )
-            }
         let remoteOptions = remote.map { name in
             VoiceOption(id: name, label: "Kokoro - \(name)", isLocal: false)
         }
-        voiceOptions = localOptions + remoteOptions
-        if !voiceOptions.contains(where: { $0.id == selectedVoice }) {
-            if let first = voiceOptions.first {
-                selectedVoice = first.id
-            } else {
-                selectedVoice = AppConfig.defaultVoice
+        store.voiceOptions = dependencies.localSpeechService.voiceOptions + remoteOptions
+        if !store.voiceOptions.contains(where: { $0.id == selectedVoice }) {
+            selectedVoice = store.voiceOptions.first?.id ?? AppConfig.defaultVoice
+        }
+        saveWorkspace()
+    }
+
+    private func wireServiceCallbacks() {
+        if let engine = dependencies.engineSupervisor as? ProcessEngineSupervisor {
+            engine.onUnexpectedTermination = { [weak self] statusCode in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.store.engineStatus = .error
+                    self.store.playback = .idle
+                    self.record(
+                        .engine(
+                            code: "unexpected-stop",
+                            title: "Engine Stopped",
+                            message: "Engine stopped unexpectedly with code \(statusCode).",
+                            recoverySuggestion: "Start the engine again. If it stops repeatedly, inspect the Kokoro server logs.",
+                            context: ["terminationStatus": "\(statusCode)"]
+                        )
+                    )
+                }
+            }
+        }
+
+        if let playback = dependencies.playbackCoordinator as? AVAudioPlaybackCoordinator {
+            playback.onFinished = { [weak self] in
+                self?.finishPlayback()
+            }
+        }
+
+        if let localSpeech = dependencies.localSpeechService as? AppleSpeechService {
+            localSpeech.onFinished = { [weak self] in
+                self?.finishPlayback()
             }
         }
     }
 
-    private func speakLocal(text: String) {
-        let identifier = selectedVoice.replacingOccurrences(of: "apple:", with: "")
-        guard let voice = AVSpeechSynthesisVoice(identifier: identifier) ?? localVoiceLookup[identifier] else {
-            message = "Selected Apple voice not available."
-            playingId = nil
-            return
-        }
-
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = voice
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
-        speechSynthesizer.speak(utterance)
+    private func finishPlayback() {
+        markActiveJobsCompleted()
+        store.playback = .idle
+        store.dashboardTelemetry.generatedJobCount += 1
     }
 
-    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        Task { @MainActor in
-            self.playingId = nil
-        }
+    private func failPlayback(jobID: UUID, logEntryID: UUID, error: AlkiSpeakError) {
+        updateJob(jobID, status: .failed, error: error)
+        store.playback = PlaybackSnapshot(
+            state: .failed,
+            activeJobID: jobID,
+            activeLogEntryID: logEntryID,
+            currentSegmentID: nil,
+            elapsedTime: 0,
+            duration: nil
+        )
+        store.dashboardTelemetry.failedJobCount += 1
+        record(error)
     }
 
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            self.playingId = nil
-        }
+    private func markActiveJobsCompleted() {
+        guard let jobID = store.playback.activeJobID else { return }
+        updateJob(jobID, status: .completed, error: nil)
     }
 
-    func confirmPortSwitchAndStart() {
-        Task {
-            await terminatePortUsers()
-            startEngine()
-        }
+    private func updateJob(_ jobID: UUID, status: SpeechJob.Status, error: AlkiSpeakError?) {
+        guard let index = store.speechJobs.firstIndex(where: { $0.id == jobID }) else { return }
+        store.speechJobs[index].status = status
+        store.speechJobs[index].updatedAt = Date()
+        store.speechJobs[index].error = error
     }
 
-    private func findListeningPidsOnPort() -> [Int32] {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        proc.arguments = [
-            "-tiTCP:7777",
-            "-sTCP:LISTEN"
-        ]
+    private func record(_ error: AlkiSpeakError) {
+        store.record(error)
+    }
 
-        let outPipe = Pipe()
-        proc.standardOutput = outPipe
+    private func normalizeEngineError(_ error: Error) -> AlkiSpeakError {
+        if let appError = error as? AlkiSpeakError { return appError }
+        return .engine(
+            code: "unknown",
+            title: "Engine Error",
+            message: error.localizedDescription,
+            recoverySuggestion: "Retry the operation or restart the engine.",
+            underlyingError: error
+        )
+    }
 
+    private func normalizeGenerationError(_ error: Error) -> AlkiSpeakError {
+        if let appError = error as? AlkiSpeakError { return appError }
+        return .generation(
+            code: "unknown",
+            title: "Speech Failed",
+            message: "Speak failed: \(error.localizedDescription)",
+            recoverySuggestion: "Check the selected voice and try again.",
+            underlyingError: error
+        )
+    }
+
+    private func normalizePlaybackError(_ error: Error) -> AlkiSpeakError {
+        if let appError = error as? AlkiSpeakError { return appError }
+        return .playback(
+            code: "unknown",
+            title: "Playback Failed",
+            message: error.localizedDescription,
+            recoverySuggestion: "Try generating the speech again.",
+            underlyingError: error
+        )
+    }
+
+    private func refreshTelemetry() {
+        store.dashboardTelemetry.resourceSnapshot = dependencies.telemetryService.capture(
+            engineProcessID: dependencies.engineSupervisor.processIdentifier
+        )
+    }
+
+    private func loadWorkspace() {
         do {
-            try proc.run()
-        } catch {
-            return []
-        }
-
-        proc.waitUntilExit()
-        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else { return [] }
-        return output
-            .split(whereSeparator: \.isNewline)
-            .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-    }
-
-    private func terminatePortUsers() async {
-        let pids = portInUsePids
-        guard !pids.isEmpty else { return }
-
-        // Try graceful shutdown first.
-        _ = runKill(signal: "-TERM", pids: pids)
-
-        let deadline = Date().addingTimeInterval(2.0)
-        while Date() < deadline {
-            if findListeningPidsOnPort().isEmpty {
-                portInUsePids = []
-                return
+            if let workspace = try dependencies.workspaceStore.loadActiveWorkspace() {
+                store.activeWorkspace = workspace
             }
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            store.savedLogEntries = try dependencies.logStore.loadLogs(for: store.activeWorkspace.id)
+        } catch {
+            record(
+                AlkiSpeakError(
+                    code: "persistence.workspace.load",
+                    title: "Workspace Load Failed",
+                    message: "The active workspace could not be loaded.",
+                    recoverySuggestion: "Continue with the default workspace or restart the app.",
+                    underlyingError: error
+                )
+            )
         }
-
-        // Force kill if still listening.
-        _ = runKill(signal: "-KILL", pids: pids)
-        portInUsePids = []
     }
 
-    private func runKill(signal: String, pids: [Int32]) -> Bool {
-        guard !pids.isEmpty else { return true }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/kill")
-        proc.arguments = [signal] + pids.map { String($0) }
+    private func saveWorkspace() {
         do {
-            try proc.run()
-            proc.waitUntilExit()
-            return proc.terminationStatus == 0
+            try dependencies.workspaceStore.saveActiveWorkspace(store.activeWorkspace)
+            store.persistence.lastSavedAt = Date()
         } catch {
-            return false
+            let appError = AlkiSpeakError(
+                code: "persistence.workspace.save",
+                title: "Workspace Save Failed",
+                message: "The active workspace could not be saved.",
+                recoverySuggestion: "Check local app storage permissions and try again.",
+                underlyingError: error
+            )
+            store.persistence = PersistenceSnapshot(
+                state: .failed,
+                lastSavedAt: store.persistence.lastSavedAt,
+                lastExportURL: store.persistence.lastExportURL,
+                error: appError
+            )
+            record(appError)
         }
     }
 }

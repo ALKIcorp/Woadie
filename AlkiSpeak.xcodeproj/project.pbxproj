@@ -26,6 +26,17 @@
 		A1000011 /* SpeechLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000013 /* SpeechLogView.swift */; };
 		A1000012 /* SpeechLogItemView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000014 /* SpeechLogItemView.swift */; };
 		A1000013 /* WoadieFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000015 /* WoadieFooter.swift */; };
+		A1000014 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000016 /* AppConfig.swift */; };
+		A1000015 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000017 /* AppStore.swift */; };
+		A1000016 /* AppDependencies.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000018 /* AppDependencies.swift */; };
+		A1000017 /* DomainModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000019 /* DomainModels.swift */; };
+		A1000018 /* AlkiSpeakError.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001A /* AlkiSpeakError.swift */; };
+		A1000019 /* ServiceProtocols.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001B /* ServiceProtocols.swift */; };
+		A100001A /* EngineServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001C /* EngineServices.swift */; };
+		A100001B /* AudioServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001D /* AudioServices.swift */; };
+		A100001C /* PersistenceProtocols.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001E /* PersistenceProtocols.swift */; };
+		A100001D /* LocalPersistenceServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001F /* LocalPersistenceServices.swift */; };
+		A100001E /* VisualCompatibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000020 /* VisualCompatibility.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -50,6 +61,17 @@
 		A2000013 /* SpeechLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechLogView.swift; sourceTree = "<group>"; };
 		A2000014 /* SpeechLogItemView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechLogItemView.swift; sourceTree = "<group>"; };
 		A2000015 /* WoadieFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieFooter.swift; sourceTree = "<group>"; };
+		A2000016 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
+		A2000017 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
+		A2000018 /* AppDependencies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDependencies.swift; sourceTree = "<group>"; };
+		A2000019 /* DomainModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainModels.swift; sourceTree = "<group>"; };
+		A200001A /* AlkiSpeakError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlkiSpeakError.swift; sourceTree = "<group>"; };
+		A200001B /* ServiceProtocols.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceProtocols.swift; sourceTree = "<group>"; };
+		A200001C /* EngineServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineServices.swift; sourceTree = "<group>"; };
+		A200001D /* AudioServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioServices.swift; sourceTree = "<group>"; };
+		A200001E /* PersistenceProtocols.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceProtocols.swift; sourceTree = "<group>"; };
+		A200001F /* LocalPersistenceServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPersistenceServices.swift; sourceTree = "<group>"; };
+		A2000020 /* VisualCompatibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualCompatibility.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -76,8 +98,13 @@
 			children = (
 				A2000001 /* AlkiSpeakApp.swift */,
 				A2000003 /* AppModel.swift */,
+				A3000007 /* App */,
+				A3000008 /* Models */,
+				A3000009 /* Services */,
+				A300000A /* Persistence */,
 				A3000003 /* Views */,
 				A3000004 /* Theme */,
+				A300000B /* UI */,
 				A2000004 /* Assets.xcassets */,
 				A2000005 /* Info.plist */,
 			);
@@ -128,6 +155,52 @@
 				A2000015 /* WoadieFooter.swift */,
 			);
 			path = Sections;
+			sourceTree = "<group>";
+		};
+		A3000007 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				A2000016 /* AppConfig.swift */,
+				A2000017 /* AppStore.swift */,
+				A2000018 /* AppDependencies.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		A3000008 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A2000019 /* DomainModels.swift */,
+				A200001A /* AlkiSpeakError.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		A3000009 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				A200001B /* ServiceProtocols.swift */,
+				A200001C /* EngineServices.swift */,
+				A200001D /* AudioServices.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		A300000A /* Persistence */ = {
+			isa = PBXGroup;
+			children = (
+				A200001E /* PersistenceProtocols.swift */,
+				A200001F /* LocalPersistenceServices.swift */,
+			);
+			path = Persistence;
+			sourceTree = "<group>";
+		};
+		A300000B /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				A2000020 /* VisualCompatibility.swift */,
+			);
+			path = UI;
 			sourceTree = "<group>";
 		};
 		A3000002 /* Products */ = {
@@ -224,6 +297,17 @@
 				A1000011 /* SpeechLogView.swift in Sources */,
 				A1000012 /* SpeechLogItemView.swift in Sources */,
 				A1000013 /* WoadieFooter.swift in Sources */,
+				A1000014 /* AppConfig.swift in Sources */,
+				A1000015 /* AppStore.swift in Sources */,
+				A1000016 /* AppDependencies.swift in Sources */,
+				A1000017 /* DomainModels.swift in Sources */,
+				A1000018 /* AlkiSpeakError.swift in Sources */,
+				A1000019 /* ServiceProtocols.swift in Sources */,
+				A100001A /* EngineServices.swift in Sources */,
+				A100001B /* AudioServices.swift in Sources */,
+				A100001C /* PersistenceProtocols.swift in Sources */,
+				A100001D /* LocalPersistenceServices.swift in Sources */,
+				A100001E /* VisualCompatibility.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -38,7 +38,10 @@ struct ContentView: View {
         .frame(minWidth: 820, minHeight: 720)
         .preferredColorScheme(.dark)
         .tint(WoadieTheme.primary)
-        .alert("Port In Use", isPresented: $model.showPortInUseAlert) {
+        .alert("Port In Use", isPresented: Binding(
+            get: { model.showPortInUseAlert },
+            set: { model.showPortInUseAlert = $0 }
+        )) {
             Button("Switch and Start") {
                 model.confirmPortSwitchAndStart()
             }
@@ -49,7 +52,11 @@ struct ContentView: View {
     }
 }
 
-#Preview {
-    ContentView()
-        .environmentObject(AppModel())
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        let store = AppStore()
+        let dependencies = AppDependencies.live()
+        ContentView()
+            .environmentObject(AppModel(store: store, dependencies: dependencies))
+    }
 }

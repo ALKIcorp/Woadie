@@ -3,7 +3,7 @@ import SwiftUI
 struct VoicePickerView: View {
     @Binding var selection: String
     let selectedLabel: String
-    let categories: [(title: String, voices: [AppModel.VoiceOption])]
+    let categories: [(title: String, voices: [VoiceOption])]
 
     var body: some View {
         HStack(spacing: 10) {

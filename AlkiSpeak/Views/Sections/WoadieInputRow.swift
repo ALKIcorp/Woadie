@@ -6,7 +6,10 @@ struct WoadieInputRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             WoadieTextEditor(
-                text: $model.inputText,
+                text: Binding(
+                    get: { model.inputText },
+                    set: { model.inputText = $0 }
+                ),
                 placeholder: "Enter text to speak...",
                 isDisabled: !model.canEditText
             )

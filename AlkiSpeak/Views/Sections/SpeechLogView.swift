@@ -1,9 +1,9 @@
 import SwiftUI
 
 struct SpeechLogView: View {
-    let entries: [AppModel.ChatItem]
+    let entries: [SavedLogEntry]
     let playingId: UUID?
-    let onReplay: (AppModel.ChatItem) -> Void
+    let onReplay: (SavedLogEntry) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
