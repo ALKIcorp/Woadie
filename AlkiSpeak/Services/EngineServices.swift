@@ -188,20 +188,19 @@ final class ProcessEngineSupervisor: EngineSupervising {
         let alreadyRunning = queue.sync { process?.isRunning == true || adoptedProcessIdentifier != nil || state.status == .starting }
         guard !alreadyRunning else { return }
 
+        if resetRetryCount {
+            establishCleanSlate()
+        }
+
         let portUsers = findListeningPidsOnEnginePort()
         if !portUsers.isEmpty {
-            if canAdoptRunningEngine(portUsers: portUsers) {
-                adoptExistingEngine(portUsers: portUsers, resetRetryCount: resetRetryCount)
-                return
-            }
-
             if isLikelyRecoverableEngineOwner(portUsers: portUsers) {
                 record(
                     EngineIssue(
                         code: "engine.reclaiming-orphan",
-                        title: "Reclaiming Previous Engine",
+                        title: "Clearing Previous Engine",
                         description: "A previous local engine was still bound to port \(AppConfig.enginePort) after the app quit.",
-                        probableCause: "The app was force quit, so macOS did not deliver the normal termination callback.",
+                        probableCause: "The app was force quit, so macOS did not deliver the normal termination callback. The supervisor is clearing it before launch.",
                         subsystem: "engine.lifecycle",
                         context: ["port": "\(AppConfig.enginePort)", "pids": portUsers.map(String.init).joined(separator: ",")]
                     ),
@@ -500,6 +499,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
             guard let self else { return }
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             do {
+                self.establishCleanSlate()
                 try self.launchProcess(resetRetryCount: false)
             } catch {
                 let issue = EngineIssue(
@@ -605,14 +605,85 @@ final class ProcessEngineSupervisor: EngineSupervising {
         _ = runKill(signal: "-KILL", pids: pids)
     }
 
+    private func establishCleanSlate() {
+        let pids = recoverableEngineProcessIDs()
+        guard !pids.isEmpty else { return }
+
+        logger.info("Establishing clean engine slate pids=\(pids.map(String.init).joined(separator: ","), privacy: .public)")
+        _ = runKill(signal: "-TERM", pids: pids)
+        let deadline = Date().addingTimeInterval(3.0)
+        while Date() < deadline {
+            if recoverableEngineProcessIDs().isEmpty && findListeningPidsOnEnginePort().isEmpty {
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+
+        let remaining = recoverableEngineProcessIDs()
+        if !remaining.isEmpty {
+            _ = runKill(signal: "-KILL", pids: remaining)
+        }
+
+        queue.sync {
+            process = nil
+            adoptedProcessIdentifier = nil
+            isStopping = false
+            state.pid = nil
+            state.activeJobID = nil
+            state.consecutiveHealthFailures = 0
+        }
+    }
+
+    private func recoverableEngineProcessIDs() -> [Int32] {
+        let currentPID = getpid()
+        var pids = Set(
+            findListeningPidsOnEnginePort().filter { pid in
+                pid != currentPID && isRecoverableEngineCommand(processCommandLine(for: pid))
+            }
+        )
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/ps")
+        proc.arguments = ["ax", "-o", "pid=,command="]
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+
+        do {
+            try proc.run()
+        } catch {
+            return Array(pids)
+        }
+
+        proc.waitUntilExit()
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else { return Array(pids) }
+
+        for line in output.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let firstSpace = trimmed.firstIndex(where: \.isWhitespace) else { continue }
+            let pidText = trimmed[..<firstSpace]
+            let command = trimmed[firstSpace...].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let pid = Int32(pidText), pid != currentPID else { continue }
+            if isRecoverableEngineCommand(command) {
+                pids.insert(pid)
+            }
+        }
+
+        return Array(pids)
+    }
+
     private func isLikelyRecoverableEngineOwner(portUsers: [Int32]) -> Bool {
         portUsers.contains { pid in
-            let command = processCommandLine(for: pid).lowercased()
-            return command.contains("kokoro_server")
-                || command.contains("uvicorn")
-                || command.contains(AppConfig.kokoroPath.lowercased())
-                || command.contains("kokoro")
+            isRecoverableEngineCommand(processCommandLine(for: pid))
         }
+    }
+
+    private func isRecoverableEngineCommand(_ command: String) -> Bool {
+        let lowercased = command.lowercased()
+        let kokoroPath = AppConfig.kokoroPath.lowercased()
+        return lowercased.contains("kokoro_server")
+            || (lowercased.contains("uvicorn") && lowercased.contains("kokoro"))
+            || (lowercased.contains(kokoroPath) && lowercased.contains("python"))
     }
 
     private func processCommandLine(for pid: Int32) -> String {
