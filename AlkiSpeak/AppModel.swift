@@ -5,6 +5,7 @@ import Foundation
 final class AppModel: ObservableObject {
     let store: AppStore
     private let dependencies: AppDependencies
+    private let requestPolicy = EngineRequestPolicy.live
     private var cancellables: Set<AnyCancellable> = []
 
     var status: EngineStatus { store.engineStatus }
@@ -18,6 +19,10 @@ final class AppModel: ObservableObject {
         set { store.selectedVoiceID = newValue }
     }
     var message: String { store.userMessage }
+    var engineCheckMessage: String? {
+        guard let issue = store.engineHealth.latestIssue else { return nil }
+        return "\(issue.title): \(issue.description) Probable cause: \(issue.probableCause)"
+    }
     var chatItems: [SavedLogEntry] { store.savedLogEntries }
     var playingId: UUID? { store.playback.activeLogEntryID }
     var showPortInUseAlert: Bool {
@@ -28,11 +33,11 @@ final class AppModel: ObservableObject {
 
     var canSpeak: Bool {
         let hasText = !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return hasText && (status == .on || isSelectedVoiceLocal)
+        return hasText && (status.isAvailableForRemoteSpeech || isSelectedVoiceLocal)
     }
 
     var canEditText: Bool {
-        status == .on || isSelectedVoiceLocal
+        status.isAvailableForRemoteSpeech || isSelectedVoiceLocal
     }
 
     var isEngineRunning: Bool {
@@ -40,11 +45,11 @@ final class AppModel: ObservableObject {
     }
 
     var startStopLabel: String {
-        status == .on || status == .warmingUp ? "Stop Engine" : "Start Engine"
+        status.isProcessExpectedAlive ? "Stop Engine" : "Start Engine"
     }
 
     var startStopSystemImage: String {
-        status == .on || status == .warmingUp ? "stop.fill" : "power"
+        status.isProcessExpectedAlive ? "stop.fill" : "power"
     }
 
     var lastLatencyMsText: String {
@@ -93,17 +98,19 @@ final class AppModel: ObservableObject {
         wireServiceCallbacks()
         loadWorkspace()
         refreshLocalVoices()
-        Task { await syncEngineStatusOnLaunch() }
+        if !AppConfig.isRunningUnitTests {
+            Task { await bootstrapEngine() }
+        }
     }
 
     func startEngine() {
         guard !dependencies.engineSupervisor.isRunning else { return }
         store.clearErrorMessage()
-        store.engineStatus = .warmingUp
+        store.engineStatus = .starting
 
         let pids = dependencies.engineSupervisor.findListeningPidsOnEnginePort()
         if !pids.isEmpty {
-            store.engineStatus = .off
+            store.engineStatus = .stopped
             store.userMessage = "Port \(AppConfig.enginePort) is already in use."
             store.portInUsePids = pids
             store.showPortInUseAlert = true
@@ -113,7 +120,6 @@ final class AppModel: ObservableObject {
         do {
             try dependencies.engineSupervisor.start()
             refreshTelemetry()
-            Task { await waitForHealth() }
         } catch {
             record(
                 .engine(
@@ -124,7 +130,7 @@ final class AppModel: ObservableObject {
                     underlyingError: error
                 )
             )
-            store.engineStatus = .error
+            store.engineStatus = .failed
         }
     }
 
@@ -132,12 +138,12 @@ final class AppModel: ObservableObject {
         store.clearErrorMessage()
         stopPlayback()
         dependencies.engineSupervisor.stop()
-        store.engineStatus = .off
+        store.engineStatus = .stopped
         refreshTelemetry()
     }
 
     func toggleEngine() {
-        if dependencies.engineSupervisor.isRunning {
+        if status.isProcessExpectedAlive || dependencies.engineSupervisor.isRunning {
             stopEngine()
         } else {
             startEngine()
@@ -181,12 +187,15 @@ final class AppModel: ObservableObject {
         guard !trimmed.isEmpty else { return }
         store.clearErrorMessage()
 
-        let segment = SpeechSegment(index: 0, text: trimmed)
+        let segments = requestPolicy.segments(for: trimmed)
+        if segments.count > 1 {
+            store.userMessage = "Large text split into \(segments.count) segments. Sending smaller engine requests to avoid request timeouts."
+        }
         let logEntryID: UUID
         let jobID = UUID()
 
         if addToHistory {
-            let entry = SavedLogEntry(id: UUID(), text: trimmed, isUser: true, jobID: jobID, segments: [segment])
+            let entry = SavedLogEntry(id: UUID(), text: trimmed, isUser: true, jobID: jobID, segments: segments)
             store.savedLogEntries.insert(entry, at: 0)
             try? dependencies.logStore.saveLog(entry, workspaceID: store.activeWorkspace.id)
             logEntryID = entry.id
@@ -200,7 +209,7 @@ final class AppModel: ObservableObject {
             id: jobID,
             text: trimmed,
             voiceID: selectedVoice,
-            segments: [segment],
+            segments: segments,
             status: .generating,
             logEntryID: logEntryID
         )
@@ -209,7 +218,7 @@ final class AppModel: ObservableObject {
             state: .preparing,
             activeJobID: job.id,
             activeLogEntryID: logEntryID,
-            currentSegmentID: segment.id,
+            currentSegmentID: segments.first?.id,
             elapsedTime: 0,
             duration: nil
         )
@@ -219,17 +228,33 @@ final class AppModel: ObservableObject {
                 speakLocal(text: trimmed, jobID: job.id, logEntryID: logEntryID)
                 return
             }
-            await speakRemote(text: trimmed, voice: selectedVoice, jobID: job.id, logEntryID: logEntryID)
+            await speakRemote(segments: segments, voice: selectedVoice, jobID: job.id, logEntryID: logEntryID)
         }
     }
 
-    private func speakRemote(text: String, voice: String, jobID: UUID, logEntryID: UUID) async {
+    private func speakRemote(segments: [SpeechSegment], voice: String, jobID: UUID, logEntryID: UUID) async {
+        dependencies.engineSupervisor.noteRequestStarted(jobID: jobID)
+        defer { dependencies.engineSupervisor.noteRequestFinished(jobID: jobID) }
+
         do {
-            let result = try await dependencies.generationService.synthesize(text: text, voice: voice)
+            guard let firstSegment = segments.first else { return }
+            if segments.count > 1 {
+                updateJob(jobID, status: .queued, error: nil)
+                store.playback.currentSegmentID = firstSegment.id
+            }
+
+            let result = try await dependencies.generationService.synthesize(
+                text: firstSegment.text,
+                voice: voice,
+                jobID: jobID
+            )
             store.dashboardTelemetry.lastLatencyMs = result.latencyMs
             store.dashboardTelemetry.lastCharCount = result.charCount
             updateJob(jobID, status: .playing, error: nil)
             store.playback.state = .playing
+            if segments.count > 1 {
+                store.userMessage = "Large text is safely segmented. Playing segment 1 of \(segments.count); remaining segments are preserved for the batching pipeline."
+            }
             try dependencies.playbackCoordinator.play(audioData: result.audioData)
         } catch {
             let appError = normalizeGenerationError(error)
@@ -247,36 +272,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func waitForHealth() async {
-        let deadline = Date().addingTimeInterval(AppConfig.healthTimeoutSeconds)
-        while Date() < deadline {
-            if await dependencies.generationService.checkHealth() {
-                store.engineStatus = .on
-                store.clearErrorMessage()
-                await fetchVoices()
-                refreshTelemetry()
-                return
-            }
-            try? await Task.sleep(nanoseconds: 250_000_000)
-        }
-        record(
-            .engine(
-                code: "health-timeout",
-                title: "Engine Timeout",
-                message: "Engine health check timed out.",
-                recoverySuggestion: "Stop the engine, confirm the Kokoro server can start manually, and try again."
-            )
-        )
-        store.engineStatus = .error
-    }
-
-    private func syncEngineStatusOnLaunch() async {
+    private func bootstrapEngine() async {
+        startEngine()
         if await dependencies.generationService.checkHealth() {
-            store.engineStatus = .on
-            store.clearErrorMessage()
             await fetchVoices()
-        } else {
-            store.engineStatus = .off
         }
         refreshTelemetry()
     }
@@ -310,22 +309,23 @@ final class AppModel: ObservableObject {
     }
 
     private func wireServiceCallbacks() {
-        if let engine = dependencies.engineSupervisor as? ProcessEngineSupervisor {
-            engine.onUnexpectedTermination = { [weak self] statusCode in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.store.engineStatus = .error
-                    self.store.playback = .idle
-                    self.record(
-                        .engine(
-                            code: "unexpected-stop",
-                            title: "Engine Stopped",
-                            message: "Engine stopped unexpectedly with code \(statusCode).",
-                            recoverySuggestion: "Start the engine again. If it stops repeatedly, inspect the Kokoro server logs.",
-                            context: ["terminationStatus": "\(statusCode)"]
-                        )
-                    )
+        dependencies.engineSupervisor.onHealthChanged = { [weak self] summary in
+            Task { @MainActor in
+                guard let self else { return }
+                self.store.engineHealth = summary
+                self.store.engineStatus = summary.status
+                self.refreshTelemetry()
+                if summary.status == .idle || summary.status == .running {
+                    await self.fetchVoices()
                 }
+            }
+        }
+
+        dependencies.engineSupervisor.onIssue = { [weak self] issue in
+            Task { @MainActor in
+                guard let self else { return }
+                self.store.playback = .idle
+                self.store.record(issue)
             }
         }
 

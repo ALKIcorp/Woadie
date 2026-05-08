@@ -37,7 +37,18 @@
 		A100001C /* PersistenceProtocols.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001E /* PersistenceProtocols.swift */; };
 		A100001D /* LocalPersistenceServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001F /* LocalPersistenceServices.swift */; };
 		A100001E /* VisualCompatibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000020 /* VisualCompatibility.swift */; };
+		B1000001 /* EngineSupervisorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001 /* EngineSupervisorTests.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B9000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A4000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A4000001;
+			remoteInfo = Woadie;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		A2000001 /* AlkiSpeakApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlkiSpeakApp.swift; sourceTree = "<group>"; };
@@ -72,10 +83,19 @@
 		A200001E /* PersistenceProtocols.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceProtocols.swift; sourceTree = "<group>"; };
 		A200001F /* LocalPersistenceServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPersistenceServices.swift; sourceTree = "<group>"; };
 		A2000020 /* VisualCompatibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualCompatibility.swift; sourceTree = "<group>"; };
+		B2000001 /* EngineSupervisorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineSupervisorTests.swift; sourceTree = "<group>"; };
+		B2000002 /* WoadieTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WoadieTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A6000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B6000002 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -89,6 +109,7 @@
 			isa = PBXGroup;
 			children = (
 				A3000001 /* AlkiSpeak */,
+				B3000001 /* AlkiSpeakTests */,
 				A3000002 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -207,8 +228,17 @@
 			isa = PBXGroup;
 			children = (
 				A2000006 /* Woadie.app */,
+				B2000002 /* WoadieTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		B3000001 /* AlkiSpeakTests */ = {
+			isa = PBXGroup;
+			children = (
+				B2000001 /* EngineSupervisorTests.swift */,
+			);
+			path = AlkiSpeakTests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -230,6 +260,24 @@
 			productName = Woadie;
 			productReference = A2000006 /* Woadie.app */;
 			productType = "com.apple.product-type.application";
+		};
+		B4000001 /* WoadieTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B5000001 /* Build configuration list for PBXNativeTarget "WoadieTests" */;
+			buildPhases = (
+				B6000001 /* Sources */,
+				B6000002 /* Frameworks */,
+				B6000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B9000002 /* PBXTargetDependency */,
+			);
+			name = WoadieTests;
+			productName = WoadieTests;
+			productReference = B2000002 /* WoadieTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
@@ -259,6 +307,7 @@
 			projectRoot = "";
 			targets = (
 				A4000001 /* Woadie */,
+				B4000001 /* WoadieTests */,
 			);
 		};
 /* End PBXProject section */
@@ -269,6 +318,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000004 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B6000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -311,7 +367,23 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		B6000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B1000001 /* EngineSupervisorTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B9000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A4000001 /* Woadie */;
+			targetProxy = B9000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A7000000 /* Debug */ = {
@@ -357,6 +429,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = "";
+				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = AlkiSpeak/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Woadie GPT";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
@@ -367,6 +440,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.alki.Woadie;
 				PRODUCT_NAME = Woadie;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
@@ -392,6 +466,46 @@
 			};
 			name = Release;
 		};
+		B7000002 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.6;
+				PRODUCT_BUNDLE_IDENTIFIER = com.alki.WoadieTests;
+				PRODUCT_NAME = WoadieTests;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Woadie.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Woadie";
+			};
+			name = Debug;
+		};
+		B7000003 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.6;
+				PRODUCT_BUNDLE_IDENTIFIER = com.alki.WoadieTests;
+				PRODUCT_NAME = WoadieTests;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Woadie.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Woadie";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -409,6 +523,15 @@
 			buildConfigurations = (
 				A7000002 /* Debug */,
 				A7000003 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B5000001 /* Build configuration list for PBXNativeTarget "WoadieTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B7000002 /* Debug */,
+				B7000003 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

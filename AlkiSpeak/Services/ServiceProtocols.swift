@@ -3,8 +3,13 @@ import Foundation
 protocol EngineSupervising: AnyObject {
     var isRunning: Bool { get }
     var processIdentifier: Int32? { get }
+    var healthSummary: EngineHealthSummary { get }
+    var onHealthChanged: ((EngineHealthSummary) -> Void)? { get set }
+    var onIssue: ((EngineIssue) -> Void)? { get set }
     func start() throws
     func stop()
+    func noteRequestStarted(jobID: UUID)
+    func noteRequestFinished(jobID: UUID)
     func findListeningPidsOnEnginePort() -> [Int32]
     func terminatePortUsers(_ pids: [Int32]) async
 }
@@ -12,7 +17,7 @@ protocol EngineSupervising: AnyObject {
 protocol SpeechGenerating: AnyObject {
     func checkHealth() async -> Bool
     func fetchVoices() async throws -> [String]
-    func synthesize(text: String, voice: String) async throws -> SpeechGenerationResult
+    func synthesize(text: String, voice: String, jobID: UUID?) async throws -> SpeechGenerationResult
 }
 
 struct SpeechGenerationResult: Hashable {

@@ -21,7 +21,7 @@ struct WoadieControlsBar: View {
             ) {
                 model.refreshVoices()
             }
-            .disabled(model.status != .on)
+            .disabled(!model.status.isAvailableForRemoteSpeech)
 
             Divider()
                 .frame(height: 20)

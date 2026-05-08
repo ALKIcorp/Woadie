@@ -12,28 +12,134 @@ enum LogMode: String, Codable, CaseIterable, Hashable {
 }
 
 enum EngineStatus: String, Codable, Hashable {
-    case off
-    case warmingUp
-    case on
-    case error
+    case starting
+    case running
+    case idle
+    case busy
+    case degraded
+    case retrying
+    case timedOut
+    case stalled
+    case stopped
+    case failed
 
     var label: String {
         switch self {
-        case .off: return "OFF"
-        case .warmingUp: return "WARMING UP"
-        case .on: return "ON"
-        case .error: return "ERROR"
+        case .starting: return "STARTING"
+        case .running: return "RUNNING"
+        case .idle: return "IDLE"
+        case .busy: return "BUSY"
+        case .degraded: return "DEGRADED"
+        case .retrying: return "RETRYING"
+        case .timedOut: return "TIMED OUT"
+        case .stalled: return "STALLED"
+        case .stopped: return "STOPPED"
+        case .failed: return "FAILED"
         }
     }
 
     var color: Color {
         switch self {
-        case .off: return .secondary
-        case .warmingUp: return .orange
-        case .on: return .green
-        case .error: return .red
+        case .running, .idle:
+            return .green
+        case .starting, .busy, .retrying:
+            return .orange
+        case .degraded, .timedOut, .stalled:
+            return .yellow
+        case .stopped:
+            return .secondary
+        case .failed:
+            return .red
         }
     }
+
+    var isAvailableForRemoteSpeech: Bool {
+        switch self {
+        case .running, .idle, .busy, .degraded:
+            return true
+        case .starting, .retrying, .timedOut, .stalled, .stopped, .failed:
+            return false
+        }
+    }
+
+    var isProcessExpectedAlive: Bool {
+        switch self {
+        case .starting, .running, .idle, .busy, .degraded, .retrying:
+            return true
+        case .timedOut, .stalled, .stopped, .failed:
+            return false
+        }
+    }
+}
+
+struct EngineIssue: Identifiable, Codable, Hashable {
+    var id: UUID
+    var code: String
+    var title: String
+    var description: String
+    var probableCause: String
+    var subsystem: String
+    var timestamp: Date
+    var retryCount: Int
+    var jobID: UUID?
+    var rawError: String?
+    var context: [String: String]
+
+    init(
+        id: UUID = UUID(),
+        code: String,
+        title: String,
+        description: String,
+        probableCause: String,
+        subsystem: String,
+        timestamp: Date = Date(),
+        retryCount: Int = 0,
+        jobID: UUID? = nil,
+        rawError: String? = nil,
+        context: [String: String] = [:]
+    ) {
+        self.id = id
+        self.code = code
+        self.title = title
+        self.description = description
+        self.probableCause = probableCause
+        self.subsystem = subsystem
+        self.timestamp = timestamp
+        self.retryCount = retryCount
+        self.jobID = jobID
+        self.rawError = rawError
+        self.context = context
+    }
+}
+
+struct EngineHealthSummary: Codable, Hashable {
+    var status: EngineStatus
+    var pid: Int32?
+    var port: Int
+    var baseURL: URL
+    var startedAt: Date?
+    var lastHealthCheckAt: Date?
+    var lastSuccessfulHealthCheckAt: Date?
+    var retryCount: Int
+    var consecutiveHealthFailures: Int
+    var activeJobID: UUID?
+    var latestIssue: EngineIssue?
+    var recentIssues: [EngineIssue]
+
+    static let stopped = EngineHealthSummary(
+        status: .stopped,
+        pid: nil,
+        port: AppConfig.enginePort,
+        baseURL: AppConfig.serverBaseURL,
+        startedAt: nil,
+        lastHealthCheckAt: nil,
+        lastSuccessfulHealthCheckAt: nil,
+        retryCount: 0,
+        consecutiveHealthFailures: 0,
+        activeJobID: nil,
+        latestIssue: nil,
+        recentIssues: []
+    )
 }
 
 struct EngineDiagnostic: Identifiable, Codable, Hashable {

@@ -26,14 +26,24 @@ struct WoadieHeaderView: View {
 
     private var statusLabel: String {
         switch model.status {
-        case .warmingUp:
+        case .starting:
             return "Starting..."
-        case .on:
-            return "Engine ON"
-        case .off:
-            return "Engine OFF"
-        case .error:
-            return "Engine Error"
+        case .running, .idle:
+            return "Engine Ready"
+        case .busy:
+            return "Engine Busy"
+        case .degraded:
+            return "Engine Degraded"
+        case .retrying:
+            return "Engine Retrying"
+        case .timedOut:
+            return "Engine Timed Out"
+        case .stalled:
+            return "Engine Stalled"
+        case .stopped:
+            return "Engine Stopped"
+        case .failed:
+            return "Engine Failed"
         }
     }
 }

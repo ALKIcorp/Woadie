@@ -21,6 +21,15 @@ struct ContentView: View {
                         .padding(.horizontal, 2)
                 }
 
+                if let engineCheckMessage = model.engineCheckMessage {
+                    Label(engineCheckMessage, systemImage: "engine.combustion")
+                        .font(WoadieTheme.mono(size: 11, weight: .medium))
+                        .foregroundStyle(WoadieTheme.warning)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .lineLimit(3)
+                        .padding(.horizontal, 2)
+                }
+
                 SpeechLogView(
                     entries: model.chatItems,
                     playingId: model.playingId,
