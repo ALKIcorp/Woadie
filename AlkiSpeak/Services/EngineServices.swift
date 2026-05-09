@@ -77,6 +77,10 @@ final class ProcessEngineSupervisor: EngineSupervising {
     private var healthTask: Task<Void, Never>?
     private var startupTask: Task<Void, Never>?
     private var restartTask: Task<Void, Never>?
+    /// True while a `scheduleRestart` task is sleeping or running `launchProcess`; avoids stale `restartTask` (completed tasks stay non-nil) blocking `performHealthCheck` recovery.
+    private var restartWorkActive = false
+    /// Bumps when scheduling or cancelling restart work so a cancelled task’s `defer` cannot clear `restartWorkActive` for a newer restart wave.
+    private var restartGeneration: UInt64 = 0
     private var adoptedProcessIdentifier: Int32?
     private var state: EngineHealthSummary = .stopped
 
@@ -101,6 +105,10 @@ final class ProcessEngineSupervisor: EngineSupervising {
 
     func start() throws {
         restartTask?.cancel()
+        queue.sync {
+            restartGeneration &+= 1
+            restartWorkActive = false
+        }
         try launchProcess(resetRetryCount: true)
     }
 
@@ -108,6 +116,10 @@ final class ProcessEngineSupervisor: EngineSupervising {
         restartTask?.cancel()
         startupTask?.cancel()
         healthTask?.cancel()
+        queue.sync {
+            restartGeneration &+= 1
+            restartWorkActive = false
+        }
 
         let stopped = queue.sync { () -> EngineHealthSummary in
             isStopping = true
@@ -182,6 +194,23 @@ final class ProcessEngineSupervisor: EngineSupervising {
         }
 
         _ = runKill(signal: "-KILL", pids: pids)
+        waitUntilEnginePortVacant(timeout: 4.0)
+    }
+
+    /// After SIGKILL or racey teardown, the listener PID can linger briefly; wait before spawning a replacement.
+    private func waitUntilEnginePortVacant(timeout: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if findListeningPidsOnEnginePort().isEmpty {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+
+    /// Slow cold/warm servers can miss a 3s probe; allow resource timeout when deciding adopt vs reclaim.
+    private var launchPortHealthProbeTimeout: TimeInterval {
+        max(timeoutPolicy.healthCheckTimeout, timeoutPolicy.resourceTimeout)
     }
 
     private func launchProcess(resetRetryCount: Bool) throws {
@@ -208,17 +237,50 @@ final class ProcessEngineSupervisor: EngineSupervising {
                     notifyUser: false
                 )
                 reclaimPortUsers(portUsers)
-            } else {
+            } else if checkHealthSynchronously(timeout: launchPortHealthProbeTimeout) {
+                // Command-line heuristics missed a Kokoro listener (truncated ps, wrapper binary, etc.);
+                // health proves our configured endpoint is alive — reconnect instead of fatal port-in-use.
+                let listeners = findListeningPidsOnEnginePort()
+                if !listeners.isEmpty {
+                    adoptExistingEngine(portUsers: listeners, resetRetryCount: resetRetryCount)
+                    return
+                }
+            }
+
+            var stillBlocked = findListeningPidsOnEnginePort()
+            if !stillBlocked.isEmpty {
+                // Last resort: port is reserved but we could not classify or reach health (stale process, stuck server, lsof/ps mismatch). Clear listeners for this configured port once, then spawn.
+                record(
+                    EngineIssue(
+                        code: "engine.reclaiming-port-occupant",
+                        title: "Reclaiming Engine Port",
+                        description: "Port \(AppConfig.enginePort) was still in use before launch; stopping listeners so the supervised engine can bind.",
+                        probableCause: "A prior run left a process on this port that did not match recovery heuristics or did not answer health checks in time.",
+                        subsystem: "engine.lifecycle",
+                        context: [
+                            "port": "\(AppConfig.enginePort)",
+                            "pids": stillBlocked.map(String.init).joined(separator: ","),
+                            "commands": stillBlocked.map { processCommandLine(for: $0) }.joined(separator: "\n")
+                        ]
+                    ),
+                    status: .retrying,
+                    notifyUser: false
+                )
+                reclaimPortUsers(stillBlocked)
+                waitUntilEnginePortVacant(timeout: 5.0)
+                stillBlocked = findListeningPidsOnEnginePort()
+            }
+            if !stillBlocked.isEmpty {
                 let issue = EngineIssue(
                     code: "engine.port-in-use",
                     title: "Engine Port In Use",
-                    description: "Port \(AppConfig.enginePort) is already owned by another non-engine process.",
-                    probableCause: "Another local service is listening on the Kokoro port.",
+                    description: "Port \(AppConfig.enginePort) is still blocked after reclaim attempts.",
+                    probableCause: "Another process is listening on the Kokoro port and did not exit after termination signals.",
                     subsystem: "engine.lifecycle",
                     context: [
                         "port": "\(AppConfig.enginePort)",
-                        "pids": portUsers.map(String.init).joined(separator: ","),
-                        "commands": portUsers.map { processCommandLine(for: $0) }.joined(separator: "\n")
+                        "pids": stillBlocked.map(String.init).joined(separator: ","),
+                        "commands": stillBlocked.map { processCommandLine(for: $0) }.joined(separator: "\n")
                     ]
                 )
                 record(issue, status: .failed)
@@ -337,7 +399,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
     private func performHealthCheck() async {
         guard isRunning else {
             let shouldRecover = queue.sync {
-                (state.status == .starting || state.status == .retrying) && restartTask == nil
+                (state.status == .starting || state.status == .retrying) && !restartWorkActive
             }
             if shouldRecover {
                 handleStartupProcessUnavailable(rawError: "The engine process is not running while startup is pending.")
@@ -376,6 +438,16 @@ final class ProcessEngineSupervisor: EngineSupervising {
     }
 
     private func handleHealthFailure(rawError: String) {
+        let isStillStarting = queue.sync { state.status == .starting || state.status == .retrying }
+        if isStillStarting {
+            let failureCount = queue.sync { state.consecutiveHealthFailures + 1 }
+            publish { summary in
+                summary.lastHealthCheckAt = Date()
+                summary.consecutiveHealthFailures = failureCount
+            }
+            return
+        }
+
         let portUsers = findListeningPidsOnEnginePort()
         let adoptedPID = queue.sync { adoptedProcessIdentifier }
         let adoptedProcessDisappeared = adoptedPID.map { !processExists(pid: $0) } ?? false
@@ -400,24 +472,6 @@ final class ProcessEngineSupervisor: EngineSupervising {
             }
             forceTerminateForRecovery()
             scheduleRestart(cause: issue)
-            return
-        }
-
-        let isStillStarting = queue.sync { state.status == .starting || state.status == .retrying }
-        if isStillStarting {
-            let failureCount = queue.sync { state.consecutiveHealthFailures + 1 }
-            publish { summary in
-                summary.lastHealthCheckAt = Date()
-                summary.consecutiveHealthFailures = failureCount
-            }
-            let shouldTimeoutStartup = queue.sync {
-                state.status == .starting
-                    && restartTask == nil
-                    && failureCount >= startupHealthFailureLimit
-            }
-            if shouldTimeoutStartup {
-                handleStartupHealthFailuresExceeded(failureCount: failureCount, rawError: rawError)
-            }
             return
         }
 
@@ -457,30 +511,6 @@ final class ProcessEngineSupervisor: EngineSupervising {
             subsystem: "engine.lifecycle",
             retryCount: healthSummary.retryCount,
             context: ["timeoutSeconds": "\(timeoutPolicy.startupTimeout)"]
-        )
-        record(issue, status: .timedOut)
-        forceTerminateForRecovery()
-        scheduleRestart(cause: issue)
-    }
-
-    private var startupHealthFailureLimit: Int {
-        max(1, Int(ceil(timeoutPolicy.startupTimeout / AppConfig.healthCheckIntervalSeconds)))
-    }
-
-    private func handleStartupHealthFailuresExceeded(failureCount: Int, rawError: String) {
-        let issue = EngineIssue(
-            code: "engine.startup-health-timeout",
-            title: "Engine Startup Health Timed Out",
-            description: "The engine did not pass a health check after \(failureCount) startup attempts.",
-            probableCause: "The server process is alive but not serving healthy responses on localhost.",
-            subsystem: "engine.health",
-            retryCount: healthSummary.retryCount,
-            rawError: rawError,
-            context: [
-                "failureCount": "\(failureCount)",
-                "port": "\(AppConfig.enginePort)",
-                "timeoutSeconds": "\(timeoutPolicy.startupTimeout)"
-            ]
         )
         record(issue, status: .timedOut)
         forceTerminateForRecovery()
@@ -580,8 +610,24 @@ final class ProcessEngineSupervisor: EngineSupervising {
 
         let delay = min(pow(2.0, Double(nextRetry - 1)), 10.0)
         logger.warning("Scheduling engine restart attempt=\(nextRetry) delay=\(delay, privacy: .public)s")
+        let wave = queue.sync {
+            restartGeneration &+= 1
+            return restartGeneration
+        }
         restartTask = Task { [weak self] in
             guard let self else { return }
+            self.queue.sync {
+                if self.restartGeneration == wave {
+                    self.restartWorkActive = true
+                }
+            }
+            defer {
+                self.queue.sync {
+                    if self.restartGeneration == wave {
+                        self.restartWorkActive = false
+                    }
+                }
+            }
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             do {
                 self.establishCleanSlate()
@@ -657,6 +703,8 @@ final class ProcessEngineSupervisor: EngineSupervising {
         let summary = queue.sync { () -> EngineHealthSummary in
             if resetRetryCount {
                 state.retryCount = 0
+                state.recentIssues = []
+                state.latestIssue = nil
             }
             process = nil
             adoptedProcessIdentifier = pid
@@ -688,6 +736,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
             Thread.sleep(forTimeInterval: 0.1)
         }
         _ = runKill(signal: "-KILL", pids: pids)
+        waitUntilEnginePortVacant(timeout: 4.0)
     }
 
     private func establishCleanSlate() {
@@ -708,6 +757,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
         if !remaining.isEmpty {
             _ = runKill(signal: "-KILL", pids: remaining)
         }
+        waitUntilEnginePortVacant(timeout: 4.0)
 
         queue.sync {
             process = nil

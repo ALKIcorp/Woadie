@@ -279,8 +279,15 @@ final class AppModel: ObservableObject {
 
     private func bootstrapEngine() async {
         startEngine()
-        if await dependencies.generationService.checkHealth() {
-            await fetchVoices()
+        // Engine subprocess exits bind quickly; model load runs in the background. Poll instead of one immediate check (avoids connection refused noise).
+        let deadline = Date().addingTimeInterval(min(AppConfig.engineStartupTimeoutSeconds, 120))
+        while Date() < deadline {
+            if await dependencies.generationService.checkHealth() {
+                await fetchVoices()
+                refreshTelemetry()
+                return
+            }
+            try? await Task.sleep(nanoseconds: 250_000_000)
         }
         refreshTelemetry()
     }

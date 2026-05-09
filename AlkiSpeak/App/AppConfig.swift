@@ -6,7 +6,7 @@ enum AppConfig {
     static let serverBaseURL = URL(string: "http://127.0.0.1:\(enginePort)")!
     static let defaultVoice = "af_heart"
     static let defaultRate = 24000
-    static let engineStartupTimeoutSeconds: TimeInterval = 20
+    static let engineStartupTimeoutSeconds: TimeInterval = 180
     static let requestTimeoutSeconds: TimeInterval = 45
     static let resourceTimeoutSeconds: TimeInterval = 10
     static let healthCheckTimeoutSeconds: TimeInterval = 3
