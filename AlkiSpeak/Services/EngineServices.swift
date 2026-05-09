@@ -295,17 +295,10 @@ final class ProcessEngineSupervisor: EngineSupervising {
         }
 
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: AppConfig.kokoroPath)
-            .appendingPathComponent(".venv/bin/python")
-        proc.currentDirectoryURL = URL(fileURLWithPath: AppConfig.kokoroPath)
+        proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
         proc.arguments = [
-            "-m",
-            "uvicorn",
-            "kokoro_server:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "\(AppConfig.enginePort)"
+            "-lc",
+            "cd \"\(AppConfig.kokoroPath)\"; source .venv/bin/activate; uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort)"
         ]
 
         let stderr = Pipe()
