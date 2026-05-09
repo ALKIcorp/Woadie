@@ -840,7 +840,16 @@ final class ProcessEngineSupervisor: EngineSupervising {
     }
 
     private func processExists(pid: Int32) -> Bool {
-        kill(pid, 0) == 0 || errno == EPERM
+        guard pid > 0 else { return false }
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        let mibLength = UInt32(mib.count)
+        let ok = mib.withUnsafeMutableBufferPointer { ptr -> Bool in
+            guard let base = ptr.baseAddress else { return false }
+            return sysctl(base, mibLength, &info, &size, nil, 0) == 0
+        }
+        return ok && size > 0 && info.kp_proc.p_pid != 0
     }
 
     private func checkHealthSynchronously(timeout: TimeInterval) -> Bool {

@@ -290,6 +290,13 @@ final class AppModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
         refreshTelemetry()
+        if !(await dependencies.generationService.checkHealth()) {
+            store.userMessage =
+                "Could not reach the Kokoro engine at \(AppConfig.serverBaseURL.absoluteString). "
+                + "Set scheme env var KOKORO_HOME to your kokoro folder (with .venv), or fix the default path in AppConfig. "
+                + "In Terminal, run: `cd <kokoro> && .venv/bin/python -m uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort)`. "
+                + "In Xcode, filter logs for “Engine stderr” or subsystem com.alki.Woadie."
+        }
     }
 
     private func fetchVoices() async {
