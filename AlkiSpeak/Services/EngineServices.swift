@@ -91,6 +91,20 @@ final class ProcessEngineSupervisor: EngineSupervising {
         self.timeoutPolicy = timeoutPolicy
     }
 
+    private enum EngineLaunchError: LocalizedError {
+        case terminalOpenFailed(Int32)
+        case terminalPIDUnavailable
+
+        var errorDescription: String? {
+            switch self {
+            case .terminalOpenFailed(let status):
+                return "Terminal failed to open the Kokoro launch script. open exited with status \(status)."
+            case .terminalPIDUnavailable:
+                return "Terminal opened the Kokoro launch script, but the engine PID was not written."
+            }
+        }
+    }
+
     private static func resolveKokoroPythonExecutable(root: URL) -> String? {
         let fm = FileManager.default
         for name in ["python3", "python"] {
@@ -102,12 +116,62 @@ final class ProcessEngineSupervisor: EngineSupervising {
         return nil
     }
 
+    private static func shellQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
+    }
+
+    private static func terminalLaunchFiles(kokoroRoot: URL) throws -> (script: URL, pidFile: URL) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WoadieEngine", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return (
+            script: directory.appendingPathComponent("start-kokoro-engine.command"),
+            pidFile: directory.appendingPathComponent("start-kokoro-engine.pid")
+        )
+    }
+
+    private static func writeTerminalLaunchScript(kokoroRoot: URL, pythonExecutable: String) throws -> (script: URL, pidFile: URL) {
+        let files = try terminalLaunchFiles(kokoroRoot: kokoroRoot)
+        try? FileManager.default.removeItem(at: files.pidFile)
+
+        let script = """
+        #!/bin/zsh
+        cd \(shellQuoted(kokoroRoot.path)) || exit 1
+        export PYTHONUNBUFFERED=1
+        echo $$ > \(shellQuoted(files.pidFile.path))
+        echo "Starting Kokoro engine at \(AppConfig.serverBaseURL.absoluteString)"
+        echo "Working directory: \(kokoroRoot.path)"
+        echo "Command: \(pythonExecutable) -m uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort)"
+        exec \(shellQuoted(pythonExecutable)) -m uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort)
+        """
+
+        try script.write(to: files.script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: files.script.path)
+        return files
+    }
+
     var isRunning: Bool {
-        queue.sync { process?.isRunning == true || adoptedProcessIdentifier != nil }
+        queue.sync {
+            if process?.isRunning == true {
+                return true
+            }
+            if let adoptedProcessIdentifier {
+                return processExists(pid: adoptedProcessIdentifier)
+            }
+            return false
+        }
     }
 
     var processIdentifier: Int32? {
-        queue.sync { process?.processIdentifier ?? adoptedProcessIdentifier }
+        queue.sync {
+            if let pid = process?.processIdentifier {
+                return pid
+            }
+            guard let adoptedProcessIdentifier, processExists(pid: adoptedProcessIdentifier) else {
+                return nil
+            }
+            return adoptedProcessIdentifier
+        }
     }
 
     var healthSummary: EngineHealthSummary {
@@ -344,36 +408,25 @@ final class ProcessEngineSupervisor: EngineSupervising {
             )
         }
 
+        let launchFiles: (script: URL, pidFile: URL)
+        do {
+            launchFiles = try Self.writeTerminalLaunchScript(kokoroRoot: kokoroRoot, pythonExecutable: pythonExecutable)
+        } catch {
+            let issue = EngineIssue(
+                code: "engine.launch-script-failed",
+                title: "Engine Launch Script Failed",
+                description: "Could not create the Terminal command file used to start Kokoro.",
+                probableCause: "The app could not write to its temporary directory.",
+                subsystem: "engine.lifecycle",
+                rawError: error.localizedDescription
+            )
+            record(issue, status: .failed)
+            throw error
+        }
+
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: pythonExecutable)
-        proc.arguments = [
-            "-m", "uvicorn", "kokoro_server:app",
-            "--host", "127.0.0.1", "--port", "\(AppConfig.enginePort)",
-        ]
-        proc.currentDirectoryURL = kokoroRoot
-        var env = ProcessInfo.processInfo.environment
-        env["PYTHONUNBUFFERED"] = "1"
-        proc.environment = env
-
-        let stderr = Pipe()
-        proc.standardError = stderr
-        proc.standardOutput = Pipe()
-        stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            guard let self else { return }
-            let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
-            self.logger.error("Engine stderr: \(text, privacy: .public)")
-        }
-
-        proc.terminationHandler = { [weak self] _ in
-            guard let self else { return }
-            // Guard: only handle if this specific proc is still the tracked process.
-            // Without this, a process that was already replaced by stop()→start() fires
-            // handleTermination against the NEW process, treating the old exit as an
-            // unexpected crash and triggering an unwanted restart that kills the new startup.
-            guard self.queue.sync(execute: { self.process === proc }) else { return }
-            self.handleTermination(statusCode: proc.terminationStatus)
-        }
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        proc.arguments = ["-a", "Terminal", launchFiles.script.path]
 
         let prelaunchSummary = queue.sync { () -> EngineHealthSummary in
             if resetRetryCount {
@@ -382,7 +435,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
                 state.latestIssue = nil
             }
             isStopping = false
-            process = proc
+            process = nil
             adoptedProcessIdentifier = nil
             state.status = .starting
             state.pid = nil
@@ -398,18 +451,21 @@ final class ProcessEngineSupervisor: EngineSupervising {
 
         do {
             try proc.run()
+            proc.waitUntilExit()
+            guard proc.terminationStatus == 0 else {
+                throw EngineLaunchError.terminalOpenFailed(proc.terminationStatus)
+            }
         } catch {
             queue.sync {
-                if process === proc {
-                    process = nil
-                    state.pid = nil
-                }
+                process = nil
+                adoptedProcessIdentifier = nil
+                state.pid = nil
             }
             let issue = EngineIssue(
                 code: "engine.launch-failed",
                 title: "Engine Launch Failed",
-                description: "The local Kokoro process could not be started.",
-                probableCause: "The Kokoro checkout, virtual environment, or uvicorn command is unavailable.",
+                description: "The Terminal command used to start Kokoro could not be opened.",
+                probableCause: "Terminal.app is unavailable or macOS refused to open the generated .command file.",
                 subsystem: "engine.lifecycle",
                 rawError: error.localizedDescription
             )
@@ -417,17 +473,46 @@ final class ProcessEngineSupervisor: EngineSupervising {
             throw error
         }
 
+        guard let terminalEnginePID = waitForTerminalEnginePID(pidFile: launchFiles.pidFile, timeout: 5.0) else {
+            let issue = EngineIssue(
+                code: "engine.launch-pid-missing",
+                title: "Engine PID Missing",
+                description: "Terminal opened, but the Kokoro launch script did not report a process ID.",
+                probableCause: "Terminal did not execute the generated .command file.",
+                subsystem: "engine.lifecycle",
+                context: ["script": launchFiles.script.path, "pidFile": launchFiles.pidFile.path]
+            )
+            record(issue, status: .failed)
+            throw EngineLaunchError.terminalPIDUnavailable
+        }
+
         let summary = queue.sync { () -> EngineHealthSummary in
-            guard process === proc, state.status == .starting else {
+            guard state.status == .starting else {
                 return state
             }
-            state.pid = proc.processIdentifier
+            adoptedProcessIdentifier = terminalEnginePID
+            state.pid = terminalEnginePID
             return state
         }
 
-        logger.info("Engine launched pid=\(proc.processIdentifier) port=\(AppConfig.enginePort)")
+        logger.info("Engine launched in Terminal pid=\(terminalEnginePID) port=\(AppConfig.enginePort)")
         onHealthChanged?(summary)
         startMonitoring()
+    }
+
+    private func waitForTerminalEnginePID(pidFile: URL, timeout: TimeInterval) -> Int32? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if
+                let text = try? String(contentsOf: pidFile, encoding: .utf8),
+                let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+                processExists(pid: pid)
+            {
+                return pid
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return nil
     }
 
     private func startMonitoring() {
@@ -629,12 +714,17 @@ final class ProcessEngineSupervisor: EngineSupervising {
     }
 
     private func forceTerminateForRecovery() {
-        queue.sync {
+        let adoptedPID = queue.sync { () -> Int32? in
             isStopping = false
             process?.terminate()
             process = nil
+            let pid = adoptedProcessIdentifier
             adoptedProcessIdentifier = nil
             state.pid = nil
+            return pid
+        }
+        if let adoptedPID {
+            _ = runKill(signal: "-TERM", pids: [adoptedPID])
         }
     }
 
