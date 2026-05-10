@@ -325,7 +325,17 @@ final class AppModel: ObservableObject {
     }
 
     private func mergeVoiceOptions(remote: [String]) {
-        let remoteOptions = remote.map { name in
+        // On cold start, `refreshLocalVoices()` runs before /voices returns, so `remote` is
+        // often empty. Without preserving the workspace Kokoro id here, `selectedVoice`
+        // (e.g. af_heart) is not in the Apple-only list and gets replaced by the first
+        // Apple voice — remote synthesis then never runs until the user re-picks Kokoro.
+        var remoteIDs = remote
+        if !isSelectedVoiceLocal, !selectedVoice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !remoteIDs.contains(selectedVoice)
+        {
+            remoteIDs.append(selectedVoice)
+        }
+        let remoteOptions = remoteIDs.map { name in
             VoiceOption(id: name, label: "Kokoro - \(name)", isLocal: false)
         }
         store.voiceOptions = dependencies.localSpeechService.voiceOptions + remoteOptions
