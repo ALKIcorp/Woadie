@@ -279,10 +279,17 @@ final class AppModel: ObservableObject {
 
     private func bootstrapEngine() async {
         startEngine()
-        // Engine subprocess exits bind quickly; model load runs in the background. Poll instead of one immediate check (avoids connection refused noise).
+        // Poll every 250 ms (matching the original waitForHealth pattern from 999d859) so the UI
+        // transitions out of "Starting..." as soon as the engine becomes reachable, rather than
+        // waiting for the supervisor's 5-second health-check cycle.
         let deadline = Date().addingTimeInterval(min(AppConfig.engineStartupTimeoutSeconds, 120))
         while Date() < deadline {
             if await dependencies.generationService.checkHealth() {
+                // Update status immediately when engine becomes healthy, mirroring what
+                // waitForHealth() did in the original working version (999d859).
+                if store.engineStatus == .starting || store.engineStatus == .retrying {
+                    store.engineStatus = .running
+                }
                 await fetchVoices()
                 refreshTelemetry()
                 return
@@ -293,9 +300,8 @@ final class AppModel: ObservableObject {
         if !(await dependencies.generationService.checkHealth()) {
             store.userMessage =
                 "Could not reach the Kokoro engine at \(AppConfig.serverBaseURL.absoluteString). "
-                + "Set scheme env var KOKORO_HOME to your kokoro folder (with .venv), or fix the default path in AppConfig. "
-                + "In Terminal, run: `cd <kokoro> && .venv/bin/python -m uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort)`. "
-                + "In Xcode, filter logs for “Engine stderr” or subsystem com.alki.Woadie."
+                + "Verify \(AppConfig.kokoroPath) has a .venv with uvicorn. "
+                + "In Terminal: cd \"\(AppConfig.kokoroPath)\" && source .venv/bin/activate && uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort)"
         }
     }
 
