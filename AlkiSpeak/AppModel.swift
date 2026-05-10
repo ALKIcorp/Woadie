@@ -99,7 +99,7 @@ final class AppModel: ObservableObject {
         loadWorkspace()
         refreshLocalVoices()
         if !AppConfig.isRunningUnitTests {
-            Task { await bootstrapEngine() }
+            startEngine()
         }
     }
 
@@ -135,7 +135,12 @@ final class AppModel: ObservableObject {
                     )
                 }
                 store.engineStatus = .failed
+                return
             }
+            // Poll health at 250 ms — mirrors the original waitForHealth() pattern from
+            // 999d859 — so both auto-launch on init AND manual stop→start transitions
+            // snap the UI out of "Starting..." as soon as the engine is reachable.
+            await waitForEngineReady()
         }
     }
 
@@ -277,16 +282,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func bootstrapEngine() async {
-        startEngine()
-        // Poll every 250 ms (matching the original waitForHealth pattern from 999d859) so the UI
-        // transitions out of "Starting..." as soon as the engine becomes reachable, rather than
-        // waiting for the supervisor's 5-second health-check cycle.
+    private func waitForEngineReady() async {
         let deadline = Date().addingTimeInterval(min(AppConfig.engineStartupTimeoutSeconds, 120))
         while Date() < deadline {
             if await dependencies.generationService.checkHealth() {
-                // Update status immediately when engine becomes healthy, mirroring what
-                // waitForHealth() did in the original working version (999d859).
+                // Immediately update status when the engine becomes reachable, matching the
+                // original waitForHealth() from 999d859. Without this the UI can sit at
+                // "Starting..." for up to 5 s waiting for the supervisor's health-check cycle.
                 if store.engineStatus == .starting || store.engineStatus == .retrying {
                     store.engineStatus = .running
                 }

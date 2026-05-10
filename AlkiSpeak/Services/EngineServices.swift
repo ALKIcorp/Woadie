@@ -311,8 +311,14 @@ final class ProcessEngineSupervisor: EngineSupervising {
             self.logger.error("Engine stderr: \(text, privacy: .public)")
         }
 
-        proc.terminationHandler = { [weak self] process in
-            self?.handleTermination(statusCode: process.terminationStatus)
+        proc.terminationHandler = { [weak self] _ in
+            guard let self else { return }
+            // Guard: only handle if this specific proc is still the tracked process.
+            // Without this, a process that was already replaced by stop()→start() fires
+            // handleTermination against the NEW process, treating the old exit as an
+            // unexpected crash and triggering an unwanted restart that kills the new startup.
+            guard self.queue.sync(execute: { self.process === proc }) else { return }
+            self.handleTermination(statusCode: proc.terminationStatus)
         }
 
         let prelaunchSummary = queue.sync { () -> EngineHealthSummary in
