@@ -434,6 +434,10 @@ final class AppModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.consoleTrace("onHealthChanged status=\(summary.status.rawValue) pid=\(summary.pid.map(String.init) ?? "nil") retry=\(summary.retryCount) failures=\(summary.consecutiveHealthFailures) latestIssue=\(summary.latestIssue?.code ?? "nil")")
+                guard self.shouldApplyEngineHealth(summary) else {
+                    self.consoleTrace("ignored stale engine health status=\(summary.status.rawValue) currentStatus=\(self.store.engineStatus.rawValue)")
+                    return
+                }
                 self.store.engineHealth = summary
                 self.store.engineStatus = summary.status
                 self.refreshTelemetry()
@@ -465,6 +469,17 @@ final class AppModel: ObservableObject {
             localSpeech.onFinished = { [weak self] in
                 self?.finishPlayback()
             }
+        }
+    }
+
+    private func shouldApplyEngineHealth(_ summary: EngineHealthSummary) -> Bool {
+        switch summary.status {
+        case .starting, .retrying:
+            return store.engineStatus != .stopped || engineStartTask != nil
+        case .stopped:
+            return !(engineStartTask != nil && (store.engineStatus == .starting || store.engineStatus == .retrying))
+        case .running, .idle, .busy, .degraded, .timedOut, .stalled, .failed:
+            return true
         }
     }
 

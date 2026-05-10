@@ -286,7 +286,9 @@ final class ProcessEngineSupervisor: EngineSupervising {
             return []
         }
 
-        proc.waitUntilExit()
+        guard waitForProcessExit(proc, timeout: 2.0, context: "lsof engine port scan") else {
+            return []
+        }
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
         guard let output = String(data: data, encoding: .utf8) else { return [] }
         let pids = output
@@ -356,9 +358,9 @@ final class ProcessEngineSupervisor: EngineSupervising {
             )
         }
         consoleTrace("launchProcess resetRetryCount=\(resetRetryCount) processRunning=\(launchState.processRunning) adoptedPID=\(launchState.adoptedPID.map(String.init) ?? "nil") status=\(launchState.status.rawValue) retry=\(launchState.retryCount)")
-        let alreadyRunning = launchState.processRunning || launchState.adoptedPID != nil || launchState.status == .starting
+        let alreadyRunning = launchState.processRunning || launchState.adoptedPID != nil
         guard !alreadyRunning else {
-            consoleTrace("launchProcess returning early because engine is already running/starting")
+            consoleTrace("launchProcess returning early because engine is already running")
             return
         }
 
@@ -526,37 +528,19 @@ final class ProcessEngineSupervisor: EngineSupervising {
         consoleTrace("launchProcess opening Terminal via /usr/bin/open args=\(proc.arguments?.joined(separator: " ") ?? "")")
 
         try ensureCurrentLaunchGeneration(generation, context: "before Terminal open")
-        let prelaunchSummary = queue.sync { () -> EngineHealthSummary in
-            if resetRetryCount {
-                state.retryCount = 0
-                state.recentIssues = []
-                state.latestIssue = nil
-            }
-            isStopping = false
-            process = nil
-            adoptedProcessIdentifier = nil
-            adoptedProcessOwnership = .none
-            state.status = .starting
-            state.pid = nil
-            state.startedAt = Date()
-            state.port = AppConfig.enginePort
-            state.baseURL = AppConfig.serverBaseURL
-            state.lastHealthCheckAt = nil
-            state.lastSuccessfulHealthCheckAt = nil
-            state.consecutiveHealthFailures = 0
-            return state
-        }
+        let prelaunchSummary = try prepareLaunchState(resetRetryCount: resetRetryCount, generation: generation)
         consoleTrace("launchProcess state set to starting before Terminal open")
         onHealthChanged?(prelaunchSummary)
 
         do {
             try proc.run()
-            proc.waitUntilExit()
+            guard waitForProcessExit(proc, timeout: 10.0, context: "Terminal open") else {
+                throw EngineLaunchError.terminalOpenFailed(-1)
+            }
             consoleTrace("launchProcess /usr/bin/open exited status=\(proc.terminationStatus)")
             guard proc.terminationStatus == 0 else {
                 throw EngineLaunchError.terminalOpenFailed(proc.terminationStatus)
             }
-            try ensureCurrentLaunchGeneration(generation, context: "after Terminal open")
         } catch {
             if error is CancellationError {
                 throw error
@@ -594,20 +578,54 @@ final class ProcessEngineSupervisor: EngineSupervising {
         }
         consoleTrace("launchProcess Terminal engine PID detected pid=\(terminalEnginePID)")
 
-        let summary = queue.sync { () -> EngineHealthSummary in
-            guard state.status == .starting else {
-                return state
+        let summary = queue.sync { () -> EngineHealthSummary? in
+            guard launchGeneration == generation, state.status == .starting else {
+                return nil
             }
             adoptedProcessIdentifier = terminalEnginePID
             adoptedProcessOwnership = .launchedByApp
             state.pid = terminalEnginePID
             return state
         }
+        guard let summary else {
+            consoleTrace("launchProcess cancelled before adopting Terminal engine PID; terminating pid=\(terminalEnginePID)")
+            _ = runKill(signal: "-TERM", pids: [terminalEnginePID])
+            throw CancellationError()
+        }
 
         logger.info("Engine launched in Terminal pid=\(terminalEnginePID) port=\(AppConfig.enginePort)")
         consoleTrace("launchProcess completed; monitoring will start pid=\(terminalEnginePID)")
         onHealthChanged?(summary)
         startMonitoring()
+    }
+
+    private func prepareLaunchState(resetRetryCount: Bool, generation: UInt64) throws -> EngineHealthSummary {
+        let summary = queue.sync { () -> EngineHealthSummary? in
+            guard launchGeneration == generation else { return nil }
+            if resetRetryCount {
+                state.retryCount = 0
+                state.recentIssues = []
+                state.latestIssue = nil
+            }
+            isStopping = false
+            process = nil
+            adoptedProcessIdentifier = nil
+            adoptedProcessOwnership = .none
+            state.status = .starting
+            state.pid = nil
+            state.startedAt = Date()
+            state.port = AppConfig.enginePort
+            state.baseURL = AppConfig.serverBaseURL
+            state.lastHealthCheckAt = nil
+            state.lastSuccessfulHealthCheckAt = nil
+            state.consecutiveHealthFailures = 0
+            return state
+        }
+        guard let summary else {
+            consoleTrace("prepareLaunchState cancelled before publishing starting")
+            throw CancellationError()
+        }
+        return summary
     }
 
     private func adoptHealthyExistingEngineIfAvailable(resetRetryCount: Bool, generation: UInt64) throws -> Bool {
@@ -1041,7 +1059,9 @@ final class ProcessEngineSupervisor: EngineSupervising {
         proc.arguments = [signal] + pids.map { String($0) }
         do {
             try proc.run()
-            proc.waitUntilExit()
+            guard waitForProcessExit(proc, timeout: 2.0, context: "kill \(signal)") else {
+                return false
+            }
             consoleTrace("runKill completed status=\(proc.terminationStatus)")
             return proc.terminationStatus == 0
         } catch {
@@ -1107,7 +1127,10 @@ final class ProcessEngineSupervisor: EngineSupervising {
         consoleTrace("establishCleanSlate starting")
         let pids = recoverableEngineProcessIDs()
         consoleTrace("establishCleanSlate recoverable pids=\(pids.map(String.init).joined(separator: ","))")
-        guard !pids.isEmpty else { return }
+        guard !pids.isEmpty else {
+            consoleTrace("establishCleanSlate completed; no recoverable pids")
+            return
+        }
 
         logger.info("Establishing clean engine slate pids=\(pids.map(String.init).joined(separator: ","), privacy: .public)")
         _ = runKill(signal: "-TERM", pids: pids)
@@ -1160,7 +1183,9 @@ final class ProcessEngineSupervisor: EngineSupervising {
             return Array(pids)
         }
 
-        proc.waitUntilExit()
+        guard waitForProcessExit(proc, timeout: 2.0, context: "recoverable engine ps scan") else {
+            return Array(pids)
+        }
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
         guard let output = String(data: data, encoding: .utf8) else { return Array(pids) }
 
@@ -1212,11 +1237,27 @@ final class ProcessEngineSupervisor: EngineSupervising {
             return ""
         }
 
-        proc.waitUntilExit()
+        guard waitForProcessExit(proc, timeout: 1.0, context: "process command ps pid=\(pid)") else {
+            return ""
+        }
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
         let command = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         consoleTrace("processCommandLine pid=\(pid) status=\(proc.terminationStatus) command=\(command)")
         return command
+    }
+
+    private func waitForProcessExit(_ proc: Process, timeout: TimeInterval, context: String) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while proc.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        guard !proc.isRunning else {
+            consoleTrace("\(context) timed out after \(timeout)s; terminating pid=\(proc.processIdentifier)")
+            proc.terminate()
+            return false
+        }
+        proc.waitUntilExit()
+        return true
     }
 
     private func processExists(pid: Int32) -> Bool {

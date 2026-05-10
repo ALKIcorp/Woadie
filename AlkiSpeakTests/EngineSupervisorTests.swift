@@ -115,6 +115,37 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertEqual(store.engineStatus, .starting)
         model.stopEngine()
     }
+
+    @MainActor
+    func testStopEngineIgnoresLateStartingCallback() async {
+        let supervisor = FakeEngineSupervisor()
+        let store = AppStore()
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: supervisor))
+
+        model.startEngine()
+        model.stopEngine()
+
+        var staleSummary = EngineHealthSummary.stopped
+        staleSummary.status = .starting
+        supervisor.emit(staleSummary)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(store.engineStatus, .stopped)
+    }
+
+    @MainActor
+    func testStartEngineIgnoresLateStoppedCallbackWhileStartIsActive() async {
+        let supervisor = FakeEngineSupervisor()
+        let store = AppStore()
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: supervisor))
+
+        model.startEngine()
+        supervisor.emit(.stopped)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(store.engineStatus, .starting)
+        model.stopEngine()
+    }
 }
 
 private final class FakeEngineSupervisor: EngineSupervising {
@@ -130,6 +161,13 @@ private final class FakeEngineSupervisor: EngineSupervising {
     func start() throws {
         startCalled = true
         startCallCount += 1
+    }
+
+    func emit(_ summary: EngineHealthSummary) {
+        healthSummary = summary
+        processIdentifier = summary.pid
+        isRunning = summary.pid != nil
+        onHealthChanged?(summary)
     }
 
     func stop() {}
