@@ -4,21 +4,88 @@ import Foundation
 final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating, AVAudioPlayerDelegate {
     var onFinished: (() -> Void)?
     private var audioPlayer: AVAudioPlayer?
+    private let completionLock = NSLock()
+    private var completionContinuation: CheckedContinuation<Void, Error>?
 
     func play(audioData: Data) throws {
+        completionLock.lock()
+        completionContinuation = nil
+        completionLock.unlock()
         audioPlayer = try AVAudioPlayer(data: audioData)
         audioPlayer?.delegate = self
         audioPlayer?.prepareToPlay()
         audioPlayer?.play()
     }
 
+    func playToCompletion(audioData: Data) async throws {
+        stop()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            completionLock.lock()
+            completionContinuation = continuation
+            completionLock.unlock()
+            do {
+                let player = try AVAudioPlayer(data: audioData)
+                audioPlayer = player
+                player.delegate = self
+                player.prepareToPlay()
+                guard player.play() else {
+                    completionLock.lock()
+                    completionContinuation = nil
+                    completionLock.unlock()
+                    continuation.resume(
+                        throwing: AlkiSpeakError.playback(
+                            code: "play-failed",
+                            title: "Audio Did Not Start",
+                            message: "The audio engine could not begin playback.",
+                            recoverySuggestion: "Try generating the speech again.",
+                            context: [:]
+                        )
+                    )
+                    return
+                }
+            } catch {
+                completionLock.lock()
+                completionContinuation = nil
+                completionLock.unlock()
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+
     func stop() {
+        completionLock.lock()
+        if let cont = completionContinuation {
+            completionContinuation = nil
+            cont.resume(throwing: CancellationError())
+        }
+        completionLock.unlock()
         audioPlayer?.stop()
         audioPlayer = nil
     }
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        completionLock.lock()
+        let cont = completionContinuation
+        completionContinuation = nil
+        completionLock.unlock()
+
         Task { @MainActor in
+            if let cont {
+                if flag {
+                    cont.resume()
+                } else {
+                    cont.resume(
+                        throwing: AlkiSpeakError.playback(
+                            code: "play-incomplete",
+                            title: "Playback Interrupted",
+                            message: "Audio playback did not finish successfully.",
+                            recoverySuggestion: "Try generating the speech again.",
+                            context: [:]
+                        )
+                    )
+                }
+                return
+            }
             self.onFinished?()
         }
     }

@@ -91,6 +91,17 @@ final class ProcessEngineSupervisor: EngineSupervising {
         self.timeoutPolicy = timeoutPolicy
     }
 
+    private static func resolveKokoroPythonExecutable(root: URL) -> String? {
+        let fm = FileManager.default
+        for name in ["python3", "python"] {
+            let path = root.appendingPathComponent(".venv/bin/\(name)").path
+            if fm.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        return nil
+    }
+
     var isRunning: Bool {
         queue.sync { process?.isRunning == true || adoptedProcessIdentifier != nil }
     }
@@ -294,12 +305,55 @@ final class ProcessEngineSupervisor: EngineSupervising {
             }
         }
 
+        let kokoroRoot = URL(fileURLWithPath: AppConfig.kokoroPath, isDirectory: true)
+        let fm = FileManager.default
+        let serverPy = kokoroRoot.appendingPathComponent("kokoro_server.py").path
+        guard fm.fileExists(atPath: serverPy) else {
+            let issue = EngineIssue(
+                code: "engine.missing-checkout",
+                title: "Kokoro Directory Invalid",
+                description: "Could not find kokoro_server.py under \(AppConfig.kokoroPath).",
+                probableCause: "The path is wrong for this Mac, or the repo lives elsewhere. Set KOKORO_HOME or move the checkout.",
+                subsystem: "engine.lifecycle",
+                context: ["expected": serverPy]
+            )
+            record(issue, status: .failed)
+            throw AlkiSpeakError.engine(
+                code: "missing-checkout",
+                title: issue.title,
+                message: issue.description,
+                recoverySuggestion: issue.probableCause,
+                context: issue.context
+            )
+        }
+
+        guard let pythonExecutable = Self.resolveKokoroPythonExecutable(root: kokoroRoot) else {
+            let issue = EngineIssue(
+                code: "engine.missing-venv",
+                title: "Python Virtualenv Missing",
+                description: "Could not find an executable at .venv/bin/python3 (or python) under \(AppConfig.kokoroPath).",
+                probableCause: "Create a venv in that directory, or fix KOKORO_HOME so it points at the folder that contains kokoro_server.py and .venv.",
+                subsystem: "engine.lifecycle"
+            )
+            record(issue, status: .failed)
+            throw AlkiSpeakError.engine(
+                code: "missing-venv",
+                title: issue.title,
+                message: issue.description,
+                recoverySuggestion: issue.probableCause
+            )
+        }
+
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        proc.executableURL = URL(fileURLWithPath: pythonExecutable)
         proc.arguments = [
-            "-lc",
-            "cd \"\(AppConfig.kokoroPath)\"; source .venv/bin/activate; uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort)"
+            "-m", "uvicorn", "kokoro_server:app",
+            "--host", "127.0.0.1", "--port", "\(AppConfig.enginePort)",
         ]
+        proc.currentDirectoryURL = kokoroRoot
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONUNBUFFERED"] = "1"
+        proc.environment = env
 
         let stderr = Pipe()
         proc.standardError = stderr

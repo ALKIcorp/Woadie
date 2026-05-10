@@ -1,0 +1,23 @@
+{
+  "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/DerivedSources/GeneratedAssetSymbols.swift" : {
+    "const-values" : "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftconstvalues",
+    "dependencies" : "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/Objects-normal/arm64/GeneratedAssetSymbols.d",
+    "diagnostics" : "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/Objects-normal/arm64/GeneratedAssetSymbols.dia",
+    "object" : "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "swift-dependencies" : "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftdeps"
+  },
+  "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/AlkiSpeak/Persistence/LocalPersistenceServices.swift" : {
+    "const-values" : "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/Objects-normal/arm64/LocalPersistenceServices.swiftconstvalues",
+    "dependencies" : "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/Objects-normal/arm64/LocalPersistenceServices.d",
+    "diagnostics" : "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/Objects-normal/arm64/LocalPersistenceServices.dia",
+    "object" : "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/Objects-normal/arm64/LocalPersistenceServices.o",
+    "swift-dependencies" : "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/Objects-normal/arm64/LocalPersistenceServices.swiftdeps"
+  },
+  "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/AlkiSpeak/UI/VisualCompatibility.swift" : {
+    "const-values" : "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/Objects-normal/arm64/VisualCompatibility.swiftconstvalues",
+    "dependencies" : "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/Objects-normal/arm64/VisualCompatibility.d",
+    "diagnostics" : "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/Objects-normal/arm64/VisualCompatibility.dia",
+    "object" : "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/Objects-normal/arm64/VisualCompatibility.o",
+    "swift-dependencies" : "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro/AlkiSpeak/.derived/Build/Intermediates.noindex/AlkiSpeak.build/Debug/Woadie.build/Objects-normal/arm64/VisualCompatibility.swiftdeps"
+  }
+}

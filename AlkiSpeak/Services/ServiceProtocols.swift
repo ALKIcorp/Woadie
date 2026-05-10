@@ -33,6 +33,7 @@ protocol SpeechQueueing: AnyObject {
 
 protocol PlaybackCoordinating: AnyObject {
     func play(audioData: Data) throws
+    func playToCompletion(audioData: Data) async throws
     func stop()
 }
 

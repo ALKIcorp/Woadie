@@ -247,25 +247,31 @@ final class AppModel: ObservableObject {
         defer { dependencies.engineSupervisor.noteRequestFinished(jobID: jobID) }
 
         do {
-            guard let firstSegment = segments.first else { return }
+            guard !segments.isEmpty else { return }
             if segments.count > 1 {
                 updateJob(jobID, status: .queued, error: nil)
-                store.playback.currentSegmentID = firstSegment.id
+                store.userMessage = "Speaking \(segments.count) segments in order…"
             }
 
-            let result = try await dependencies.generationService.synthesize(
-                text: firstSegment.text,
-                voice: voice,
-                jobID: jobID
-            )
-            store.dashboardTelemetry.lastLatencyMs = result.latencyMs
-            store.dashboardTelemetry.lastCharCount = result.charCount
-            updateJob(jobID, status: .playing, error: nil)
-            store.playback.state = .playing
-            if segments.count > 1 {
-                store.userMessage = "Large text is safely segmented. Playing segment 1 of \(segments.count); remaining segments are preserved for the batching pipeline."
+            for segment in segments {
+                store.playback.currentSegmentID = segment.id
+                let result = try await dependencies.generationService.synthesize(
+                    text: segment.text,
+                    voice: voice,
+                    jobID: jobID
+                )
+                store.dashboardTelemetry.lastLatencyMs = result.latencyMs
+                store.dashboardTelemetry.lastCharCount = result.charCount
+
+                updateJob(jobID, status: .playing, error: nil)
+                store.playback.state = .playing
+                try await dependencies.playbackCoordinator.playToCompletion(audioData: result.audioData)
             }
-            try dependencies.playbackCoordinator.play(audioData: result.audioData)
+
+            finishPlayback()
+        } catch is CancellationError {
+            updateJob(jobID, status: .cancelled, error: nil)
+            store.playback = .idle
         } catch {
             let appError = normalizeGenerationError(error)
             failPlayback(jobID: jobID, logEntryID: logEntryID, error: appError)
@@ -302,8 +308,8 @@ final class AppModel: ObservableObject {
         if !(await dependencies.generationService.checkHealth()) {
             store.userMessage =
                 "Could not reach the Kokoro engine at \(AppConfig.serverBaseURL.absoluteString). "
-                + "Verify \(AppConfig.kokoroPath) has a .venv with uvicorn. "
-                + "In Terminal: cd \"\(AppConfig.kokoroPath)\" && source .venv/bin/activate && uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort)"
+                + "Verify \(AppConfig.kokoroPath) contains kokoro_server.py and .venv/bin/python3. "
+                + "In Terminal: cd \"\(AppConfig.kokoroPath)\" && .venv/bin/python3 -m uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort)"
         }
     }
 

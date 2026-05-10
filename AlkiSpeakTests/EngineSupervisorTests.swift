@@ -131,6 +131,7 @@ private final class FakeSpeechGenerating: SpeechGenerating {
 
 private final class FakePlaybackCoordinating: PlaybackCoordinating {
     func play(audioData: Data) throws {}
+    func playToCompletion(audioData: Data) async throws {}
     func stop() {}
 }
 
