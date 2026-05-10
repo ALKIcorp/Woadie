@@ -7,6 +7,12 @@ final class AppModel: ObservableObject {
     private let dependencies: AppDependencies
     private let requestPolicy = EngineRequestPolicy.live
     private var cancellables: Set<AnyCancellable> = []
+    private var engineStartTask: Task<Void, Never>?
+    private var engineStartGeneration: UInt64 = 0
+
+    private func consoleTrace(_ message: String, function: StaticString = #function, line: UInt = #line) {
+        NSLog("[Woadie][AppModel][\(function):\(line)] \(message)")
+    }
 
     var status: EngineStatus { store.engineStatus }
     var voiceOptions: [VoiceOption] { store.voiceOptions }
@@ -90,36 +96,76 @@ final class AppModel: ObservableObject {
     init(store: AppStore, dependencies: AppDependencies) {
         self.store = store
         self.dependencies = dependencies
+        consoleTrace("init isRunningUnitTests=\(AppConfig.isRunningUnitTests) kokoroPath=\(AppConfig.kokoroPath) baseURL=\(AppConfig.serverBaseURL.absoluteString)")
 
         store.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
+        consoleTrace("wiring service callbacks")
         wireServiceCallbacks()
+        consoleTrace("loading workspace")
         loadWorkspace()
+        consoleTrace("refreshing local voices")
         refreshLocalVoices()
         if !AppConfig.isRunningUnitTests {
+            consoleTrace("auto-starting engine from AppModel.init")
             startEngine()
+        } else {
+            consoleTrace("unit test mode detected; skipping auto-start")
         }
     }
 
     func startEngine() {
-        guard !dependencies.engineSupervisor.isRunning else { return }
+        consoleTrace("startEngine requested currentStatus=\(status.rawValue) supervisorRunning=\(dependencies.engineSupervisor.isRunning) pid=\(dependencies.engineSupervisor.processIdentifier.map(String.init) ?? "nil")")
+        guard !status.isProcessExpectedAlive && !dependencies.engineSupervisor.isRunning else {
+            consoleTrace("startEngine ignored because engine is already expected alive or supervisor reports running")
+            return
+        }
+        engineStartTask?.cancel()
+        engineStartGeneration &+= 1
+        let startGeneration = engineStartGeneration
         store.clearErrorMessage()
         store.engineStatus = .starting
+        consoleTrace("engineStatus set to starting")
 
         let supervisor = dependencies.engineSupervisor
-        Task {
+        engineStartTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.engineStartGeneration == startGeneration {
+                    self.engineStartTask = nil
+                }
+            }
             do {
+                consoleTrace("detached supervisor.start beginning")
                 try await Task.detached(priority: .userInitiated) {
                     try supervisor.start()
                 }.value
+                guard self.engineStartGeneration == startGeneration, !Task.isCancelled else {
+                    consoleTrace("supervisor.start completed after cancellation; ignoring result")
+                    return
+                }
+                consoleTrace("detached supervisor.start completed pid=\(supervisor.processIdentifier.map(String.init) ?? "nil") healthStatus=\(supervisor.healthSummary.status.rawValue)")
                 refreshTelemetry()
             } catch {
+                guard self.engineStartGeneration == startGeneration else {
+                    consoleTrace("supervisor.start error belongs to an old start generation; ignoring error=\(String(describing: error))")
+                    return
+                }
+                if error is CancellationError || Task.isCancelled {
+                    consoleTrace("supervisor.start cancelled")
+                    if store.engineStatus == .starting || store.engineStatus == .retrying {
+                        store.engineStatus = .stopped
+                    }
+                    return
+                }
+                consoleTrace("supervisor.start failed error=\(String(describing: error))")
                 if let appError = error as? AlkiSpeakError, appError.code == "engine.port-in-use" {
                     let pids = await Task.detached(priority: .userInitiated) {
                         supervisor.findListeningPidsOnEnginePort()
                     }.value
+                    consoleTrace("port-in-use surfaced pids=\(pids.map(String.init).joined(separator: ","))")
                     store.portInUsePids = pids
                     store.showPortInUseAlert = true
                     record(appError)
@@ -135,24 +181,31 @@ final class AppModel: ObservableObject {
                     )
                 }
                 store.engineStatus = .failed
+                consoleTrace("engineStatus set to failed after start error")
                 return
             }
             // Poll health at 250 ms — mirrors the original waitForHealth() pattern from
             // 999d859 — so both auto-launch on init AND manual stop→start transitions
             // snap the UI out of "Starting..." as soon as the engine is reachable.
-            await waitForEngineReady()
+            await waitForEngineReady(startGeneration: startGeneration)
         }
     }
 
     func stopEngine() {
+        consoleTrace("stopEngine requested currentStatus=\(status.rawValue) supervisorRunning=\(dependencies.engineSupervisor.isRunning) pid=\(dependencies.engineSupervisor.processIdentifier.map(String.init) ?? "nil")")
+        engineStartGeneration &+= 1
+        engineStartTask?.cancel()
+        engineStartTask = nil
         store.clearErrorMessage()
         stopPlayback()
         dependencies.engineSupervisor.stop()
         store.engineStatus = .stopped
+        consoleTrace("engineStatus set to stopped")
         refreshTelemetry()
     }
 
     func toggleEngine() {
+        consoleTrace("toggleEngine status=\(status.rawValue) processExpectedAlive=\(status.isProcessExpectedAlive) supervisorRunning=\(dependencies.engineSupervisor.isRunning)")
         if status.isProcessExpectedAlive || dependencies.engineSupervisor.isRunning {
             stopEngine()
         } else {
@@ -288,45 +341,70 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func waitForEngineReady() async {
+    private func waitForEngineReady(startGeneration: UInt64) async {
         let deadline = Date().addingTimeInterval(min(AppConfig.engineStartupTimeoutSeconds, 120))
+        var attempt = 0
+        consoleTrace("waitForEngineReady started deadline=\(deadline) baseURL=\(AppConfig.serverBaseURL.absoluteString)")
         while Date() < deadline {
+            guard engineStartGeneration == startGeneration, !Task.isCancelled else {
+                consoleTrace("waitForEngineReady cancelled startGeneration=\(startGeneration)")
+                return
+            }
+            attempt += 1
             if await dependencies.generationService.checkHealth() {
+                guard engineStartGeneration == startGeneration, !Task.isCancelled else {
+                    consoleTrace("waitForEngineReady health ok after cancellation; ignoring")
+                    return
+                }
+                consoleTrace("waitForEngineReady health ok attempt=\(attempt)")
                 // Immediately update status when the engine becomes reachable, matching the
                 // original waitForHealth() from 999d859. Without this the UI can sit at
                 // "Starting..." for up to 5 s waiting for the supervisor's health-check cycle.
                 if store.engineStatus == .starting || store.engineStatus == .retrying {
                     store.engineStatus = .running
+                    consoleTrace("engineStatus set to running after health ok")
                 }
                 await fetchVoices()
                 refreshTelemetry()
                 return
             }
+            consoleTrace("waitForEngineReady health not ready attempt=\(attempt) status=\(store.engineStatus.rawValue)")
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
         refreshTelemetry()
+        consoleTrace("waitForEngineReady deadline reached attempts=\(attempt)")
+        guard engineStartGeneration == startGeneration, !Task.isCancelled else {
+            consoleTrace("waitForEngineReady deadline reached after cancellation; ignoring")
+            return
+        }
         if !(await dependencies.generationService.checkHealth()) {
             store.userMessage =
                 "Could not reach the Kokoro engine at \(AppConfig.serverBaseURL.absoluteString). "
                 + "Verify \(AppConfig.kokoroPath) contains kokoro_server.py and .venv/bin/python3. "
                 + "In Terminal: cd \"\(AppConfig.kokoroPath)\" && .venv/bin/python3 -m uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort)"
+            consoleTrace("waitForEngineReady final health failed; userMessage updated")
         }
     }
 
     private func fetchVoices() async {
         do {
+            consoleTrace("fetchVoices starting")
             let remote = try await dependencies.generationService.fetchVoices()
+            consoleTrace("fetchVoices succeeded count=\(remote.count) voices=\(remote.joined(separator: ","))")
             if remote.isEmpty {
                 store.userMessage = "Voice list empty. Using last voice."
             }
             mergeVoiceOptions(remote: remote)
         } catch {
+            consoleTrace("fetchVoices failed error=\(String(describing: error))")
             record(normalizeEngineError(error))
         }
     }
 
     private func refreshLocalVoices() {
+        consoleTrace("refreshLocalVoices starting")
         dependencies.localSpeechService.refreshVoices()
+        consoleTrace("refreshLocalVoices localCount=\(dependencies.localSpeechService.voiceOptions.count)")
         mergeVoiceOptions(remote: store.voiceOptions.filter { !$0.isLocal }.map(\.id))
     }
 
@@ -355,6 +433,7 @@ final class AppModel: ObservableObject {
         dependencies.engineSupervisor.onHealthChanged = { [weak self] summary in
             Task { @MainActor in
                 guard let self else { return }
+                self.consoleTrace("onHealthChanged status=\(summary.status.rawValue) pid=\(summary.pid.map(String.init) ?? "nil") retry=\(summary.retryCount) failures=\(summary.consecutiveHealthFailures) latestIssue=\(summary.latestIssue?.code ?? "nil")")
                 self.store.engineHealth = summary
                 self.store.engineStatus = summary.status
                 self.refreshTelemetry()
@@ -370,6 +449,7 @@ final class AppModel: ObservableObject {
         dependencies.engineSupervisor.onIssue = { [weak self] issue in
             Task { @MainActor in
                 guard let self else { return }
+                self.consoleTrace("onIssue code=\(issue.code) title=\(issue.title) rawError=\(issue.rawError ?? "nil") context=\(issue.context)")
                 self.store.playback = .idle
                 self.store.record(issue)
             }

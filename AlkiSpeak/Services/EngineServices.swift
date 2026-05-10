@@ -81,14 +81,29 @@ final class ProcessEngineSupervisor: EngineSupervising {
     private var restartWorkActive = false
     /// Bumps when scheduling or cancelling restart work so a cancelled task’s `defer` cannot clear `restartWorkActive` for a newer restart wave.
     private var restartGeneration: UInt64 = 0
+    /// Bumps when a launch is superseded by stop or a newer launch request.
+    private var launchGeneration: UInt64 = 0
     private var adoptedProcessIdentifier: Int32?
+    private var adoptedProcessOwnership: EngineProcessOwnership = .none
     private var state: EngineHealthSummary = .stopped
 
     var onHealthChanged: ((EngineHealthSummary) -> Void)?
     var onIssue: ((EngineIssue) -> Void)?
 
+    private enum EngineProcessOwnership {
+        case none
+        case external
+        case launchedByApp
+    }
+
     init(timeoutPolicy: EngineTimeoutPolicy = .live) {
         self.timeoutPolicy = timeoutPolicy
+        consoleTrace("init requestTimeout=\(timeoutPolicy.requestTimeout) resourceTimeout=\(timeoutPolicy.resourceTimeout) startupTimeout=\(timeoutPolicy.startupTimeout) healthTimeout=\(timeoutPolicy.healthCheckTimeout)")
+    }
+
+    private func consoleTrace(_ message: String, function: StaticString = #function, line: UInt = #line) {
+        let text = "[Woadie][EngineSupervisor][\(function):\(line)] \(message)"
+        NSLog("%@", text)
     }
 
     private enum EngineLaunchError: LocalizedError {
@@ -120,17 +135,18 @@ final class ProcessEngineSupervisor: EngineSupervising {
         "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
     }
 
-    private static func terminalLaunchFiles(kokoroRoot: URL) throws -> (script: URL, pidFile: URL) {
+    private static func terminalLaunchFiles(kokoroRoot: URL) throws -> (script: URL, pidFile: URL, logFile: URL) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("WoadieEngine", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return (
             script: directory.appendingPathComponent("start-kokoro-engine.command"),
-            pidFile: directory.appendingPathComponent("start-kokoro-engine.pid")
+            pidFile: directory.appendingPathComponent("start-kokoro-engine.pid"),
+            logFile: directory.appendingPathComponent("kokoro-engine.log")
         )
     }
 
-    private static func writeTerminalLaunchScript(kokoroRoot: URL, pythonExecutable: String) throws -> (script: URL, pidFile: URL) {
+    private static func writeTerminalLaunchScript(kokoroRoot: URL, pythonExecutable: String) throws -> (script: URL, pidFile: URL, logFile: URL) {
         let files = try terminalLaunchFiles(kokoroRoot: kokoroRoot)
         try? FileManager.default.removeItem(at: files.pidFile)
 
@@ -138,9 +154,12 @@ final class ProcessEngineSupervisor: EngineSupervising {
         #!/bin/zsh
         cd \(shellQuoted(kokoroRoot.path)) || exit 1
         export PYTHONUNBUFFERED=1
+        : > \(shellQuoted(files.logFile.path))
+        exec > >(tee -a \(shellQuoted(files.logFile.path))) 2>&1
         echo $$ > \(shellQuoted(files.pidFile.path))
         echo "Starting Kokoro engine at \(AppConfig.serverBaseURL.absoluteString)"
         echo "Working directory: \(kokoroRoot.path)"
+        echo "Log file: \(files.logFile.path)"
         echo "Command: \(pythonExecutable) -m uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort)"
         exec \(shellQuoted(pythonExecutable)) -m uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort)
         """
@@ -179,39 +198,56 @@ final class ProcessEngineSupervisor: EngineSupervising {
     }
 
     func start() throws {
+        consoleTrace("start() called currentStatus=\(healthSummary.status.rawValue) pid=\(processIdentifier.map(String.init) ?? "nil") isRunning=\(isRunning)")
         restartTask?.cancel()
-        queue.sync {
+        let generation = queue.sync { () -> UInt64 in
             restartGeneration &+= 1
+            launchGeneration &+= 1
             restartWorkActive = false
+            return launchGeneration
         }
-        try launchProcess(resetRetryCount: true)
+        consoleTrace("restart task cancelled generation advanced")
+        try launchProcess(resetRetryCount: true, generation: generation)
     }
 
     func stop() {
+        consoleTrace("stop() called currentStatus=\(healthSummary.status.rawValue) pid=\(processIdentifier.map(String.init) ?? "nil") isRunning=\(isRunning)")
         restartTask?.cancel()
         startupTask?.cancel()
         healthTask?.cancel()
         queue.sync {
             restartGeneration &+= 1
+            launchGeneration &+= 1
             restartWorkActive = false
         }
+        consoleTrace("monitoring tasks cancelled generation advanced")
 
-        let stopped = queue.sync { () -> EngineHealthSummary in
+        let pidToTerminate = queue.sync { () -> Int32? in
             isStopping = true
             process?.terminate()
-            if let adoptedProcessIdentifier {
-                _ = runKill(signal: "-TERM", pids: [adoptedProcessIdentifier])
+            let pid = adoptedProcessOwnership == .launchedByApp ? adoptedProcessIdentifier : nil
+            if let adoptedProcessIdentifier, adoptedProcessOwnership == .external {
+                consoleTrace("stop() detaching from external adopted pid=\(adoptedProcessIdentifier)")
             }
             process = nil
             adoptedProcessIdentifier = nil
+            adoptedProcessOwnership = .none
             state.status = .stopped
             state.pid = nil
             state.startedAt = nil
             state.activeJobID = nil
             state.consecutiveHealthFailures = 0
-            return state
+            return pid
+        }
+        if let pidToTerminate {
+            consoleTrace("stop() terminating app-launched pid=\(pidToTerminate)")
+            _ = runKill(signal: "-TERM", pids: [pidToTerminate])
+        }
+        let stopped = queue.sync { () -> EngineHealthSummary in
+            state
         }
         logger.info("Engine stopped by app lifecycle")
+        consoleTrace("stop() completed status=\(stopped.status.rawValue)")
         onHealthChanged?(stopped)
     }
 
@@ -232,6 +268,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
     }
 
     func findListeningPidsOnEnginePort() -> [Int32] {
+        consoleTrace("findListeningPidsOnEnginePort running lsof port=\(AppConfig.enginePort)")
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         proc.arguments = [
@@ -245,42 +282,51 @@ final class ProcessEngineSupervisor: EngineSupervising {
         do {
             try proc.run()
         } catch {
+            consoleTrace("findListeningPidsOnEnginePort lsof failed error=\(error.localizedDescription)")
             return []
         }
 
         proc.waitUntilExit()
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
         guard let output = String(data: data, encoding: .utf8) else { return [] }
-        return output
+        let pids = output
             .split(whereSeparator: \.isNewline)
             .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        consoleTrace("findListeningPidsOnEnginePort status=\(proc.terminationStatus) pids=\(pids.map(String.init).joined(separator: ",")) raw=\(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+        return pids
     }
 
     func terminatePortUsers(_ pids: [Int32]) async {
+        consoleTrace("terminatePortUsers pids=\(pids.map(String.init).joined(separator: ","))")
         guard !pids.isEmpty else { return }
         _ = runKill(signal: "-TERM", pids: pids)
 
         let deadline = Date().addingTimeInterval(2.0)
         while Date() < deadline {
             if findListeningPidsOnEnginePort().isEmpty {
+                consoleTrace("terminatePortUsers port vacant after TERM")
                 return
             }
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
 
+        consoleTrace("terminatePortUsers escalating to KILL pids=\(pids.map(String.init).joined(separator: ","))")
         _ = runKill(signal: "-KILL", pids: pids)
         waitUntilEnginePortVacant(timeout: 4.0)
     }
 
     /// After SIGKILL or racey teardown, the listener PID can linger briefly; wait before spawning a replacement.
     private func waitUntilEnginePortVacant(timeout: TimeInterval) {
+        consoleTrace("waitUntilEnginePortVacant timeout=\(timeout)")
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if findListeningPidsOnEnginePort().isEmpty {
+                consoleTrace("waitUntilEnginePortVacant port is vacant")
                 return
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
+        consoleTrace("waitUntilEnginePortVacant timed out; port still occupied")
     }
 
     /// Slow cold/warm servers can miss a 3s probe; allow resource timeout when deciding adopt vs reclaim.
@@ -288,17 +334,62 @@ final class ProcessEngineSupervisor: EngineSupervising {
         max(timeoutPolicy.healthCheckTimeout, timeoutPolicy.resourceTimeout)
     }
 
-    private func launchProcess(resetRetryCount: Bool) throws {
-        let alreadyRunning = queue.sync { process?.isRunning == true || adoptedProcessIdentifier != nil || state.status == .starting }
-        guard !alreadyRunning else { return }
+    private func isCurrentLaunchGeneration(_ generation: UInt64) -> Bool {
+        queue.sync { launchGeneration == generation }
+    }
+
+    private func ensureCurrentLaunchGeneration(_ generation: UInt64, context: String) throws {
+        guard isCurrentLaunchGeneration(generation) else {
+            consoleTrace("launch generation cancelled context=\(context) generation=\(generation)")
+            throw CancellationError()
+        }
+    }
+
+    private func launchProcess(resetRetryCount: Bool, generation: UInt64) throws {
+        try ensureCurrentLaunchGeneration(generation, context: "launchProcess entry")
+        let launchState = queue.sync {
+            (
+                processRunning: process?.isRunning == true,
+                adoptedPID: adoptedProcessIdentifier,
+                status: state.status,
+                retryCount: state.retryCount
+            )
+        }
+        consoleTrace("launchProcess resetRetryCount=\(resetRetryCount) processRunning=\(launchState.processRunning) adoptedPID=\(launchState.adoptedPID.map(String.init) ?? "nil") status=\(launchState.status.rawValue) retry=\(launchState.retryCount)")
+        let alreadyRunning = launchState.processRunning || launchState.adoptedPID != nil || launchState.status == .starting
+        guard !alreadyRunning else {
+            consoleTrace("launchProcess returning early because engine is already running/starting")
+            return
+        }
+
+        if try adoptHealthyExistingEngineIfAvailable(resetRetryCount: resetRetryCount, generation: generation) {
+            return
+        }
+        try ensureCurrentLaunchGeneration(generation, context: "before clean slate")
 
         if resetRetryCount {
+            consoleTrace("launchProcess establishing clean slate")
             establishCleanSlate()
+            try ensureCurrentLaunchGeneration(generation, context: "after clean slate")
         }
 
         let portUsers = findListeningPidsOnEnginePort()
+        consoleTrace("launchProcess initial portUsers=\(portUsers.map(String.init).joined(separator: ","))")
         if !portUsers.isEmpty {
-            if isLikelyRecoverableEngineOwner(portUsers: portUsers) {
+            if checkHealthSynchronously(timeout: launchPortHealthProbeTimeout) {
+                try ensureCurrentLaunchGeneration(generation, context: "before adopting existing listener")
+                consoleTrace("launchProcess health check proved existing listener is usable; adopting")
+                // Command-line heuristics can miss a Kokoro listener (truncated ps, wrapper binary, etc.);
+                // health proves our configured endpoint is alive, so reconnect instead of reclaiming it.
+                let listeners = findListeningPidsOnEnginePort()
+                if !listeners.isEmpty {
+                    consoleTrace("launchProcess adopting listeners=\(listeners.map(String.init).joined(separator: ","))")
+                    adoptExistingEngine(portUsers: listeners, resetRetryCount: resetRetryCount, ownership: .external)
+                    return
+                }
+            } else if isLikelyRecoverableEngineOwner(portUsers: portUsers) {
+                try ensureCurrentLaunchGeneration(generation, context: "before reclaiming recoverable owner")
+                consoleTrace("launchProcess found recoverable engine owner; reclaiming pids=\(portUsers.map(String.init).joined(separator: ","))")
                 record(
                     EngineIssue(
                         code: "engine.reclaiming-orphan",
@@ -312,17 +403,11 @@ final class ProcessEngineSupervisor: EngineSupervising {
                     notifyUser: false
                 )
                 reclaimPortUsers(portUsers)
-            } else if checkHealthSynchronously(timeout: launchPortHealthProbeTimeout) {
-                // Command-line heuristics missed a Kokoro listener (truncated ps, wrapper binary, etc.);
-                // health proves our configured endpoint is alive — reconnect instead of fatal port-in-use.
-                let listeners = findListeningPidsOnEnginePort()
-                if !listeners.isEmpty {
-                    adoptExistingEngine(portUsers: listeners, resetRetryCount: resetRetryCount)
-                    return
-                }
             }
+            try ensureCurrentLaunchGeneration(generation, context: "after initial port handling")
 
             var stillBlocked = findListeningPidsOnEnginePort()
+            consoleTrace("launchProcess post-reclaim stillBlocked=\(stillBlocked.map(String.init).joined(separator: ","))")
             if !stillBlocked.isEmpty {
                 // Last resort: port is reserved but we could not classify or reach health (stale process, stuck server, lsof/ps mismatch). Clear listeners for this configured port once, then spawn.
                 record(
@@ -343,9 +428,12 @@ final class ProcessEngineSupervisor: EngineSupervising {
                 )
                 reclaimPortUsers(stillBlocked)
                 waitUntilEnginePortVacant(timeout: 5.0)
+                try ensureCurrentLaunchGeneration(generation, context: "after forced port reclaim")
                 stillBlocked = findListeningPidsOnEnginePort()
+                consoleTrace("launchProcess after forced reclaim stillBlocked=\(stillBlocked.map(String.init).joined(separator: ","))")
             }
             if !stillBlocked.isEmpty {
+                consoleTrace("launchProcess failing because port remains blocked")
                 let issue = EngineIssue(
                     code: "engine.port-in-use",
                     title: "Engine Port In Use",
@@ -369,10 +457,13 @@ final class ProcessEngineSupervisor: EngineSupervising {
             }
         }
 
+        try ensureCurrentLaunchGeneration(generation, context: "before validating launch files")
         let kokoroRoot = URL(fileURLWithPath: AppConfig.kokoroPath, isDirectory: true)
         let fm = FileManager.default
         let serverPy = kokoroRoot.appendingPathComponent("kokoro_server.py").path
+        consoleTrace("launchProcess validating kokoroRoot=\(kokoroRoot.path) serverPy=\(serverPy)")
         guard fm.fileExists(atPath: serverPy) else {
+            consoleTrace("launchProcess missing kokoro_server.py expected=\(serverPy)")
             let issue = EngineIssue(
                 code: "engine.missing-checkout",
                 title: "Kokoro Directory Invalid",
@@ -392,6 +483,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
         }
 
         guard let pythonExecutable = Self.resolveKokoroPythonExecutable(root: kokoroRoot) else {
+            consoleTrace("launchProcess missing executable .venv/bin/python3 or python under \(kokoroRoot.path)")
             let issue = EngineIssue(
                 code: "engine.missing-venv",
                 title: "Python Virtualenv Missing",
@@ -407,11 +499,15 @@ final class ProcessEngineSupervisor: EngineSupervising {
                 recoverySuggestion: issue.probableCause
             )
         }
+        consoleTrace("launchProcess resolved pythonExecutable=\(pythonExecutable)")
 
-        let launchFiles: (script: URL, pidFile: URL)
+        try ensureCurrentLaunchGeneration(generation, context: "before writing Terminal launch script")
+        let launchFiles: (script: URL, pidFile: URL, logFile: URL)
         do {
             launchFiles = try Self.writeTerminalLaunchScript(kokoroRoot: kokoroRoot, pythonExecutable: pythonExecutable)
+            consoleTrace("launchProcess wrote Terminal launch script=\(launchFiles.script.path) pidFile=\(launchFiles.pidFile.path) logFile=\(launchFiles.logFile.path)")
         } catch {
+            consoleTrace("launchProcess failed writing Terminal launch script error=\(error.localizedDescription)")
             let issue = EngineIssue(
                 code: "engine.launch-script-failed",
                 title: "Engine Launch Script Failed",
@@ -427,7 +523,9 @@ final class ProcessEngineSupervisor: EngineSupervising {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         proc.arguments = ["-a", "Terminal", launchFiles.script.path]
+        consoleTrace("launchProcess opening Terminal via /usr/bin/open args=\(proc.arguments?.joined(separator: " ") ?? "")")
 
+        try ensureCurrentLaunchGeneration(generation, context: "before Terminal open")
         let prelaunchSummary = queue.sync { () -> EngineHealthSummary in
             if resetRetryCount {
                 state.retryCount = 0
@@ -437,6 +535,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
             isStopping = false
             process = nil
             adoptedProcessIdentifier = nil
+            adoptedProcessOwnership = .none
             state.status = .starting
             state.pid = nil
             state.startedAt = Date()
@@ -447,15 +546,22 @@ final class ProcessEngineSupervisor: EngineSupervising {
             state.consecutiveHealthFailures = 0
             return state
         }
+        consoleTrace("launchProcess state set to starting before Terminal open")
         onHealthChanged?(prelaunchSummary)
 
         do {
             try proc.run()
             proc.waitUntilExit()
+            consoleTrace("launchProcess /usr/bin/open exited status=\(proc.terminationStatus)")
             guard proc.terminationStatus == 0 else {
                 throw EngineLaunchError.terminalOpenFailed(proc.terminationStatus)
             }
+            try ensureCurrentLaunchGeneration(generation, context: "after Terminal open")
         } catch {
+            if error is CancellationError {
+                throw error
+            }
+            consoleTrace("launchProcess Terminal open failed error=\(error.localizedDescription)")
             queue.sync {
                 process = nil
                 adoptedProcessIdentifier = nil
@@ -473,72 +579,127 @@ final class ProcessEngineSupervisor: EngineSupervising {
             throw error
         }
 
-        guard let terminalEnginePID = waitForTerminalEnginePID(pidFile: launchFiles.pidFile, timeout: 5.0) else {
+        guard let terminalEnginePID = try waitForTerminalEnginePID(pidFile: launchFiles.pidFile, timeout: 5.0, generation: generation) else {
+            consoleTrace("launchProcess failed waiting for Terminal engine PID pidFile=\(launchFiles.pidFile.path)")
             let issue = EngineIssue(
                 code: "engine.launch-pid-missing",
                 title: "Engine PID Missing",
                 description: "Terminal opened, but the Kokoro launch script did not report a process ID.",
                 probableCause: "Terminal did not execute the generated .command file.",
                 subsystem: "engine.lifecycle",
-                context: ["script": launchFiles.script.path, "pidFile": launchFiles.pidFile.path]
+                context: ["script": launchFiles.script.path, "pidFile": launchFiles.pidFile.path, "logFile": launchFiles.logFile.path]
             )
             record(issue, status: .failed)
             throw EngineLaunchError.terminalPIDUnavailable
         }
+        consoleTrace("launchProcess Terminal engine PID detected pid=\(terminalEnginePID)")
 
         let summary = queue.sync { () -> EngineHealthSummary in
             guard state.status == .starting else {
                 return state
             }
             adoptedProcessIdentifier = terminalEnginePID
+            adoptedProcessOwnership = .launchedByApp
             state.pid = terminalEnginePID
             return state
         }
 
         logger.info("Engine launched in Terminal pid=\(terminalEnginePID) port=\(AppConfig.enginePort)")
+        consoleTrace("launchProcess completed; monitoring will start pid=\(terminalEnginePID)")
         onHealthChanged?(summary)
         startMonitoring()
     }
 
-    private func waitForTerminalEnginePID(pidFile: URL, timeout: TimeInterval) -> Int32? {
+    private func adoptHealthyExistingEngineIfAvailable(resetRetryCount: Bool, generation: UInt64) throws -> Bool {
+        let portUsers = findListeningPidsOnEnginePort()
+        guard !portUsers.isEmpty else { return false }
+        consoleTrace("launchProcess pre-clean-slate portUsers=\(portUsers.map(String.init).joined(separator: ","))")
+
+        guard checkHealthSynchronously(timeout: launchPortHealthProbeTimeout) else {
+            return false
+        }
+        try ensureCurrentLaunchGeneration(generation, context: "before pre-clean-slate adopt")
+
+        let listeners = findListeningPidsOnEnginePort()
+        guard !listeners.isEmpty else { return false }
+        consoleTrace("launchProcess adopting healthy existing engine before cleanup listeners=\(listeners.map(String.init).joined(separator: ","))")
+        adoptExistingEngine(portUsers: listeners, resetRetryCount: resetRetryCount, ownership: .external)
+        return true
+    }
+
+    private func waitForTerminalEnginePID(pidFile: URL, timeout: TimeInterval, generation: UInt64) throws -> Int32? {
+        consoleTrace("waitForTerminalEnginePID pidFile=\(pidFile.path) timeout=\(timeout)")
         let deadline = Date().addingTimeInterval(timeout)
+        var attempt = 0
+        var launchWasCancelled = false
         while Date() < deadline {
+            attempt += 1
+            if !isCurrentLaunchGeneration(generation) {
+                launchWasCancelled = true
+            }
             if
                 let text = try? String(contentsOf: pidFile, encoding: .utf8),
                 let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)),
                 processExists(pid: pid)
             {
+                if launchWasCancelled {
+                    consoleTrace("waitForTerminalEnginePID found pid=\(pid) after cancellation; terminating")
+                    _ = runKill(signal: "-TERM", pids: [pid])
+                    throw CancellationError()
+                }
+                consoleTrace("waitForTerminalEnginePID found pid=\(pid) attempt=\(attempt)")
                 return pid
+            }
+            if let text = try? String(contentsOf: pidFile, encoding: .utf8) {
+                consoleTrace("waitForTerminalEnginePID attempt=\(attempt) pidFileText=\(text.trimmingCharacters(in: .whitespacesAndNewlines)) processExists=false")
+            } else {
+                consoleTrace("waitForTerminalEnginePID attempt=\(attempt) pidFile not readable yet")
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
+        if launchWasCancelled {
+            consoleTrace("waitForTerminalEnginePID timed out after cancellation attempts=\(attempt)")
+            throw CancellationError()
+        }
+        consoleTrace("waitForTerminalEnginePID timed out attempts=\(attempt)")
         return nil
     }
 
     private func startMonitoring() {
+        consoleTrace("startMonitoring cancelling old tasks and starting new health loop")
         startupTask?.cancel()
         healthTask?.cancel()
 
         startupTask = Task { [weak self] in
             guard let self else { return }
-            try? await Task.sleep(nanoseconds: UInt64(self.timeoutPolicy.startupTimeout * 1_000_000_000))
+            self.consoleTrace("startup deadline task sleeping timeout=\(self.timeoutPolicy.startupTimeout)")
+            do {
+                try await Task.sleep(nanoseconds: UInt64(self.timeoutPolicy.startupTimeout * 1_000_000_000))
+            } catch {
+                self.consoleTrace("startup deadline task cancelled before timeout")
+                return
+            }
             await self.handleStartupDeadline()
         }
 
         healthTask = Task { [weak self] in
             guard let self else { return }
+            self.consoleTrace("health task loop started interval=\(AppConfig.healthCheckIntervalSeconds)")
             while !Task.isCancelled {
                 await self.performHealthCheck()
                 try? await Task.sleep(nanoseconds: UInt64(AppConfig.healthCheckIntervalSeconds * 1_000_000_000))
             }
+            self.consoleTrace("health task loop ended")
         }
     }
 
     private func performHealthCheck() async {
+        consoleTrace("performHealthCheck started isRunning=\(isRunning) pid=\(processIdentifier.map(String.init) ?? "nil")")
         guard isRunning else {
             let shouldRecover = queue.sync {
                 (state.status == .starting || state.status == .retrying) && !restartWorkActive
             }
+            consoleTrace("performHealthCheck not running shouldRecover=\(shouldRecover)")
             if shouldRecover {
                 handleStartupProcessUnavailable(rawError: "The engine process is not running while startup is pending.")
             }
@@ -552,6 +713,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
             let (data, response) = try await URLSession.shared.data(for: request)
             let ok = (response as? HTTPURLResponse)?.statusCode == 200
                 && ((try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["ok"] as? Bool == true)
+            consoleTrace("performHealthCheck responseStatus=\((response as? HTTPURLResponse)?.statusCode ?? -1) ok=\(ok) bytes=\(data.count)")
             if ok {
                 startupTask?.cancel()
                 publish { summary in
@@ -571,14 +733,17 @@ final class ProcessEngineSupervisor: EngineSupervising {
                 handleHealthFailure(rawError: "Health endpoint did not return ok=true")
             }
         } catch {
+            consoleTrace("performHealthCheck request failed error=\(error.localizedDescription)")
             handleHealthFailure(rawError: error.localizedDescription)
         }
     }
 
     private func handleHealthFailure(rawError: String) {
+        consoleTrace("handleHealthFailure rawError=\(rawError)")
         let isStillStarting = queue.sync { state.status == .starting || state.status == .retrying }
         if isStillStarting {
             let failureCount = queue.sync { state.consecutiveHealthFailures + 1 }
+            consoleTrace("handleHealthFailure still starting/retrying failureCount=\(failureCount)")
             publish { summary in
                 summary.lastHealthCheckAt = Date()
                 summary.consecutiveHealthFailures = failureCount
@@ -589,6 +754,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
         let portUsers = findListeningPidsOnEnginePort()
         let adoptedPID = queue.sync { adoptedProcessIdentifier }
         let adoptedProcessDisappeared = adoptedPID.map { !processExists(pid: $0) } ?? false
+        consoleTrace("handleHealthFailure portUsers=\(portUsers.map(String.init).joined(separator: ",")) adoptedPID=\(adoptedPID.map(String.init) ?? "nil") adoptedDisappeared=\(adoptedProcessDisappeared)")
         if portUsers.isEmpty || adoptedProcessDisappeared {
             let issue = EngineIssue(
                 code: "engine.listener-missing",
@@ -615,6 +781,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
 
         let failureCount = queue.sync { state.consecutiveHealthFailures + 1 }
         let status: EngineStatus = failureCount >= 3 ? .stalled : .degraded
+        consoleTrace("handleHealthFailure marking status=\(status.rawValue) failureCount=\(failureCount)")
         let issue = EngineIssue(
             code: failureCount >= 3 ? "engine.health-stalled" : "engine.health-degraded",
             title: failureCount >= 3 ? "Engine Health Check Stalled" : "Engine Health Check Failed",
@@ -631,16 +798,22 @@ final class ProcessEngineSupervisor: EngineSupervising {
         }
 
         if failureCount >= 3 {
+            consoleTrace("handleHealthFailure failureCount >= 3; forcing recovery restart")
             forceTerminateForRecovery()
             scheduleRestart(cause: issue)
         }
     }
 
     private func handleStartupDeadline() async {
+        consoleTrace("handleStartupDeadline fired")
         let shouldFail = queue.sync {
             state.status == .starting && state.lastSuccessfulHealthCheckAt == nil
         }
-        guard shouldFail else { return }
+        guard shouldFail else {
+            consoleTrace("handleStartupDeadline ignored because startup already succeeded or status changed")
+            return
+        }
+        consoleTrace("handleStartupDeadline failing startup")
         let issue = EngineIssue(
             code: "engine.startup-timeout",
             title: "Engine Startup Timed Out",
@@ -656,6 +829,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
     }
 
     private func handleStartupProcessUnavailable(rawError: String) {
+        consoleTrace("handleStartupProcessUnavailable rawError=\(rawError)")
         let issue = EngineIssue(
             code: "engine.startup-process-exited",
             title: "Engine Startup Exited",
@@ -676,15 +850,18 @@ final class ProcessEngineSupervisor: EngineSupervising {
     }
 
     private func handleTermination(statusCode: Int32) {
+        consoleTrace("handleTermination statusCode=\(statusCode)")
         let shouldIgnoreRecoveryExit = queue.sync {
             process == nil && (state.status == .retrying || state.status == .timedOut || state.status == .stalled)
         }
         if shouldIgnoreRecoveryExit {
+            consoleTrace("handleTermination ignoring recovery exit")
             return
         }
 
         let intentional = queue.sync { isStopping }
         if intentional {
+            consoleTrace("handleTermination intentional stop")
             let stopped = queue.sync { () -> EngineHealthSummary in
                 isStopping = false
                 process = nil
@@ -697,6 +874,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
             return
         }
 
+        consoleTrace("handleTermination unexpected exit; scheduling restart")
         let issue = EngineIssue(
             code: "engine.unexpected-termination",
             title: "Engine Process Exited",
@@ -714,25 +892,35 @@ final class ProcessEngineSupervisor: EngineSupervising {
     }
 
     private func forceTerminateForRecovery() {
+        consoleTrace("forceTerminateForRecovery called")
         let adoptedPID = queue.sync { () -> Int32? in
             isStopping = false
             process?.terminate()
             process = nil
-            let pid = adoptedProcessIdentifier
+            let pid = adoptedProcessOwnership == .launchedByApp ? adoptedProcessIdentifier : nil
+            if let adoptedProcessIdentifier, adoptedProcessOwnership == .external {
+                consoleTrace("forceTerminateForRecovery detaching from external adopted pid=\(adoptedProcessIdentifier)")
+            }
             adoptedProcessIdentifier = nil
+            adoptedProcessOwnership = .none
             state.pid = nil
             return pid
         }
         if let adoptedPID {
+            consoleTrace("forceTerminateForRecovery terminating adoptedPID=\(adoptedPID)")
             _ = runKill(signal: "-TERM", pids: [adoptedPID])
+        } else {
+            consoleTrace("forceTerminateForRecovery no adoptedPID to terminate")
         }
     }
 
     private func scheduleRestart(cause: EngineIssue) {
+        consoleTrace("scheduleRestart cause=\(cause.code) rawError=\(cause.rawError ?? "nil")")
         restartTask?.cancel()
 
         let nextRetry = queue.sync { state.retryCount + 1 }
         guard nextRetry <= AppConfig.maxEngineRestartAttempts else {
+            consoleTrace("scheduleRestart hit retry limit nextRetry=\(nextRetry)")
             let issue = EngineIssue(
                 code: "engine.restart-limit",
                 title: "Engine Restart Limit Reached",
@@ -753,12 +941,14 @@ final class ProcessEngineSupervisor: EngineSupervising {
 
         let delay = min(pow(2.0, Double(nextRetry - 1)), 10.0)
         logger.warning("Scheduling engine restart attempt=\(nextRetry) delay=\(delay, privacy: .public)s")
+        consoleTrace("scheduleRestart attempt=\(nextRetry) delay=\(delay)")
         let wave = queue.sync {
             restartGeneration &+= 1
             return restartGeneration
         }
         restartTask = Task { [weak self] in
             guard let self else { return }
+            self.consoleTrace("restartTask started wave=\(wave)")
             self.queue.sync {
                 if self.restartGeneration == wave {
                     self.restartWorkActive = true
@@ -771,11 +961,30 @@ final class ProcessEngineSupervisor: EngineSupervising {
                     }
                 }
             }
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             do {
-                self.establishCleanSlate()
-                try self.launchProcess(resetRetryCount: false)
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             } catch {
+                self.consoleTrace("restartTask cancelled before launch wave=\(wave)")
+                return
+            }
+            do {
+                guard self.queue.sync(execute: { self.restartGeneration == wave }) else {
+                    self.consoleTrace("restartTask generation superseded before launch wave=\(wave)")
+                    return
+                }
+                let launchWave = self.queue.sync { () -> UInt64 in
+                    self.launchGeneration &+= 1
+                    return self.launchGeneration
+                }
+                self.consoleTrace("restartTask attempting clean slate and launch wave=\(wave)")
+                self.establishCleanSlate()
+                try self.launchProcess(resetRetryCount: false, generation: launchWave)
+            } catch {
+                if error is CancellationError || Task.isCancelled {
+                    self.consoleTrace("restartTask launch cancelled")
+                    return
+                }
+                self.consoleTrace("restartTask launch failed error=\(error.localizedDescription)")
                 let issue = EngineIssue(
                     code: "engine.restart-failed",
                     title: "Engine Restart Failed",
@@ -798,6 +1007,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
         mutate: ((inout EngineHealthSummary) -> Void)? = nil
     ) {
         logger.error("\(issue.code, privacy: .public): \(issue.description, privacy: .public)")
+        consoleTrace("record issue=\(issue.code) status=\(status.rawValue) notifyUser=\(notifyUser) rawError=\(issue.rawError ?? "nil") context=\(issue.context)")
         let summary = queue.sync { () -> EngineHealthSummary in
             state.status = status
             state.latestIssue = issue
@@ -819,10 +1029,12 @@ final class ProcessEngineSupervisor: EngineSupervising {
             mutate(&state)
             return state
         }
+        consoleTrace("publish status=\(summary.status.rawValue) pid=\(summary.pid.map(String.init) ?? "nil") retry=\(summary.retryCount) failures=\(summary.consecutiveHealthFailures) latestIssue=\(summary.latestIssue?.code ?? "nil")")
         onHealthChanged?(summary)
     }
 
     private func runKill(signal: String, pids: [Int32]) -> Bool {
+        consoleTrace("runKill signal=\(signal) pids=\(pids.map(String.init).joined(separator: ","))")
         guard !pids.isEmpty else { return true }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/kill")
@@ -830,18 +1042,22 @@ final class ProcessEngineSupervisor: EngineSupervising {
         do {
             try proc.run()
             proc.waitUntilExit()
+            consoleTrace("runKill completed status=\(proc.terminationStatus)")
             return proc.terminationStatus == 0
         } catch {
+            consoleTrace("runKill failed error=\(error.localizedDescription)")
             return false
         }
     }
 
     private func canAdoptRunningEngine(portUsers: [Int32]) -> Bool {
+        consoleTrace("canAdoptRunningEngine portUsers=\(portUsers.map(String.init).joined(separator: ","))")
         guard isLikelyRecoverableEngineOwner(portUsers: portUsers) else { return false }
         return checkHealthSynchronously(timeout: timeoutPolicy.healthCheckTimeout)
     }
 
-    private func adoptExistingEngine(portUsers: [Int32], resetRetryCount: Bool) {
+    private func adoptExistingEngine(portUsers: [Int32], resetRetryCount: Bool, ownership: EngineProcessOwnership) {
+        consoleTrace("adoptExistingEngine portUsers=\(portUsers.map(String.init).joined(separator: ",")) resetRetryCount=\(resetRetryCount) ownership=\(ownership)")
         let pid = portUsers.first
         let summary = queue.sync { () -> EngineHealthSummary in
             if resetRetryCount {
@@ -851,6 +1067,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
             }
             process = nil
             adoptedProcessIdentifier = pid
+            adoptedProcessOwnership = ownership
             isStopping = false
             state.status = .running
             state.pid = pid
@@ -864,26 +1081,32 @@ final class ProcessEngineSupervisor: EngineSupervising {
             return state
         }
         logger.info("Adopted existing engine pid=\(pid ?? -1) port=\(AppConfig.enginePort)")
+        consoleTrace("adoptExistingEngine completed pid=\(pid.map(String.init) ?? "nil")")
         onHealthChanged?(summary)
         startMonitoring()
     }
 
     private func reclaimPortUsers(_ pids: [Int32]) {
+        consoleTrace("reclaimPortUsers pids=\(pids.map(String.init).joined(separator: ","))")
         guard !pids.isEmpty else { return }
         _ = runKill(signal: "-TERM", pids: pids)
         let deadline = Date().addingTimeInterval(2.0)
         while Date() < deadline {
             if findListeningPidsOnEnginePort().isEmpty {
+                consoleTrace("reclaimPortUsers port vacant after TERM")
                 return
             }
             Thread.sleep(forTimeInterval: 0.1)
         }
+        consoleTrace("reclaimPortUsers escalating to KILL")
         _ = runKill(signal: "-KILL", pids: pids)
         waitUntilEnginePortVacant(timeout: 4.0)
     }
 
     private func establishCleanSlate() {
+        consoleTrace("establishCleanSlate starting")
         let pids = recoverableEngineProcessIDs()
+        consoleTrace("establishCleanSlate recoverable pids=\(pids.map(String.init).joined(separator: ","))")
         guard !pids.isEmpty else { return }
 
         logger.info("Establishing clean engine slate pids=\(pids.map(String.init).joined(separator: ","), privacy: .public)")
@@ -897,6 +1120,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
         }
 
         let remaining = recoverableEngineProcessIDs()
+        consoleTrace("establishCleanSlate remaining after TERM=\(remaining.map(String.init).joined(separator: ","))")
         if !remaining.isEmpty {
             _ = runKill(signal: "-KILL", pids: remaining)
         }
@@ -905,14 +1129,17 @@ final class ProcessEngineSupervisor: EngineSupervising {
         queue.sync {
             process = nil
             adoptedProcessIdentifier = nil
+            adoptedProcessOwnership = .none
             isStopping = false
             state.pid = nil
             state.activeJobID = nil
             state.consecutiveHealthFailures = 0
         }
+        consoleTrace("establishCleanSlate completed")
     }
 
     private func recoverableEngineProcessIDs() -> [Int32] {
+        consoleTrace("recoverableEngineProcessIDs scanning")
         let currentPID = getpid()
         var pids = Set(
             findListeningPidsOnEnginePort().filter { pid in
@@ -929,6 +1156,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
         do {
             try proc.run()
         } catch {
+            consoleTrace("recoverableEngineProcessIDs ps failed error=\(error.localizedDescription); returning pids=\(Array(pids).map(String.init).joined(separator: ","))")
             return Array(pids)
         }
 
@@ -947,24 +1175,30 @@ final class ProcessEngineSupervisor: EngineSupervising {
             }
         }
 
-        return Array(pids)
+        let result = Array(pids)
+        consoleTrace("recoverableEngineProcessIDs result=\(result.map(String.init).joined(separator: ","))")
+        return result
     }
 
     private func isLikelyRecoverableEngineOwner(portUsers: [Int32]) -> Bool {
-        portUsers.contains { pid in
+        let result = portUsers.contains { pid in
             isRecoverableEngineCommand(processCommandLine(for: pid))
         }
+        consoleTrace("isLikelyRecoverableEngineOwner pids=\(portUsers.map(String.init).joined(separator: ",")) result=\(result)")
+        return result
     }
 
     private func isRecoverableEngineCommand(_ command: String) -> Bool {
         let lowercased = command.lowercased()
         let kokoroPath = AppConfig.kokoroPath.lowercased()
-        return lowercased.contains("kokoro_server")
+        let result = lowercased.contains("kokoro_server")
             || (lowercased.contains("uvicorn") && lowercased.contains("kokoro"))
             || (lowercased.contains(kokoroPath) && lowercased.contains("python"))
+        return result
     }
 
     private func processCommandLine(for pid: Int32) -> String {
+        consoleTrace("processCommandLine pid=\(pid)")
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/ps")
         proc.arguments = ["-p", "\(pid)", "-o", "command="]
@@ -974,12 +1208,15 @@ final class ProcessEngineSupervisor: EngineSupervising {
         do {
             try proc.run()
         } catch {
+            consoleTrace("processCommandLine ps failed pid=\(pid) error=\(error.localizedDescription)")
             return ""
         }
 
         proc.waitUntilExit()
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let command = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        consoleTrace("processCommandLine pid=\(pid) status=\(proc.terminationStatus) command=\(command)")
+        return command
     }
 
     private func processExists(pid: Int32) -> Bool {
@@ -996,6 +1233,7 @@ final class ProcessEngineSupervisor: EngineSupervising {
     }
 
     private func checkHealthSynchronously(timeout: TimeInterval) -> Bool {
+        consoleTrace("checkHealthSynchronously timeout=\(timeout)")
         var request = URLRequest(url: AppConfig.serverBaseURL.appendingPathComponent("health"))
         request.httpMethod = "GET"
         request.timeoutInterval = timeout
@@ -1018,8 +1256,10 @@ final class ProcessEngineSupervisor: EngineSupervising {
 
         if semaphore.wait(timeout: .now() + timeout) == .timedOut {
             task.cancel()
+            consoleTrace("checkHealthSynchronously timed out")
             return false
         }
+        consoleTrace("checkHealthSynchronously result=\(isHealthy)")
         return isHealthy
     }
 }

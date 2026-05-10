@@ -98,6 +98,22 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertTrue(supervisor.startCalled)
         XCTAssertFalse(store.showPortInUseAlert)
         XCTAssertEqual(store.engineStatus, .starting)
+        model.stopEngine()
+    }
+
+    @MainActor
+    func testStartEngineIgnoresDuplicateRequestWhileStarting() async {
+        let supervisor = FakeEngineSupervisor()
+        let store = AppStore()
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: supervisor))
+
+        model.startEngine()
+        model.startEngine()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(supervisor.startCallCount, 1)
+        XCTAssertEqual(store.engineStatus, .starting)
+        model.stopEngine()
     }
 }
 
@@ -109,9 +125,11 @@ private final class FakeEngineSupervisor: EngineSupervising {
     var onIssue: ((EngineIssue) -> Void)?
     var portUsers: [Int32] = []
     var startCalled = false
+    var startCallCount = 0
 
     func start() throws {
         startCalled = true
+        startCallCount += 1
     }
 
     func stop() {}
