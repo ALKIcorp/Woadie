@@ -4,6 +4,8 @@ struct VoicePickerView: View {
     @Binding var selection: String
     let selectedLabel: String
     let categories: [(title: String, voices: [VoiceOption])]
+    let onStep: (Int) -> Void
+    @State private var showingVoices = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -13,30 +15,21 @@ struct VoicePickerView: View {
                 .textCase(.uppercase)
                 .tracking(1.2)
 
-            Menu {
-                ForEach(categories, id: \.title) { category in
-                    Menu(category.title) {
-                        ForEach(category.voices) { option in
-                            Button {
-                                selection = option.id
-                            } label: {
-                                if option.id == selection {
-                                    Label(option.label, systemImage: "checkmark")
-                                } else {
-                                    Text(option.label)
-                                }
-                            }
-                        }
-                    }
+            HStack(spacing: 8) {
+                Button { onStep(-1) } label: {
+                    Image(systemName: "triangle.fill").font(.system(size: 9))
                 }
-            } label: {
-                HStack(spacing: 8) {
-                    Text(selectedLabel)
-                        .lineLimit(1)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(WoadieTheme.foregroundSubtle)
+                Text(selectedLabel)
+                    .lineLimit(1)
+                    .contentTransition(.opacity)
+                    .animation(.easeInOut(duration: 0.18), value: selectedLabel)
+                    .onLongPressGesture { showingVoices = true }
+                    .help("Press and hold to show all voices")
+                Button { onStep(1) } label: {
+                    Image(systemName: "triangle.fill").font(.system(size: 9)).rotationEffect(.degrees(180))
                 }
+            }
+                .buttonStyle(.plain)
                 .padding(.horizontal, 12)
                 .frame(height: 34)
                 .font(WoadieTheme.mono(size: 12, weight: .medium))
@@ -47,9 +40,27 @@ struct VoicePickerView: View {
                         .stroke(WoadieTheme.borderSubtle, lineWidth: 1)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 10))
-            }
-            .menuStyle(.borderlessButton)
             .frame(maxWidth: 260)
+        }
+        .sheet(isPresented: $showingVoices) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Choose Voice").font(.headline)
+                List {
+                    ForEach(categories, id: \.title) { category in
+                        Section(category.title) {
+                            ForEach(category.voices) { option in
+                                Button(option.label) {
+                                    selection = option.id
+                                    showingVoices = false
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding()
+            .frame(width: 420, height: 440)
         }
     }
 }

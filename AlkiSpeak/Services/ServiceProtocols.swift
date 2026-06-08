@@ -35,9 +35,22 @@ protocol SpeechQueueing: AnyObject {
 }
 
 protocol PlaybackCoordinating: AnyObject {
-    func play(audioData: Data) throws
-    func playToCompletion(audioData: Data) async throws
+    var onSnapshotChanged: ((PlaybackTransportSnapshot) -> Void)? { get set }
+    var onFinished: (() -> Void)? { get set }
+    func prepare(characterCounts: [Int])
+    func append(audioURL: URL, segmentID: UUID, index: Int) throws
+    func finishEnqueuing()
+    func seek(to globalTime: TimeInterval) -> Bool
     func stop()
+}
+
+struct PlaybackTransportSnapshot {
+    var state: PlaybackSnapshot.State
+    var currentSegmentID: UUID?
+    var elapsedTime: TimeInterval
+    var bufferedDuration: TimeInterval
+    var totalDuration: TimeInterval
+    var fftMagnitudes: [Float]
 }
 
 protocol LocalSpeechSynthesizing: AnyObject {

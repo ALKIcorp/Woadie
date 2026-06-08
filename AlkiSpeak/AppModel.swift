@@ -1,4 +1,5 @@
 import Combine
+import AVFoundation
 import Foundation
 
 @MainActor
@@ -40,6 +41,10 @@ final class AppModel: ObservableObject {
         set { store.showPortInUseAlert = newValue }
     }
     var portInUsePids: [Int32] { store.portInUsePids }
+    var playback: PlaybackSnapshot { store.playback }
+    var fftMagnitudes: [Float] {
+        (dependencies.playbackCoordinator as? AVAudioPlaybackCoordinator)?.fftMagnitudes ?? Array(repeating: 0, count: 128)
+    }
 
     var canSpeak: Bool {
         let hasText = !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -80,6 +85,40 @@ final class AppModel: ObservableObject {
 
     var selectedVoiceLabel: String {
         voiceOptions.first(where: { $0.id == selectedVoice })?.label ?? "Select Voice"
+    }
+
+    func cycleVoice(_ offset: Int) {
+        let ids = voiceOptions.filter { !$0.isLocal }.map(\.id)
+        if let next = VoiceCycler.next(current: selectedVoice, in: ids, offset: offset) {
+            selectedVoice = next
+            saveWorkspace()
+        }
+    }
+
+    func seek(to time: TimeInterval) {
+        guard dependencies.playbackCoordinator.seek(to: time) else {
+            showNotLoaded()
+            return
+        }
+    }
+
+    func skip(by seconds: TimeInterval) {
+        seek(to: max(0, store.playback.elapsedTime + seconds))
+    }
+
+    func canSkip(by seconds: TimeInterval) -> Bool {
+        let target = max(0, store.playback.elapsedTime + seconds)
+        return target <= store.playback.bufferedDuration
+    }
+
+    private func showNotLoaded() {
+        store.playback.statusMessage = "Not yet loaded"
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if store.playback.statusMessage == "Not yet loaded" {
+                store.playback.statusMessage = nil
+            }
+        }
     }
 
     var voiceCategories: [(title: String, voices: [VoiceOption])] {
@@ -314,7 +353,9 @@ final class AppModel: ObservableObject {
             activeLogEntryID: logEntryID,
             currentSegmentID: segments.first?.id,
             elapsedTime: 0,
-            duration: nil
+            duration: TimeInterval(trimmed.count) / 150.0,
+            bufferedDuration: 0,
+            statusMessage: nil
         )
 
         Task {
@@ -338,6 +379,7 @@ final class AppModel: ObservableObject {
             }
 
             await ttsQueue.enqueue(segments)
+            dependencies.playbackCoordinator.prepare(characterCounts: segments.map { $0.text.count })
             await ttsQueue.process { [generationService = dependencies.generationService, clipStore = dependencies.clipStore, workspaceID = store.activeWorkspace.id] segment in
                 let result = try await generationService.synthesize(
                     text: segment.text,
@@ -349,7 +391,8 @@ final class AppModel: ObservableObject {
                     self.store.dashboardTelemetry.lastLatencyMs = result.latencyMs
                     self.store.dashboardTelemetry.lastCharCount = result.charCount
                 }
-                return GeneratedSegment(audioURL: url, durationSeconds: nil)
+                let duration = try? await AVURLAsset(url: url).load(.duration).seconds
+                return GeneratedSegment(audioURL: url, durationSeconds: duration)
             } onReady: { [playbackCoordinator = dependencies.playbackCoordinator] segment in
                 await MainActor.run {
                     self.store.playback.currentSegmentID = segment.id
@@ -359,8 +402,7 @@ final class AppModel: ObservableObject {
                     self.store.playback.state = .playing
                 }
                 guard let audioURL = segment.audioURL else { return }
-                let audioData = try Data(contentsOf: audioURL)
-                try await playbackCoordinator.playToCompletion(audioData: audioData)
+                try playbackCoordinator.append(audioURL: audioURL, segmentID: segment.id, index: segment.index)
             }
 
             let snapshot = await ttsQueue.snapshot()
@@ -371,7 +413,7 @@ final class AppModel: ObservableObject {
                 throw error
             }
 
-            finishPlayback()
+            dependencies.playbackCoordinator.finishEnqueuing()
         } catch is CancellationError {
             updateJob(jobID, status: .cancelled, error: nil)
             store.playback = .idle
@@ -509,9 +551,16 @@ final class AppModel: ObservableObject {
             }
         }
 
-        if let playback = dependencies.playbackCoordinator as? AVAudioPlaybackCoordinator {
-            playback.onFinished = { [weak self] in
-                self?.finishPlayback()
+        dependencies.playbackCoordinator.onFinished = { [weak self] in self?.finishPlayback() }
+        dependencies.playbackCoordinator.onSnapshotChanged = { [weak self] snapshot in
+            Task { @MainActor in
+                guard let self else { return }
+                self.store.playback.state = snapshot.state
+                self.store.playback.currentSegmentID = snapshot.currentSegmentID
+                self.store.playback.elapsedTime = snapshot.elapsedTime
+                self.store.playback.bufferedDuration = snapshot.bufferedDuration
+                self.store.playback.duration = snapshot.totalDuration
+                self.objectWillChange.send()
             }
         }
 
@@ -547,7 +596,9 @@ final class AppModel: ObservableObject {
             activeLogEntryID: logEntryID,
             currentSegmentID: nil,
             elapsedTime: 0,
-            duration: nil
+            duration: nil,
+            bufferedDuration: 0,
+            statusMessage: nil
         )
         store.dashboardTelemetry.failedJobCount += 1
         record(error)

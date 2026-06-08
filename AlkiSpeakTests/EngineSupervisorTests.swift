@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import Woadie
 
@@ -92,6 +93,95 @@ final class EngineSupervisorTests: XCTestCase {
             if case .ready = $0.status { return true }
             return false
         })
+    }
+
+    func testPlaybackTimelineUsesActualDurationsForBufferedSegmentsAndEstimatesTheRest() {
+        var timeline = PlaybackTimeline(segmentCharacterCounts: [150, 300, 150])
+        timeline.markReady(index: 0, duration: 1.2)
+        timeline.markReady(index: 1, duration: 2.4)
+
+        XCTAssertEqual(timeline.bufferedDuration, 3.6, accuracy: 0.001)
+        XCTAssertEqual(timeline.totalDuration, 4.6, accuracy: 0.001)
+    }
+
+    func testPlaybackTimelineResolvesGlobalTimeToSegmentLocalTime() {
+        var timeline = PlaybackTimeline(segmentCharacterCounts: [150, 150, 150])
+        timeline.markReady(index: 0, duration: 1.25)
+        timeline.markReady(index: 1, duration: 2.0)
+
+        let target = timeline.location(for: 2.75)
+        XCTAssertEqual(target?.segmentIndex, 1)
+        XCTAssertEqual(target?.localTime ?? -1, 1.5, accuracy: 0.001)
+    }
+
+    func testPlaybackTimelineRejectsUnbufferedSeek() {
+        var timeline = PlaybackTimeline(segmentCharacterCounts: [150, 150])
+        timeline.markReady(index: 0, duration: 1)
+
+        XCTAssertNil(timeline.location(for: 1.01))
+        XCTAssertNotNil(timeline.location(for: 1.0))
+    }
+
+    func testVoiceCyclingWrapsInBothDirections() {
+        let voices = ["a", "b", "c"]
+
+        XCTAssertEqual(VoiceCycler.next(current: "c", in: voices, offset: 1), "a")
+        XCTAssertEqual(VoiceCycler.next(current: "a", in: voices, offset: -1), "c")
+    }
+
+    func testQueuePlaybackAppendsSegmentsAndPublishesCumulativeBuffer() throws {
+        let firstURL = try makeTestAudioFile(sampleRate: 24_000, duration: 0.2)
+        let secondURL = try makeTestAudioFile(sampleRate: 24_000, duration: 0.3)
+        defer {
+            try? FileManager.default.removeItem(at: firstURL)
+            try? FileManager.default.removeItem(at: secondURL)
+        }
+
+        let coordinator = AVAudioPlaybackCoordinator()
+        var snapshots: [PlaybackTransportSnapshot] = []
+        coordinator.onSnapshotChanged = { snapshots.append($0) }
+        coordinator.prepare(characterCounts: [30, 45])
+        try coordinator.append(audioURL: firstURL, segmentID: UUID(), index: 0)
+        try coordinator.append(audioURL: secondURL, segmentID: UUID(), index: 1)
+
+        XCTAssertEqual(snapshots.last?.bufferedDuration ?? 0, 0.5, accuracy: 0.02)
+        coordinator.stop()
+    }
+
+    func testQueuePlaybackRejectsInconsistentSegmentFormat() throws {
+        let firstURL = try makeTestAudioFile(sampleRate: 24_000, duration: 0.1)
+        let secondURL = try makeTestAudioFile(sampleRate: 44_100, duration: 0.1)
+        defer {
+            try? FileManager.default.removeItem(at: firstURL)
+            try? FileManager.default.removeItem(at: secondURL)
+        }
+
+        let coordinator = AVAudioPlaybackCoordinator()
+        coordinator.prepare(characterCounts: [15, 15])
+        try coordinator.append(audioURL: firstURL, segmentID: UUID(), index: 0)
+
+        XCTAssertThrowsError(try coordinator.append(audioURL: secondURL, segmentID: UUID(), index: 1)) {
+            XCTAssertEqual(($0 as? AlkiSpeakError)?.code, "playback.inconsistent-audio-format")
+        }
+        coordinator.stop()
+    }
+
+    private func makeTestAudioFile(sampleRate: Double, duration: TimeInterval) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wav")
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+        let frameCount = AVAudioFrameCount(sampleRate * duration)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)!
+        buffer.frameLength = frameCount
+        if let samples = buffer.floatChannelData?.pointee {
+            for frame in 0..<Int(frameCount) {
+                samples[frame] = sin(Float(frame) * 0.04) * 0.1
+            }
+        }
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        try file.write(from: buffer)
+        return url
     }
 
     func testStartupSuccessStateCanRepresentRunningEngine() {
@@ -301,8 +391,12 @@ private final class FakeSpeechGenerating: SpeechGenerating {
 }
 
 private final class FakePlaybackCoordinating: PlaybackCoordinating {
-    func play(audioData: Data) throws {}
-    func playToCompletion(audioData: Data) async throws {}
+    var onSnapshotChanged: ((PlaybackTransportSnapshot) -> Void)?
+    var onFinished: (() -> Void)?
+    func prepare(characterCounts: [Int]) {}
+    func append(audioURL: URL, segmentID: UUID, index: Int) throws {}
+    func finishEnqueuing() {}
+    func seek(to globalTime: TimeInterval) -> Bool { false }
     func stop() {}
 }
 

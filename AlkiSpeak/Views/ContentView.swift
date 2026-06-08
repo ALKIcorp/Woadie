@@ -10,7 +10,7 @@ struct ContentView: View {
             VStack(spacing: 18) {
                 WoadieHeaderView(model: model)
                 WoadieControlsBar(model: model)
-                WoadiePlaybackPanel(isPlaying: model.playingId != nil, onStop: model.stopPlayback)
+                WoadiePlaybackPanel(model: model, onStop: model.stopPlayback)
                 WoadieInputRow(model: model)
 
                 if !model.message.isEmpty {

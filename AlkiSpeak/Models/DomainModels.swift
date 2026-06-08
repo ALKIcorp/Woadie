@@ -289,6 +289,8 @@ struct PlaybackSnapshot: Codable, Hashable {
     var currentSegmentID: UUID?
     var elapsedTime: TimeInterval
     var duration: TimeInterval?
+    var bufferedDuration: TimeInterval
+    var statusMessage: String?
 
     static let idle = PlaybackSnapshot(
         state: .idle,
@@ -296,8 +298,71 @@ struct PlaybackSnapshot: Codable, Hashable {
         activeLogEntryID: nil,
         currentSegmentID: nil,
         elapsedTime: 0,
-        duration: nil
+        duration: nil,
+        bufferedDuration: 0,
+        statusMessage: nil
     )
+}
+
+struct PlaybackLocation: Equatable {
+    let segmentIndex: Int
+    let localTime: TimeInterval
+}
+
+struct PlaybackTimeline: Equatable {
+    private(set) var durations: [TimeInterval?]
+    private let estimates: [TimeInterval]
+
+    init(segmentCharacterCounts: [Int]) {
+        durations = Array(repeating: nil, count: segmentCharacterCounts.count)
+        estimates = segmentCharacterCounts.map { max(TimeInterval($0) / 150.0, 0.1) }
+    }
+
+    mutating func markReady(index: Int, duration: TimeInterval) {
+        guard durations.indices.contains(index), duration.isFinite, duration > 0 else { return }
+        durations[index] = duration
+    }
+
+    var bufferedDuration: TimeInterval {
+        var total: TimeInterval = 0
+        for duration in durations {
+            guard let duration else { break }
+            total += duration
+        }
+        return total
+    }
+
+    var totalDuration: TimeInterval {
+        zip(durations, estimates).reduce(0) { $0 + ($1.0 ?? $1.1) }
+    }
+
+    func location(for globalTime: TimeInterval) -> PlaybackLocation? {
+        let target = max(0, globalTime)
+        guard target <= bufferedDuration + 0.000_1 else { return nil }
+        var start: TimeInterval = 0
+        for (index, duration) in durations.enumerated() {
+            guard let duration else { break }
+            let end = start + duration
+            if target <= end || index == durations.count - 1 {
+                return PlaybackLocation(segmentIndex: index, localTime: min(max(0, target - start), duration))
+            }
+            start = end
+        }
+        return nil
+    }
+
+    func globalTime(segmentIndex: Int, localTime: TimeInterval) -> TimeInterval {
+        durations.prefix(segmentIndex).compactMap { $0 }.reduce(0, +) + max(0, localTime)
+    }
+}
+
+enum VoiceCycler {
+    static func next(current: String, in voices: [String], offset: Int) -> String? {
+        guard !voices.isEmpty else { return nil }
+        let currentIndex = voices.firstIndex(of: current) ?? 0
+        let index = (currentIndex + offset % voices.count + voices.count) % voices.count
+        return voices[index]
+    }
 }
 
 struct ResourceSnapshot: Codable, Hashable {
