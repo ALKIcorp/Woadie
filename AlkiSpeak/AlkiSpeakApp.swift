@@ -45,6 +45,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model?.stopEngine()
     }
 
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+
     private static func consoleTrace(_ message: String, function: StaticString = #function, line: UInt = #line) {
         NSLog("[Woadie][AppDelegate][\(function):\(line)] \(message)")
     }
@@ -53,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct AlkiSpeakApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model: AppModel
 
     init() {
@@ -69,6 +74,17 @@ struct AlkiSpeakApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(model)
+                .onChange(of: scenePhase) { _, phase in
+                    guard !AppConfig.isRunningUnitTests else { return }
+                    switch phase {
+                    case .active:
+                        model.startEngine()
+                    case .inactive, .background:
+                        model.stopEngine()
+                    @unknown default:
+                        model.stopEngine()
+                    }
+                }
         }
     }
 }

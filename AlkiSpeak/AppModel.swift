@@ -6,6 +6,7 @@ final class AppModel: ObservableObject {
     let store: AppStore
     private let dependencies: AppDependencies
     private let requestPolicy = EngineRequestPolicy.live
+    private let ttsQueue = TTSQueue()
     private var cancellables: Set<AnyCancellable> = []
     private var engineStartTask: Task<Void, Never>?
     private var engineStartGeneration: UInt64 = 0
@@ -29,6 +30,9 @@ final class AppModel: ObservableObject {
         guard let issue = store.engineHealth.latestIssue else { return nil }
         return "\(issue.title): \(issue.description) Probable cause: \(issue.probableCause)"
     }
+    var engineStatusLabel: String {
+        dependencies.engineSupervisor.engineState.statusText
+    }
     var chatItems: [SavedLogEntry] { store.savedLogEntries }
     var playingId: UUID? { store.playback.activeLogEntryID }
     var showPortInUseAlert: Bool {
@@ -39,7 +43,9 @@ final class AppModel: ObservableObject {
 
     var canSpeak: Bool {
         let hasText = !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return hasText && (status.isAvailableForRemoteSpeech || isSelectedVoiceLocal)
+        return hasText
+            && store.playback.state == .idle
+            && (status.isAvailableForRemoteSpeech || isSelectedVoiceLocal)
     }
 
     var canEditText: Bool {
@@ -204,6 +210,30 @@ final class AppModel: ObservableObject {
         refreshTelemetry()
     }
 
+    func restartEngine() {
+        consoleTrace("restartEngine requested")
+        engineStartGeneration &+= 1
+        engineStartTask?.cancel()
+        engineStartTask = nil
+        stopPlayback()
+        store.clearErrorMessage()
+        store.engineStatus = .starting
+        let restartGeneration = engineStartGeneration
+
+        let supervisor = dependencies.engineSupervisor
+        Task {
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try supervisor.restart()
+                }.value
+                await waitForEngineReady(startGeneration: restartGeneration)
+            } catch {
+                store.engineStatus = .failed
+                record(normalizeEngineError(error))
+            }
+        }
+    }
+
     func toggleEngine() {
         consoleTrace("toggleEngine status=\(status.rawValue) processExpectedAlive=\(status.isProcessExpectedAlive) supervisorRunning=\(dependencies.engineSupervisor.isRunning)")
         if status.isProcessExpectedAlive || dependencies.engineSupervisor.isRunning {
@@ -231,6 +261,7 @@ final class AppModel: ObservableObject {
     func stopPlayback() {
         dependencies.playbackCoordinator.stop()
         dependencies.localSpeechService.stop()
+        Task { await ttsQueue.cancel() }
         store.playback = .idle
         markActiveJobsCompleted()
     }
@@ -306,19 +337,38 @@ final class AppModel: ObservableObject {
                 store.userMessage = "Speaking \(segments.count) segments in order…"
             }
 
-            for segment in segments {
-                store.playback.currentSegmentID = segment.id
-                let result = try await dependencies.generationService.synthesize(
+            await ttsQueue.enqueue(segments)
+            await ttsQueue.process { [generationService = dependencies.generationService, clipStore = dependencies.clipStore, workspaceID = store.activeWorkspace.id] segment in
+                let result = try await generationService.synthesize(
                     text: segment.text,
                     voice: voice,
                     jobID: jobID
                 )
-                store.dashboardTelemetry.lastLatencyMs = result.latencyMs
-                store.dashboardTelemetry.lastCharCount = result.charCount
+                let url = try clipStore.writeClip(data: result.audioData, segmentID: segment.id, workspaceID: workspaceID)
+                await MainActor.run {
+                    self.store.dashboardTelemetry.lastLatencyMs = result.latencyMs
+                    self.store.dashboardTelemetry.lastCharCount = result.charCount
+                }
+                return GeneratedSegment(audioURL: url, durationSeconds: nil)
+            } onReady: { [playbackCoordinator = dependencies.playbackCoordinator] segment in
+                await MainActor.run {
+                    self.store.playback.currentSegmentID = segment.id
+                    self.updateJobSegment(jobID, segmentID: segment.id, status: .ready, audioURL: segment.audioURL, error: nil)
+                    self.updateSavedLogSegment(logEntryID, segmentID: segment.id, status: .ready, audioURL: segment.audioURL, error: nil)
+                    self.updateJob(jobID, status: .playing, error: nil)
+                    self.store.playback.state = .playing
+                }
+                guard let audioURL = segment.audioURL else { return }
+                let audioData = try Data(contentsOf: audioURL)
+                try await playbackCoordinator.playToCompletion(audioData: audioData)
+            }
 
-                updateJob(jobID, status: .playing, error: nil)
-                store.playback.state = .playing
-                try await dependencies.playbackCoordinator.playToCompletion(audioData: result.audioData)
+            let snapshot = await ttsQueue.snapshot()
+            if let failed = snapshot.first(where: {
+                if case .failed = $0.status { return true }
+                return false
+            }), case .failed(let error) = failed.status {
+                throw error
             }
 
             finishPlayback()
@@ -381,7 +431,7 @@ final class AppModel: ObservableObject {
             store.userMessage =
                 "Could not reach the Kokoro engine at \(AppConfig.serverBaseURL.absoluteString). "
                 + "Verify \(AppConfig.kokoroPath) contains kokoro_server.py and .venv/bin/python3. "
-                + "In Terminal: cd \"\(AppConfig.kokoroPath)\" && .venv/bin/python3 -m uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort)"
+                + "Expected command: python -m uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort) --timeout-keep-alive 120 --timeout-graceful-shutdown 30 --log-level warning --log-config kokoro-log-config.json"
             consoleTrace("waitForEngineReady final health failed; userMessage updated")
         }
     }
@@ -513,6 +563,26 @@ final class AppModel: ObservableObject {
         store.speechJobs[index].status = status
         store.speechJobs[index].updatedAt = Date()
         store.speechJobs[index].error = error
+    }
+
+    private func updateJobSegment(_ jobID: UUID, segmentID: UUID, status: SpeechSegment.Status, audioURL: URL?, error: AlkiSpeakError?) {
+        guard let jobIndex = store.speechJobs.firstIndex(where: { $0.id == jobID }),
+              let segmentIndex = store.speechJobs[jobIndex].segments.firstIndex(where: { $0.id == segmentID })
+        else { return }
+        store.speechJobs[jobIndex].segments[segmentIndex].status = status
+        store.speechJobs[jobIndex].segments[segmentIndex].audioURL = audioURL
+        store.speechJobs[jobIndex].segments[segmentIndex].error = error
+        store.speechJobs[jobIndex].updatedAt = Date()
+    }
+
+    private func updateSavedLogSegment(_ logEntryID: UUID, segmentID: UUID, status: SpeechSegment.Status, audioURL: URL?, error: AlkiSpeakError?) {
+        guard let entryIndex = store.savedLogEntries.firstIndex(where: { $0.id == logEntryID }),
+              let segmentIndex = store.savedLogEntries[entryIndex].segments.firstIndex(where: { $0.id == segmentID })
+        else { return }
+        store.savedLogEntries[entryIndex].segments[segmentIndex].status = status
+        store.savedLogEntries[entryIndex].segments[segmentIndex].audioURL = audioURL
+        store.savedLogEntries[entryIndex].segments[segmentIndex].error = error
+        try? dependencies.logStore.replaceLogs(store.savedLogEntries, workspaceID: store.activeWorkspace.id)
     }
 
     private func record(_ error: AlkiSpeakError) {

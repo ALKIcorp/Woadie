@@ -14,7 +14,7 @@ struct AppDependencies {
 
     static func live() -> AppDependencies {
         AppDependencies(
-            engineSupervisor: ProcessEngineSupervisor(),
+            engineSupervisor: EngineManager.shared,
             generationService: KokoroSpeechGenerationService(),
             playbackCoordinator: AVAudioPlaybackCoordinator(),
             localSpeechService: AppleSpeechService(),

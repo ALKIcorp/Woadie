@@ -10,7 +10,7 @@ struct WoadieHeaderView: View {
                 Divider()
                     .frame(height: 16)
                     .overlay(WoadieTheme.border)
-                StatusIndicatorView(status: model.status, label: statusLabel)
+                StatusIndicatorView(status: model.status, label: model.engineStatusLabel)
             }
             Spacer()
             HStack(spacing: 6) {
@@ -21,29 +21,6 @@ struct WoadieHeaderView: View {
             }
             .font(WoadieTheme.mono(size: 11, weight: .medium))
             .textCase(.uppercase)
-        }
-    }
-
-    private var statusLabel: String {
-        switch model.status {
-        case .starting:
-            return "Starting..."
-        case .running, .idle:
-            return "Engine Ready"
-        case .busy:
-            return "Engine Busy"
-        case .degraded:
-            return "Engine Degraded"
-        case .retrying:
-            return "Engine Retrying"
-        case .timedOut:
-            return "Engine Timed Out"
-        case .stalled:
-            return "Engine Stalled"
-        case .stopped:
-            return "Engine Stopped"
-        case .failed:
-            return "Engine Failed"
         }
     }
 }

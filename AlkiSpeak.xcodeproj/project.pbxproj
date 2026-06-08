@@ -37,6 +37,7 @@
 		A100001C /* PersistenceProtocols.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001E /* PersistenceProtocols.swift */; };
 		A100001D /* LocalPersistenceServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001F /* LocalPersistenceServices.swift */; };
 		A100001E /* VisualCompatibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000020 /* VisualCompatibility.swift */; };
+		A100001F /* EngineInfrastructure.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000021 /* EngineInfrastructure.swift */; };
 		B1000001 /* EngineSupervisorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001 /* EngineSupervisorTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -83,6 +84,7 @@
 		A200001E /* PersistenceProtocols.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceProtocols.swift; sourceTree = "<group>"; };
 		A200001F /* LocalPersistenceServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPersistenceServices.swift; sourceTree = "<group>"; };
 		A2000020 /* VisualCompatibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualCompatibility.swift; sourceTree = "<group>"; };
+		A2000021 /* EngineInfrastructure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineInfrastructure.swift; sourceTree = "<group>"; };
 		B2000001 /* EngineSupervisorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineSupervisorTests.swift; sourceTree = "<group>"; };
 		B2000002 /* WoadieTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WoadieTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -202,6 +204,7 @@
 			children = (
 				A200001B /* ServiceProtocols.swift */,
 				A200001C /* EngineServices.swift */,
+				A2000021 /* EngineInfrastructure.swift */,
 				A200001D /* AudioServices.swift */,
 			);
 			path = Services;
@@ -360,6 +363,7 @@
 				A1000018 /* AlkiSpeakError.swift in Sources */,
 				A1000019 /* ServiceProtocols.swift in Sources */,
 				A100001A /* EngineServices.swift in Sources */,
+				A100001F /* EngineInfrastructure.swift in Sources */,
 				A100001B /* AudioServices.swift in Sources */,
 				A100001C /* PersistenceProtocols.swift in Sources */,
 				A100001D /* LocalPersistenceServices.swift in Sources */,

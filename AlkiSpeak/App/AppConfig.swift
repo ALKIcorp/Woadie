@@ -13,13 +13,13 @@ enum AppConfig {
     static let defaultVoice = "af_heart"
     static let defaultRate = 24000
     static let engineStartupTimeoutSeconds: TimeInterval = 180
-    static let requestTimeoutSeconds: TimeInterval = 45
+    static let requestTimeoutSeconds: TimeInterval = 180
     static let resourceTimeoutSeconds: TimeInterval = 10
     static let healthCheckTimeoutSeconds: TimeInterval = 3
     static let healthCheckIntervalSeconds: TimeInterval = 5
     static let maxEngineRestartAttempts = 3
-    static let maxDirectRequestCharacters = 1_800
-    static let maxSegmentCharacters = 1_200
+    static let maxDirectRequestCharacters = 300
+    static let maxSegmentCharacters = 300
     static let maxBufferedDiagnostics = 80
     static var isRunningUnitTests: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil

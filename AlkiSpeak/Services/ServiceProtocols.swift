@@ -3,10 +3,13 @@ import Foundation
 protocol EngineSupervising: AnyObject {
     var isRunning: Bool { get }
     var processIdentifier: Int32? { get }
+    var engineState: EngineState { get }
     var healthSummary: EngineHealthSummary { get }
+    var onEngineStateChanged: ((EngineState) -> Void)? { get set }
     var onHealthChanged: ((EngineHealthSummary) -> Void)? { get set }
     var onIssue: ((EngineIssue) -> Void)? { get set }
     func start() throws
+    func restart() throws
     func stop()
     func noteRequestStarted(jobID: UUID)
     func noteRequestFinished(jobID: UUID)
