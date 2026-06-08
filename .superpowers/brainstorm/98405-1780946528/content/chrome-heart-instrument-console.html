@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlkiSpeak — Chrome Heart Instrument Console</title>
+<style>
+  * { box-sizing: border-box; }
+  :root {
+    --ink: rgba(12, 13, 16, .88);
+    --muted: rgba(12, 13, 16, .52);
+    --line: rgba(0, 0, 0, .08);
+    --glass: rgba(255, 255, 255, .32);
+    --glass-strong: rgba(255, 255, 255, .48);
+  }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
+    background:
+      radial-gradient(circle at 4% -12%, rgba(255,255,255,.96) 0 12%, transparent 43%),
+      radial-gradient(circle at 92% 7%, rgba(255,255,255,.82) 0 8%, transparent 38%),
+      radial-gradient(ellipse at 52% -4%, rgba(255,255,255,.65), transparent 52%),
+      linear-gradient(145deg, #f5f5f6, #d8d9dc 48%, #efeff0);
+  }
+  body::after {
+    content: "";
+    position: fixed; inset: 0;
+    background: linear-gradient(135deg, rgba(255,255,255,.23), transparent 44%, rgba(255,255,255,.10));
+    pointer-events: none;
+  }
+  .stage { width: min(1100px, 94vw); }
+  .caption {
+    display: flex; justify-content: space-between; align-items: end;
+    margin: 0 4px 14px;
+  }
+  .caption h1 { margin: 0; font-size: 18px; font-weight: 560; letter-spacing: -.25px; }
+  .caption p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+  .choice {
+    border: 1px solid rgba(0,0,0,.09);
+    color: var(--ink); background: rgba(255,255,255,.38);
+    padding: 8px 13px; border-radius: 999px;
+    font: 600 11px/1 -apple-system, sans-serif;
+    cursor: pointer; box-shadow: 0 8px 20px rgba(0,0,0,.06);
+  }
+  .window {
+    border-radius: 30px;
+    padding: 14px 16px 16px;
+    background: rgba(255,255,255,.27);
+    border: 1px solid rgba(255,255,255,.76);
+    box-shadow: 0 26px 80px rgba(24,25,29,.19), inset 0 1px rgba(255,255,255,.72);
+    backdrop-filter: blur(42px) saturate(140%);
+  }
+  .titlebar {
+    height: 38px; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 6px 10px;
+  }
+  .traffic { display: flex; gap: 8px; width: 92px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; border: 1px solid rgba(0,0,0,.08); }
+  .red{background:#ff5f57}.yellow{background:#febc2e}.green{background:#28c840}
+  .brand { font-size: 12px; font-weight: 620; letter-spacing: .2px; }
+  .gear { width: 92px; text-align: right; color: rgba(0,0,0,.45); font-size: 15px; }
+  .topline { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+  .segmented, .pill {
+    display:flex; align-items:center; gap:3px; border-radius:999px;
+    background:rgba(255,255,255,.34); border:1px solid rgba(0,0,0,.07);
+    box-shadow: inset 0 1px rgba(255,255,255,.7);
+  }
+  .segmented { padding:3px; }
+  .segment { padding:7px 14px; border-radius:999px; font-size:11px; font-weight:600; color:var(--muted); }
+  .segment.active { background:rgba(255,255,255,.75); color:var(--ink); box-shadow:0 4px 10px rgba(0,0,0,.07); }
+  .status { padding:7px 11px; font:550 10px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing:.15px; }
+  .status i { display:inline-block; width:7px; height:7px; border-radius:50%; background:#31a657; margin-right:7px; box-shadow:0 0 0 4px rgba(49,166,87,.1); }
+  .workspace { display:grid; grid-template-columns: minmax(0,1.45fr) minmax(290px,.72fr); gap:12px; }
+  .surface {
+    border-radius:28px; border:1px solid var(--line);
+    background:rgba(255,255,255,.27);
+    box-shadow: inset 0 1px rgba(255,255,255,.66);
+    backdrop-filter: blur(26px);
+  }
+  .wave { min-height:310px; padding:22px; display:flex; flex-direction:column; }
+  .eyebrow { font:600 9px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing:1.55px; color:var(--muted); }
+  .wave-head { display:flex; justify-content:space-between; align-items:start; }
+  .wave-head strong { display:block; margin-top:7px; font-size:20px; font-weight:520; letter-spacing:-.5px; }
+  .buffer { font:500 10px/1 ui-monospace, monospace; color:var(--muted); }
+  .visualizer { flex:1; display:flex; align-items:center; justify-content:center; gap:4px; padding:18px 4px 10px; }
+  .bar { width:5px; border-radius:8px; background:linear-gradient(to bottom,rgba(255,255,255,.98),rgba(28,29,33,.38)); box-shadow:0 0 16px rgba(255,255,255,.5); }
+  .wave-foot { display:flex; justify-content:space-between; align-items:center; }
+  .voice { padding:8px 10px; gap:12px; font-size:11px; font-weight:620; }
+  .arrow { width:23px; height:23px; display:grid; place-items:center; border-radius:50%; background:rgba(255,255,255,.5); color:var(--muted); }
+  .signal { font:500 10px/1 ui-monospace, monospace; color:var(--muted); }
+  .transport { padding:20px; display:flex; flex-direction:column; min-height:310px; }
+  .transport h2 { margin:7px 0 0; font-size:18px; font-weight:520; letter-spacing:-.35px; }
+  .transport-controls { display:flex; justify-content:center; align-items:center; gap:21px; flex:1; }
+  .skip { color:var(--muted); font-size:19px; }
+  .play {
+    width:68px;height:68px;border-radius:50%;display:grid;place-items:center;
+    color:white;background:linear-gradient(145deg,#3a3b40,#08090b);
+    border:1px solid rgba(255,255,255,.55);
+    box-shadow:0 13px 26px rgba(0,0,0,.2),inset 0 1px rgba(255,255,255,.3);
+    font-size:23px;
+  }
+  .scrub { height:5px;border-radius:999px;background:rgba(0,0,0,.09);position:relative; }
+  .scrub span { display:block;width:43%;height:100%;border-radius:inherit;background:#222328; }
+  .scrub span::after { content:"";position:absolute;left:43%;top:50%;translate:-50% -50%;width:13px;height:13px;border-radius:50%;background:white;border:1px solid rgba(0,0,0,.15);box-shadow:0 3px 8px rgba(0,0,0,.12); }
+  .time { display:flex;justify-content:space-between;margin-top:9px;font:500 10px/1 ui-monospace,monospace;color:var(--muted); }
+  .mini-metrics { display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px; }
+  .metric { padding:11px;border-radius:18px;background:rgba(255,255,255,.3);border:1px solid rgba(0,0,0,.06); }
+  .metric b { display:block;margin-top:6px;font-size:13px;font-weight:620; }
+  .input {
+    margin-top:12px; padding:15px 15px 13px; min-height:112px;
+    display:flex;flex-direction:column;justify-content:space-between;
+  }
+  .placeholder { color:rgba(0,0,0,.42); font-size:14px; }
+  .input-foot { display:flex;justify-content:space-between;align-items:center; }
+  .hint { font:500 9px/1 ui-monospace,monospace;color:var(--muted);letter-spacing:.4px; }
+  .send { border:0;padding:10px 18px;border-radius:999px;color:white;background:#15161a;font-size:11px;font-weight:650;box-shadow:0 8px 16px rgba(0,0,0,.16); }
+  .note { margin:13px 4px 0;text-align:center;color:var(--muted);font-size:11px; }
+  @media(max-width:760px){.workspace{grid-template-columns:1fr}.stage{width:95vw}.transport{min-height:230px}.wave{min-height:250px}}
+</style>
+</head>
+<body>
+<main class="stage">
+  <div class="caption">
+    <div><h1>Chrome Heart · Instrument Console</h1><p>A visual proposal derived from AlkiCorpUIStyle, shown in System Light appearance.</p></div>
+    <button class="choice" data-choice="chrome-heart-console" onclick="this.textContent='Selected ✓'; window.parent.postMessage({type:'choice',choice:'chrome-heart-console'},'*')">Select this direction</button>
+  </div>
+  <section class="window">
+    <div class="titlebar">
+      <div class="traffic"><i class="dot red"></i><i class="dot yellow"></i><i class="dot green"></i></div>
+      <div class="brand">AlkiSpeak</div>
+      <div class="gear">⚙</div>
+    </div>
+    <div class="topline">
+      <div class="segmented"><span class="segment active">Quick</span><span class="segment">Pro</span></div>
+      <div class="pill status"><i></i>ENGINE READY</div>
+    </div>
+    <div class="workspace">
+      <div class="surface wave">
+        <div class="wave-head"><div><span class="eyebrow">NOW SPEAKING</span><strong>The future sounds clear.</strong></div><span class="buffer">BUFFER 03 / 06</span></div>
+        <div class="visualizer">
+          <i class="bar" style="height:20%"></i><i class="bar" style="height:33%"></i><i class="bar" style="height:58%"></i><i class="bar" style="height:39%"></i><i class="bar" style="height:76%"></i><i class="bar" style="height:92%"></i><i class="bar" style="height:62%"></i><i class="bar" style="height:43%"></i><i class="bar" style="height:73%"></i><i class="bar" style="height:52%"></i><i class="bar" style="height:28%"></i><i class="bar" style="height:48%"></i><i class="bar" style="height:84%"></i><i class="bar" style="height:67%"></i><i class="bar" style="height:35%"></i><i class="bar" style="height:62%"></i><i class="bar" style="height:46%"></i><i class="bar" style="height:22%"></i><i class="bar" style="height:42%"></i><i class="bar" style="height:70%"></i><i class="bar" style="height:54%"></i><i class="bar" style="height:31%"></i><i class="bar" style="height:16%"></i>
+        </div>
+        <div class="wave-foot">
+          <div class="pill voice"><span class="arrow">↑</span><span>HEART</span><span class="arrow">↓</span></div>
+          <span class="signal">48 KHZ · MONO · FFT LIVE</span>
+        </div>
+      </div>
+      <div class="surface transport">
+        <div><span class="eyebrow">PLAYBACK</span><h2>Transport</h2></div>
+        <div class="transport-controls"><span class="skip">↶<small> 10</small></span><span class="play">Ⅱ</span><span class="skip"><small>10 </small>↷</span></div>
+        <div class="scrub"><span></span></div>
+        <div class="time"><span>00:18</span><span>00:42</span></div>
+        <div class="mini-metrics">
+          <div class="metric"><span class="eyebrow">CPU</span><b>18%</b></div>
+          <div class="metric"><span class="eyebrow">RAM</span><b>2.4 GB</b></div>
+        </div>
+      </div>
+    </div>
+    <div class="surface input">
+      <div class="placeholder">What should AlkiSpeak say?</div>
+      <div class="input-foot"><span class="hint">⌘ RETURN TO SEND</span><button class="send">Generate Speech</button></div>
+    </div>
+  </section>
+  <p class="note">Pro mode would reveal the Log Console below this shell without changing the primary workspace.</p>
+</main>
+</body>
+</html>
