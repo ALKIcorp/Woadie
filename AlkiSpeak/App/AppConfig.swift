@@ -6,6 +6,14 @@ enum AppConfig {
         if let env = ProcessInfo.processInfo.environment["KOKORO_HOME"], !env.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return env.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        let workspaceParent = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        if FileManager.default.fileExists(atPath: workspaceParent.appendingPathComponent("kokoro_server.py").path) {
+            return workspaceParent.path
+        }
         return "/Volumes/ALKI SD/MACBOOK PRO STORAGE/ALKI Corp Dev/tts/kokoro"
     }
     static let enginePort = 7777

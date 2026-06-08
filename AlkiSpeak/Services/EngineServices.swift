@@ -384,15 +384,19 @@ final class EngineManager: EngineSupervising {
         proc.executableURL = URL(fileURLWithPath: pythonExecutable)
         proc.currentDirectoryURL = kokoroRoot
         proc.environment = ProcessInfo.processInfo.environment.merging(["PYTHONUNBUFFERED": "1"]) { _, new in new }
-        proc.arguments = [
+        var arguments = [
             "-m", "uvicorn", "kokoro_server:app",
             "--host", "127.0.0.1",
             "--port", "\(AppConfig.enginePort)",
             "--timeout-keep-alive", "120",
             "--timeout-graceful-shutdown", "30",
-            "--log-level", "warning",
-            "--log-config", kokoroRoot.appendingPathComponent("kokoro-log-config.json").path
+            "--log-level", "warning"
         ]
+        let logConfigURL = kokoroRoot.appendingPathComponent("kokoro-log-config.json")
+        if FileManager.default.fileExists(atPath: logConfigURL.path) {
+            arguments += ["--log-config", logConfigURL.path]
+        }
+        proc.arguments = arguments
         proc.standardOutput = logHandle
         proc.standardError = logHandle
         proc.terminationHandler = { [weak self] terminated in
