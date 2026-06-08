@@ -2,17 +2,30 @@ import SwiftUI
 
 struct WoadiePlaybackPanel: View {
     @ObservedObject var model: AppModel
-    let onStop: () -> Void
+    let onTogglePlayback: () -> Void
     private var isPlaying: Bool { model.playback.state == .playing || model.playback.state == .preparing }
+    private var hasPlayableClip: Bool { model.playback.bufferedDuration > 0 }
+    private var statusLabel: String {
+        switch model.playback.state {
+        case .playing, .preparing: return "Speaking"
+        case .paused: return "Paused"
+        case .stopped where hasPlayableClip: return "Ready"
+        default: return "Idle"
+        }
+    }
 
     var body: some View {
         HStack(spacing: 16) {
-            WoadieCDControl(isPlaying: isPlaying, onStop: onStop)
+            WoadieCDControl(
+                isPlaying: isPlaying,
+                isEnabled: hasPlayableClip || isPlaying,
+                onTogglePlayback: onTogglePlayback
+            )
                 .frame(width: 84, height: 84)
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    Text(isPlaying ? "Speaking" : "Idle")
+                    Text(statusLabel)
                         .font(WoadieTheme.mono(size: 11, weight: .medium))
                         .foregroundStyle(isPlaying ? WoadieTheme.success : WoadieTheme.foregroundSubtle)
                         .textCase(.uppercase)
@@ -88,11 +101,12 @@ private struct ProgressiveScrubber: View {
 
 private struct WoadieCDControl: View {
     let isPlaying: Bool
-    let onStop: () -> Void
+    let isEnabled: Bool
+    let onTogglePlayback: () -> Void
     @State private var rotation: Double = 0
 
     var body: some View {
-        Button(action: onStop) {
+        Button(action: onTogglePlayback) {
             ZStack {
                 Circle()
                     .fill(WoadieTheme.surface)
@@ -109,15 +123,16 @@ private struct WoadieCDControl: View {
                     .fill(WoadieTheme.background)
                     .frame(width: 18, height: 18)
 
-                Image(systemName: "stop.fill")
+                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(isPlaying ? WoadieTheme.destructive : WoadieTheme.foregroundSubtle)
+                    .foregroundStyle(isPlaying ? WoadieTheme.primary : WoadieTheme.foregroundSubtle)
             }
         }
         .buttonStyle(.plain)
+        .disabled(!isEnabled)
         .onAppear {
             rotation = 360
         }
-        .help("Stop playback")
+        .help(isPlaying ? "Pause playback" : "Play cached audio")
     }
 }

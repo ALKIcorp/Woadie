@@ -49,7 +49,7 @@ final class AppModel: ObservableObject {
     var canSpeak: Bool {
         let hasText = !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return hasText
-            && store.playback.state == .idle
+            && !store.playback.state.blocksNewSpeech
             && (status.isAvailableForRemoteSpeech || isSelectedVoiceLocal)
     }
 
@@ -295,6 +295,10 @@ final class AppModel: ObservableObject {
 
     func replay(item: SavedLogEntry) {
         speak(text: item.text, addToHistory: false, targetLogEntryID: item.id)
+    }
+
+    func togglePlayback() {
+        dependencies.playbackCoordinator.togglePlayback()
     }
 
     func stopPlayback() {
@@ -587,7 +591,9 @@ final class AppModel: ObservableObject {
 
     private func finishPlayback() {
         markActiveJobsCompleted()
-        store.playback = .idle
+        store.playback.state = .stopped
+        store.playback.elapsedTime = 0
+        store.playback.currentSegmentID = nil
         store.dashboardTelemetry.generatedJobCount += 1
     }
 

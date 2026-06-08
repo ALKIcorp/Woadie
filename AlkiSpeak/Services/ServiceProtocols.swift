@@ -41,6 +41,7 @@ protocol PlaybackCoordinating: AnyObject {
     func append(audioURL: URL, segmentID: UUID, index: Int) throws
     func finishEnqueuing()
     func seek(to globalTime: TimeInterval) -> Bool
+    func togglePlayback()
     func stop()
 }
 

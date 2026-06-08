@@ -129,6 +129,67 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertEqual(VoiceCycler.next(current: "a", in: voices, offset: -1), "c")
     }
 
+    @MainActor
+    func testSpeakCanRetryAfterPlaybackFailure() {
+        let store = AppStore()
+        store.composerText = "Try again"
+        store.engineStatus = .running
+        store.playback.state = .failed
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+
+        XCTAssertTrue(model.canSpeak)
+    }
+
+    @MainActor
+    func testPlaybackControlTogglesCachedAudioWithoutGeneratingAgain() {
+        let playback = FakePlaybackCoordinating()
+        let store = AppStore()
+        store.playback.state = .playing
+        let model = AppModel(
+            store: store,
+            dependencies: .test(
+                engineSupervisor: FakeEngineSupervisor(),
+                playbackCoordinator: playback
+            )
+        )
+
+        model.togglePlayback()
+
+        XCTAssertEqual(playback.toggleCallCount, 1)
+    }
+
+    @MainActor
+    func testFinishedPlaybackRetainsClipForReplayAndUnblocksSpeak() {
+        let playback = FakePlaybackCoordinating()
+        let store = AppStore()
+        store.composerText = "Generate another clip"
+        store.engineStatus = .running
+        store.playback = PlaybackSnapshot(
+            state: .playing,
+            activeJobID: UUID(),
+            activeLogEntryID: UUID(),
+            currentSegmentID: UUID(),
+            elapsedTime: 1,
+            duration: 1,
+            bufferedDuration: 1,
+            statusMessage: nil
+        )
+        let model = AppModel(
+            store: store,
+            dependencies: .test(
+                engineSupervisor: FakeEngineSupervisor(),
+                playbackCoordinator: playback
+            )
+        )
+
+        playback.finish()
+
+        XCTAssertEqual(store.playback.state, .stopped)
+        XCTAssertNotNil(store.playback.activeLogEntryID)
+        XCTAssertEqual(store.playback.elapsedTime, 0)
+        XCTAssertTrue(model.canSpeak)
+    }
+
     func testQueuePlaybackAppendsSegmentsAndPublishesCumulativeBuffer() throws {
         let firstURL = try makeTestAudioFile(sampleRate: 24_000, duration: 0.2)
         let secondURL = try makeTestAudioFile(sampleRate: 24_000, duration: 0.3)
@@ -393,11 +454,17 @@ private final class FakeSpeechGenerating: SpeechGenerating {
 private final class FakePlaybackCoordinating: PlaybackCoordinating {
     var onSnapshotChanged: ((PlaybackTransportSnapshot) -> Void)?
     var onFinished: (() -> Void)?
+    private(set) var toggleCallCount = 0
     func prepare(characterCounts: [Int]) {}
     func append(audioURL: URL, segmentID: UUID, index: Int) throws {}
     func finishEnqueuing() {}
     func seek(to globalTime: TimeInterval) -> Bool { false }
+    func togglePlayback() { toggleCallCount += 1 }
     func stop() {}
+
+    func finish() {
+        onFinished?()
+    }
 }
 
 private final class FakeLocalSpeechSynthesizing: LocalSpeechSynthesizing {
@@ -442,11 +509,14 @@ private final class FakePackageStore: SpeechPackageImportExporting {
 
 @MainActor
 private extension AppDependencies {
-    static func test(engineSupervisor: EngineSupervising) -> AppDependencies {
+    static func test(
+        engineSupervisor: EngineSupervising,
+        playbackCoordinator: PlaybackCoordinating = FakePlaybackCoordinating()
+    ) -> AppDependencies {
         AppDependencies(
             engineSupervisor: engineSupervisor,
             generationService: FakeSpeechGenerating(),
-            playbackCoordinator: FakePlaybackCoordinating(),
+            playbackCoordinator: playbackCoordinator,
             localSpeechService: FakeLocalSpeechSynthesizing(),
             telemetryService: FakeTelemetryCapturing(),
             workspaceStore: FakeWorkspaceStore(),

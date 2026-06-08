@@ -281,6 +281,10 @@ struct PlaybackSnapshot: Codable, Hashable {
         case paused
         case stopped
         case failed
+
+        var blocksNewSpeech: Bool {
+            self == .preparing || self == .playing
+        }
     }
 
     var state: State

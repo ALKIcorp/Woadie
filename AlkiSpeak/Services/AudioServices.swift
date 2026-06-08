@@ -99,6 +99,28 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         return true
     }
 
+    func togglePlayback() {
+        if player.rate != 0 {
+            player.pause()
+            analysisNode?.pause()
+            publish(state: .paused)
+            return
+        }
+
+        if player.currentItem == nil {
+            rebuildQueue()
+            guard let first = entries.first else { return }
+            startAnalysis(url: first.url)
+        } else {
+            let index = entries.firstIndex(where: { $0.item === player.currentItem }) ?? 0
+            if entries.indices.contains(index) {
+                startAnalysis(url: entries[index].url, at: max(0, player.currentTime().seconds))
+            }
+        }
+        player.play()
+        publish(state: .playing)
+    }
+
     func stop() {
         player.pause()
         player.removeAllItems()
@@ -118,8 +140,19 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
     }
 
     private func complete() {
-        publish(state: .idle)
+        analysisNode?.stop()
+        publish(state: .stopped)
         onFinished?()
+    }
+
+    private func rebuildQueue() {
+        player.removeAllItems()
+        for index in entries.indices {
+            let item = AVPlayerItem(url: entries[index].url)
+            entries[index].item = item
+            player.insert(item, after: nil)
+        }
+        player.seek(to: .zero)
     }
 
     private func publish(state: PlaybackSnapshot.State? = nil) {
