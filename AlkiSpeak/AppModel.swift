@@ -515,6 +515,9 @@ final class AppModel: ObservableObject {
             VoiceOption(id: name, label: "Kokoro - \(name)", isLocal: false)
         }
         store.voiceOptions = dependencies.localSpeechService.voiceOptions + remoteOptions
+        if isSelectedVoiceLocal, let remoteDefault = remoteOptions.first(where: { $0.id == AppConfig.defaultVoice }) ?? remoteOptions.first {
+            selectedVoice = remoteDefault.id
+        }
         if !store.voiceOptions.contains(where: { $0.id == selectedVoice }) {
             selectedVoice = store.voiceOptions.first?.id ?? AppConfig.defaultVoice
         }
