@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlkiSpeak — Chrome Heart Layout Comparison</title>
+<style>
+  * { box-sizing: border-box; }
+  :root {
+    --ink: rgba(12, 13, 16, .88);
+    --muted: rgba(12, 13, 16, .52);
+    --line: rgba(0, 0, 0, .08);
+  }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
+    background:
+      radial-gradient(circle at 4% -12%, rgba(255,255,255,.96) 0 12%, transparent 43%),
+      radial-gradient(circle at 92% 7%, rgba(255,255,255,.82) 0 8%, transparent 38%),
+      radial-gradient(ellipse at 52% -4%, rgba(255,255,255,.65), transparent 52%),
+      linear-gradient(145deg, #f5f5f6, #d8d9dc 48%, #efeff0);
+    padding: 36px 0 56px;
+  }
+  body::after {
+    content: "";
+    position: fixed; inset: 0;
+    background: linear-gradient(135deg, rgba(255,255,255,.23), transparent 44%, rgba(255,255,255,.10));
+    pointer-events: none;
+  }
+  .stage { width: min(1100px, 94vw); margin: 0 auto 34px; position: relative; z-index: 1; }
+  .caption {
+    display: flex; justify-content: space-between; align-items: end;
+    margin: 0 4px 14px;
+  }
+  .caption h1 { margin: 0; font-size: 18px; font-weight: 560; letter-spacing: -.25px; }
+  .caption p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+  .choice {
+    border: 1px solid rgba(0,0,0,.09);
+    color: var(--ink); background: rgba(255,255,255,.38);
+    padding: 8px 13px; border-radius: 999px;
+    font: 600 11px/1 -apple-system, sans-serif;
+    cursor: pointer; box-shadow: 0 8px 20px rgba(0,0,0,.06);
+  }
+  .window {
+    border-radius: 30px;
+    padding: 14px 16px 16px;
+    background: rgba(255,255,255,.27);
+    border: 1px solid rgba(255,255,255,.76);
+    box-shadow: 0 26px 80px rgba(24,25,29,.19), inset 0 1px rgba(255,255,255,.72);
+    backdrop-filter: blur(42px) saturate(140%);
+  }
+  .titlebar {
+    height: 38px; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 6px 10px;
+  }
+  .traffic { display: flex; gap: 8px; width: 92px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; border: 1px solid rgba(0,0,0,.08); }
+  .red{background:#ff5f57}.yellow{background:#febc2e}.green{background:#28c840}
+  .brand { font-size: 12px; font-weight: 620; letter-spacing: .2px; }
+  .gear { width: 92px; text-align: right; color: rgba(0,0,0,.45); font-size: 15px; }
+  .topline { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+  .segmented, .pill {
+    display:flex; align-items:center; gap:3px; border-radius:999px;
+    background:rgba(255,255,255,.34); border:1px solid rgba(0,0,0,.07);
+    box-shadow: inset 0 1px rgba(255,255,255,.7);
+  }
+  .segmented { padding:3px; }
+  .segment { padding:7px 14px; border-radius:999px; font-size:11px; font-weight:600; color:var(--muted); }
+  .segment.active { background:rgba(255,255,255,.75); color:var(--ink); box-shadow:0 4px 10px rgba(0,0,0,.07); }
+  .status { padding:7px 11px; font:550 10px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing:.15px; }
+  .status i { display:inline-block; width:7px; height:7px; border-radius:50%; background:#31a657; margin-right:7px; box-shadow:0 0 0 4px rgba(49,166,87,.1); }
+  .surface {
+    border-radius:28px; border:1px solid var(--line);
+    background:rgba(255,255,255,.27);
+    box-shadow: inset 0 1px rgba(255,255,255,.66);
+    backdrop-filter: blur(26px);
+  }
+  .workspace { display:grid; grid-template-columns: minmax(0,1.45fr) minmax(290px,.72fr); gap:12px; }
+  .wave { min-height:310px; padding:22px; display:flex; flex-direction:column; }
+  .eyebrow { font:600 9px/1 ui-monospace, SFMono-Regular, monospace; letter-spacing:1.55px; color:var(--muted); }
+  .wave-head { display:flex; justify-content:space-between; align-items:start; }
+  .wave-head strong { display:block; margin-top:7px; font-size:20px; font-weight:520; letter-spacing:-.5px; }
+  .buffer { font:500 10px/1 ui-monospace, monospace; color:var(--muted); }
+  .visualizer { flex:1; display:flex; align-items:center; justify-content:center; gap:4px; padding:18px 4px 10px; }
+  .bar { width:5px; border-radius:8px; background:linear-gradient(to bottom,rgba(255,255,255,.98),rgba(28,29,33,.38)); box-shadow:0 0 16px rgba(255,255,255,.5); }
+  .wave-foot { display:flex; justify-content:space-between; align-items:center; }
+  .voice { padding:8px 10px; gap:12px; font-size:11px; font-weight:620; }
+  .arrow { width:23px; height:23px; display:grid; place-items:center; border-radius:50%; background:rgba(255,255,255,.5); color:var(--muted); }
+  .signal { font:500 10px/1 ui-monospace, monospace; color:var(--muted); }
+  .transport { padding:20px; display:flex; flex-direction:column; min-height:310px; }
+  .transport h2 { margin:7px 0 0; font-size:18px; font-weight:520; letter-spacing:-.35px; }
+  .transport-controls { display:flex; justify-content:center; align-items:center; gap:21px; flex:1; }
+  .skip { color:var(--muted); font-size:19px; }
+  .play {
+    width:68px;height:68px;border-radius:50%;display:grid;place-items:center;
+    color:white;background:linear-gradient(145deg,#3a3b40,#08090b);
+    border:1px solid rgba(255,255,255,.55);
+    box-shadow:0 13px 26px rgba(0,0,0,.2),inset 0 1px rgba(255,255,255,.3);
+    font-size:23px;
+  }
+  .scrub { height:5px;border-radius:999px;background:rgba(0,0,0,.09);position:relative; }
+  .scrub span { display:block;width:43%;height:100%;border-radius:inherit;background:#222328; }
+  .scrub span::after { content:"";position:absolute;left:43%;top:50%;translate:-50% -50%;width:13px;height:13px;border-radius:50%;background:white;border:1px solid rgba(0,0,0,.15);box-shadow:0 3px 8px rgba(0,0,0,.12); }
+  .time { display:flex;justify-content:space-between;margin-top:9px;font:500 10px/1 ui-monospace,monospace;color:var(--muted); }
+  .mini-metrics { display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px; }
+  .metric { padding:11px;border-radius:18px;background:rgba(255,255,255,.3);border:1px solid rgba(0,0,0,.06); }
+  .metric b { display:block;margin-top:6px;font-size:13px;font-weight:620; }
+  .input {
+    margin-top:12px; padding:15px 15px 13px; min-height:112px;
+    display:flex;flex-direction:column;justify-content:space-between;
+  }
+  .placeholder { color:rgba(0,0,0,.42); font-size:14px; }
+  .input-foot { display:flex;justify-content:space-between;align-items:center; }
+  .hint { font:500 9px/1 ui-monospace,monospace;color:var(--muted);letter-spacing:.4px; }
+  .send { border:0;padding:10px 18px;border-radius:999px;color:white;background:#15161a;font-size:11px;font-weight:650;box-shadow:0 8px 16px rgba(0,0,0,.16); }
+  .note { margin:13px 4px 0;text-align:center;color:var(--muted);font-size:11px; }
+  .deck-wave { min-height: 260px; }
+  .deck-transport { min-height: 118px; margin-top: 12px; display:grid; grid-template-columns: 1fr 360px; gap: 18px; align-items:center; }
+  .deck-controls { display:flex; align-items:center; justify-content:center; gap: 26px; }
+  .deck-inputs { display:grid; grid-template-columns: 1fr 280px; gap: 12px; margin-top: 12px; }
+  .log { padding: 15px; min-height: 112px; }
+  .log-row { display:flex; justify-content:space-between; padding:9px 0; border-bottom:1px solid rgba(0,0,0,.06); font-size:12px; }
+  .grid-layout { display:grid; grid-template-columns: 1.05fr .95fr; gap: 12px; }
+  .grid-layout .wave { min-height: 238px; }
+  .grid-card { min-height: 166px; padding: 19px; display:flex; flex-direction:column; justify-content:space-between; }
+  .voice-card { align-items:flex-start; }
+  .compact-viz .bar { width:4px; }
+  @media(max-width:760px){.workspace,.deck-transport,.deck-inputs,.grid-layout{grid-template-columns:1fr}.stage{width:95vw}.transport{min-height:230px}.wave{min-height:250px}}
+</style>
+</head>
+<body>
+<main class="stage">
+  <div class="caption">
+    <div><h1>A. Chrome Heart · Instrument Console</h1><p>Kept unchanged: waveform left, transport right, input below.</p></div>
+    <button class="choice" data-choice="a-instrument-console" onclick="this.textContent='Selected A ✓'">Select A</button>
+  </div>
+  <section class="window">
+    <div class="titlebar">
+      <div class="traffic"><i class="dot red"></i><i class="dot yellow"></i><i class="dot green"></i></div>
+      <div class="brand">AlkiSpeak</div>
+      <div class="gear">⚙</div>
+    </div>
+    <div class="topline">
+      <div class="segmented"><span class="segment active">Quick</span><span class="segment">Pro</span></div>
+      <div class="pill status"><i></i>ENGINE READY</div>
+    </div>
+    <div class="workspace">
+      <div class="surface wave">
+        <div class="wave-head"><div><span class="eyebrow">NOW SPEAKING</span><strong>The future sounds clear.</strong></div><span class="buffer">BUFFER 03 / 06</span></div>
+        <div class="visualizer">
+          <i class="bar" style="height:20%"></i><i class="bar" style="height:33%"></i><i class="bar" style="height:58%"></i><i class="bar" style="height:39%"></i><i class="bar" style="height:76%"></i><i class="bar" style="height:92%"></i><i class="bar" style="height:62%"></i><i class="bar" style="height:43%"></i><i class="bar" style="height:73%"></i><i class="bar" style="height:52%"></i><i class="bar" style="height:28%"></i><i class="bar" style="height:48%"></i><i class="bar" style="height:84%"></i><i class="bar" style="height:67%"></i><i class="bar" style="height:35%"></i><i class="bar" style="height:62%"></i><i class="bar" style="height:46%"></i><i class="bar" style="height:22%"></i><i class="bar" style="height:42%"></i><i class="bar" style="height:70%"></i><i class="bar" style="height:54%"></i><i class="bar" style="height:31%"></i><i class="bar" style="height:16%"></i>
+        </div>
+        <div class="wave-foot">
+          <div class="pill voice"><span class="arrow">↑</span><span>HEART</span><span class="arrow">↓</span></div>
+          <span class="signal">48 KHZ · MONO · FFT LIVE</span>
+        </div>
+      </div>
+      <div class="surface transport">
+        <div><span class="eyebrow">PLAYBACK</span><h2>Transport</h2></div>
+        <div class="transport-controls"><span class="skip">↶<small> 10</small></span><span class="play">Ⅱ</span><span class="skip"><small>10 </small>↷</span></div>
+        <div class="scrub"><span></span></div>
+        <div class="time"><span>00:18</span><span>00:42</span></div>
+        <div class="mini-metrics">
+          <div class="metric"><span class="eyebrow">CPU</span><b>18%</b></div>
+          <div class="metric"><span class="eyebrow">RAM</span><b>2.4 GB</b></div>
+        </div>
+      </div>
+    </div>
+    <div class="surface input">
+      <div class="placeholder">What should AlkiSpeak say?</div>
+      <div class="input-foot"><span class="hint">⌘ RETURN TO SEND</span><button class="send">Generate Speech</button></div>
+    </div>
+  </section>
+  <p class="note">Pro mode would reveal the Log Console below this shell without changing the primary workspace.</p>
+</main>
+
+<main class="stage">
+  <div class="caption">
+    <div><h1>B. Chrome Heart · Signal Deck</h1><p>Full-width waveform first, then one horizontal command strip.</p></div>
+    <button class="choice" data-choice="b-signal-deck" onclick="this.textContent='Selected B ✓'">Select B</button>
+  </div>
+  <section class="window">
+    <div class="titlebar">
+      <div class="traffic"><i class="dot red"></i><i class="dot yellow"></i><i class="dot green"></i></div>
+      <div class="brand">AlkiSpeak</div>
+      <div class="gear">⚙</div>
+    </div>
+    <div class="topline">
+      <div class="segmented"><span class="segment active">Quick</span><span class="segment">Pro</span></div>
+      <div class="pill status"><i></i>ENGINE READY</div>
+    </div>
+    <div class="surface wave deck-wave">
+      <div class="wave-head"><div><span class="eyebrow">SIGNAL DECK</span><strong>The future sounds clear.</strong></div><span class="buffer">BUFFER 03 / 06</span></div>
+      <div class="visualizer">
+        <i class="bar" style="height:18%"></i><i class="bar" style="height:25%"></i><i class="bar" style="height:51%"></i><i class="bar" style="height:69%"></i><i class="bar" style="height:44%"></i><i class="bar" style="height:80%"></i><i class="bar" style="height:94%"></i><i class="bar" style="height:61%"></i><i class="bar" style="height:38%"></i><i class="bar" style="height:74%"></i><i class="bar" style="height:55%"></i><i class="bar" style="height:29%"></i><i class="bar" style="height:48%"></i><i class="bar" style="height:84%"></i><i class="bar" style="height:72%"></i><i class="bar" style="height:36%"></i><i class="bar" style="height:63%"></i><i class="bar" style="height:47%"></i><i class="bar" style="height:25%"></i><i class="bar" style="height:43%"></i><i class="bar" style="height:71%"></i><i class="bar" style="height:56%"></i><i class="bar" style="height:32%"></i><i class="bar" style="height:18%"></i><i class="bar" style="height:38%"></i><i class="bar" style="height:66%"></i><i class="bar" style="height:52%"></i><i class="bar" style="height:24%"></i>
+      </div>
+      <div class="wave-foot"><span class="signal">48 KHZ · MONO · FFT LIVE</span><span class="signal">00:18 / 00:42</span></div>
+    </div>
+    <div class="surface deck-transport">
+      <div>
+        <span class="eyebrow">VOICE</span>
+        <div class="pill voice" style="display:inline-flex;margin-top:10px"><span class="arrow">↑</span><span>HEART</span><span class="arrow">↓</span></div>
+      </div>
+      <div>
+        <div class="deck-controls"><span class="skip">↶<small> 10</small></span><span class="play">Ⅱ</span><span class="skip"><small>10 </small>↷</span></div>
+        <div class="scrub" style="margin-top:14px"><span></span></div>
+      </div>
+    </div>
+    <div class="deck-inputs">
+      <div class="surface input" style="margin-top:0"><div class="placeholder">What should AlkiSpeak say?</div><div class="input-foot"><span class="hint">⌘ RETURN TO SEND</span><button class="send">Generate Speech</button></div></div>
+      <div class="surface log"><span class="eyebrow">PRO LOG PREVIEW</span><div class="log-row"><span>Product intro</span><span>00:42</span></div><div class="log-row"><span>Voice test</span><span>00:16</span></div></div>
+    </div>
+  </section>
+  <p class="note">More dramatic and polished. It needs a taller default window, but the signal becomes the product.</p>
+</main>
+
+<main class="stage">
+  <div class="caption">
+    <div><h1>C. Chrome Heart · Modular Grid</h1><p>Dashboard-style cards for each function, all equal glass modules.</p></div>
+    <button class="choice" data-choice="c-modular-grid" onclick="this.textContent='Selected C ✓'">Select C</button>
+  </div>
+  <section class="window">
+    <div class="titlebar">
+      <div class="traffic"><i class="dot red"></i><i class="dot yellow"></i><i class="dot green"></i></div>
+      <div class="brand">AlkiSpeak</div>
+      <div class="gear">⚙</div>
+    </div>
+    <div class="topline">
+      <div class="segmented"><span class="segment active">Quick</span><span class="segment">Pro</span></div>
+      <div class="pill status"><i></i>ENGINE READY</div>
+    </div>
+    <div class="grid-layout">
+      <div class="surface wave">
+        <div class="wave-head"><div><span class="eyebrow">WAVEFORM</span><strong>Signal</strong></div><span class="buffer">03 / 06</span></div>
+        <div class="visualizer compact-viz">
+          <i class="bar" style="height:20%"></i><i class="bar" style="height:33%"></i><i class="bar" style="height:58%"></i><i class="bar" style="height:39%"></i><i class="bar" style="height:76%"></i><i class="bar" style="height:92%"></i><i class="bar" style="height:62%"></i><i class="bar" style="height:43%"></i><i class="bar" style="height:73%"></i><i class="bar" style="height:52%"></i><i class="bar" style="height:28%"></i><i class="bar" style="height:48%"></i><i class="bar" style="height:84%"></i><i class="bar" style="height:67%"></i><i class="bar" style="height:35%"></i>
+        </div>
+      </div>
+      <div class="surface grid-card">
+        <div><span class="eyebrow">TRANSPORT</span><h2>Playback</h2></div>
+        <div class="transport-controls" style="flex:0"><span class="skip">↶</span><span class="play">Ⅱ</span><span class="skip">↷</span></div>
+        <div><div class="scrub"><span></span></div><div class="time"><span>00:18</span><span>00:42</span></div></div>
+      </div>
+      <div class="surface grid-card voice-card">
+        <div><span class="eyebrow">VOICE</span><h2>Heart</h2></div>
+        <div class="pill voice"><span class="arrow">↑</span><span>HEART</span><span class="arrow">↓</span></div>
+      </div>
+      <div class="surface grid-card">
+        <div><span class="eyebrow">SYSTEM</span><h2>Resources</h2></div>
+        <div class="mini-metrics"><div class="metric"><span class="eyebrow">CPU</span><b>18%</b></div><div class="metric"><span class="eyebrow">RAM</span><b>2.4 GB</b></div></div>
+      </div>
+    </div>
+    <div class="surface input">
+      <div class="placeholder">What should AlkiSpeak say?</div>
+      <div class="input-foot"><span class="hint">⌘ RETURN TO SEND</span><button class="send">Generate Speech</button></div>
+    </div>
+  </section>
+  <p class="note">Most dashboard-like. It is clean and scalable, but less emotionally centered around speech generation.</p>
+</main>
+</body>
+</html>
