@@ -1,5 +1,156 @@
 import Foundation
 
+struct SpeechEntryArchiveManifest: Codable, Equatable {
+    var id: UUID
+    var createdAt: Date
+    var textContent: String
+    var voice: String
+    var model: String
+    var audioPaths: [String]
+    var segmentDurations: [Double]
+    var totalDurationSeconds: Double
+    var stats: QueryStats
+    var appMode: AppMode
+}
+
+enum SpeechEntryArchiveError: Error, Equatable, LocalizedError {
+    case invalidManifest
+    case missingAudioFile(String)
+    case invalidAudioPath(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidManifest:
+            "The selected folder does not contain a valid manifest.json."
+        case .missingAudioFile(let path):
+            "The archive is missing \(path)."
+        case .invalidAudioPath(let path):
+            "The archive contains an invalid audio path: \(path)."
+        }
+    }
+}
+
+final class SpeechEntryArchiveService {
+    private let fileManager: FileManager
+    private let applicationSupportDirectory: URL
+
+    init(
+        fileManager: FileManager = .default,
+        applicationSupportDirectory: URL? = nil
+    ) {
+        self.fileManager = fileManager
+        self.applicationSupportDirectory = applicationSupportDirectory
+            ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    }
+
+    func export(entry: SpeechEntry, to destinationDirectory: URL) throws -> URL {
+        try fileManager.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        let exportDirectory = destinationDirectory.appendingPathComponent(
+            "SpeechExport_\(Self.timestampFormatter.string(from: Date()))",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(at: exportDirectory, withIntermediateDirectories: false)
+
+        var audioPaths: [String] = []
+        for (index, relativePath) in entry.segmentRelativePaths.enumerated() {
+            let sourceURL = applicationSupportDirectory.appendingPathComponent(relativePath)
+            guard fileManager.fileExists(atPath: sourceURL.path) else {
+                throw SpeechEntryArchiveError.missingAudioFile(relativePath)
+            }
+            let filename = String(format: "segment_%03d.wav", index)
+            try fileManager.copyItem(at: sourceURL, to: exportDirectory.appendingPathComponent(filename))
+            audioPaths.append(filename)
+        }
+
+        let manifest = SpeechEntryArchiveManifest(
+            id: entry.id,
+            createdAt: entry.createdAt,
+            textContent: entry.textContent,
+            voice: entry.voice,
+            model: entry.model,
+            audioPaths: audioPaths,
+            segmentDurations: entry.segmentDurations,
+            totalDurationSeconds: entry.totalDurationSeconds,
+            stats: entry.stats,
+            appMode: entry.appMode
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(manifest).write(
+            to: exportDirectory.appendingPathComponent("manifest.json"),
+            options: .atomic
+        )
+        return exportDirectory
+    }
+
+    @MainActor
+    func importEntry(from archiveDirectory: URL) throws -> SpeechEntry {
+        let manifestURL = archiveDirectory.appendingPathComponent("manifest.json")
+        guard fileManager.fileExists(atPath: manifestURL.path) else {
+            throw SpeechEntryArchiveError.invalidManifest
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let manifest = try? decoder.decode(
+            SpeechEntryArchiveManifest.self,
+            from: Data(contentsOf: manifestURL)
+        ) else {
+            throw SpeechEntryArchiveError.invalidManifest
+        }
+
+        let sourceURLs = try manifest.audioPaths.map { path -> URL in
+            guard URL(fileURLWithPath: path).lastPathComponent == path else {
+                throw SpeechEntryArchiveError.invalidAudioPath(path)
+            }
+            let url = archiveDirectory.appendingPathComponent(path)
+            guard fileManager.fileExists(atPath: url.path) else {
+                throw SpeechEntryArchiveError.missingAudioFile(path)
+            }
+            return url
+        }
+
+        let importedID = UUID()
+        let importDirectory = applicationSupportDirectory
+            .appendingPathComponent("Woadie", isDirectory: true)
+            .appendingPathComponent("Imports", isDirectory: true)
+            .appendingPathComponent(importedID.uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: importDirectory, withIntermediateDirectories: true)
+
+        do {
+            let relativePaths = try sourceURLs.enumerated().map { index, sourceURL in
+                let filename = String(format: "segment_%03d.wav", index)
+                let destinationURL = importDirectory.appendingPathComponent(filename)
+                try fileManager.copyItem(at: sourceURL, to: destinationURL)
+                return "Woadie/Imports/\(importedID.uuidString)/\(filename)"
+            }
+            return SpeechEntry(
+                id: importedID,
+                createdAt: manifest.createdAt,
+                textContent: manifest.textContent,
+                voice: manifest.voice,
+                model: manifest.model,
+                segmentRelativePaths: relativePaths,
+                segmentDurations: manifest.segmentDurations,
+                totalDurationSeconds: manifest.totalDurationSeconds,
+                stats: manifest.stats,
+                appMode: manifest.appMode
+            )
+        } catch {
+            try? fileManager.removeItem(at: importDirectory)
+            throw error
+        }
+    }
+
+    private static let timestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd'T'HH-mm-ss'Z'"
+        return formatter
+    }()
+}
+
 final class UserDefaultsWorkspaceStore: ActiveWorkspacePersisting {
     private let key = "AlkiSpeak.activeWorkspace"
     private let defaults: UserDefaults

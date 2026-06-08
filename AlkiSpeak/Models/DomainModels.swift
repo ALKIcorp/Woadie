@@ -1,6 +1,39 @@
 import Foundation
 import SwiftUI
 
+enum AppAppearance: String, Codable, CaseIterable, Hashable {
+    static let defaultsKey = "AlkiSpeak.appearance"
+
+    case light
+    case dark
+    case system
+
+    var preferredColorScheme: ColorScheme? {
+        switch self {
+        case .light: .light
+        case .dark: .dark
+        case .system: nil
+        }
+    }
+
+    var label: String {
+        rawValue.capitalized
+    }
+
+    static func load(from defaults: UserDefaults = .standard) -> AppAppearance {
+        guard let rawValue = defaults.string(forKey: defaultsKey),
+              let appearance = AppAppearance(rawValue: rawValue)
+        else {
+            return .system
+        }
+        return appearance
+    }
+
+    func save(to defaults: UserDefaults = .standard) {
+        defaults.set(rawValue, forKey: Self.defaultsKey)
+    }
+}
+
 enum AppMode: String, Codable, CaseIterable, Hashable {
     case quick
     case pro

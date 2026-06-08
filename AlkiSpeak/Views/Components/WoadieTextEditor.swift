@@ -8,25 +8,20 @@ struct WoadieTextEditor: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             TextEditor(text: $text)
-                .font(WoadieTheme.mono(size: 13, weight: .regular))
+                .font(WoadieTheme.rounded(size: 14, weight: .regular))
                 .foregroundStyle(WoadieTheme.foreground)
                 .scrollContentBackground(.hidden)
-                .padding(10)
-                .frame(minHeight: 68)
-                .background(WoadieTheme.surface)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .stroke(WoadieTheme.borderSubtle, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .padding(4)
+                .frame(minHeight: 58, idealHeight: 76, maxHeight: 150)
+                .background(Color.clear)
                 .disabled(isDisabled)
 
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(placeholder)
-                    .font(WoadieTheme.mono(size: 13, weight: .regular))
+                    .font(WoadieTheme.rounded(size: 14, weight: .regular))
                     .foregroundStyle(WoadieTheme.foregroundSubtle)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 10)
             }
         }
     }

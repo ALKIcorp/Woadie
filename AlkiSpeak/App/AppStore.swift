@@ -5,6 +5,8 @@ import Foundation
 final class AppStore: ObservableObject {
     @Published var appMode: AppMode = .quick
     @Published var logMode: LogMode = .auto
+    @Published var appearance: AppAppearance = .system
+    @Published var selectedLogEntryID: UUID?
     @Published var engineStatus: EngineStatus = .stopped
     @Published var engineHealth: EngineHealthSummary = .stopped
     @Published var engineDiagnostics: [EngineDiagnostic] = []

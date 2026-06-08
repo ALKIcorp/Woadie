@@ -4,42 +4,20 @@ struct WoadieHeaderView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        HStack(spacing: 16) {
-            HStack(spacing: 14) {
-                WoadieLogo()
-                Divider()
-                    .frame(height: 16)
-                    .overlay(WoadieTheme.border)
-                StatusIndicatorView(status: model.status, label: model.engineStatusLabel)
-            }
+        HStack {
+            Color.clear.frame(width: 92, height: 24)
             Spacer()
-            HStack(spacing: 6) {
-                Text("Gen:")
-                    .foregroundStyle(WoadieTheme.foregroundSubtle.opacity(0.7))
-                Text(model.lastLatencyMsText)
-                    .foregroundStyle(WoadieTheme.foregroundMuted)
+            Text("AlkiSpeak")
+                .font(WoadieTheme.rounded(size: 13, weight: .semibold))
+                .tracking(0.2)
+            Spacer()
+            SettingsLink {
+                Image(systemName: "gearshape")
+                    .frame(width: 28, height: 28)
             }
-            .font(WoadieTheme.mono(size: 11, weight: .medium))
-            .textCase(.uppercase)
+            .buttonStyle(.plain)
+            .frame(width: 92, alignment: .trailing)
         }
-    }
-}
-
-private struct WoadieLogo: View {
-    var body: some View {
-        HStack(spacing: 10) {
-            ZStack {
-                Image(systemName: "bolt.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(WoadieTheme.primary)
-                Circle()
-                    .fill(WoadieTheme.primary.opacity(0.25))
-                    .blur(radius: 8)
-                    .frame(width: 24, height: 24)
-            }
-            Text("Woadie")
-                .font(WoadieTheme.mono(size: 17, weight: .semibold))
-                .foregroundStyle(WoadieTheme.foreground)
-        }
+        .padding(.horizontal, 2)
     }
 }

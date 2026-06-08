@@ -2,24 +2,32 @@ import SwiftUI
 import AppKit
 
 enum WoadieTheme {
-    static let background = Color(red: 0.04, green: 0.06, blue: 0.08)
-    static let surface = Color(red: 0.08, green: 0.1, blue: 0.13)
-    static let surfaceGlass = Color(red: 0.1, green: 0.12, blue: 0.15).opacity(0.8)
-    static let foreground = Color(red: 0.93, green: 0.95, blue: 0.97)
-    static let foregroundMuted = Color(red: 0.55, green: 0.6, blue: 0.67)
-    static let foregroundSubtle = Color(red: 0.36, green: 0.4, blue: 0.46)
+    static let background = Color(nsColor: .windowBackgroundColor)
+    static let surface = Color.primary.opacity(0.035)
+    static let surfaceGlass = Color.white.opacity(0.10)
+    static let foreground = Color.primary
+    static let foregroundMuted = Color.secondary
+    static let foregroundSubtle = Color.secondary.opacity(0.72)
 
-    static let primary = Color(red: 0.17, green: 0.7, blue: 0.65)
-    static let primaryForeground = Color(red: 0.04, green: 0.06, blue: 0.08)
-    static let success = Color(red: 0.2, green: 0.7, blue: 0.45)
-    static let warning = Color(red: 0.95, green: 0.64, blue: 0.26)
-    static let destructive = Color(red: 0.9, green: 0.3, blue: 0.3)
+    static let primary = Color.primary
+    static let primaryForeground = Color(nsColor: .windowBackgroundColor)
+    static let success = Color(red: 0.19, green: 0.65, blue: 0.34)
+    static let warning = Color(red: 0.88, green: 0.56, blue: 0.12)
+    static let destructive = Color(red: 0.83, green: 0.20, blue: 0.22)
 
-    static let border = Color(red: 0.18, green: 0.2, blue: 0.24)
-    static let borderSubtle = Color(red: 0.14, green: 0.16, blue: 0.2)
+    static let border = Color.primary.opacity(0.10)
+    static let borderSubtle = Color.primary.opacity(0.08)
+    static let radiusSmall: CGFloat = 18
+    static let radiusMedium: CGFloat = 22
+    static let radiusLarge: CGFloat = 28
+    static let spacing: CGFloat = 8
 
     static func mono(size: CGFloat, weight: Font.Weight) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
+    }
+
+    static func rounded(size: CGFloat, weight: Font.Weight) -> Font {
+        .system(size: size, weight: weight, design: .rounded)
     }
 
     static let timeFormatter: DateFormatter = {
@@ -49,4 +57,44 @@ enum WoadieTheme {
         image.isTemplate = true
         return image
     }()
+}
+
+struct AlkiGlassSurface<Content: View>: View {
+    let cornerRadius: CGFloat
+    let interactive: Bool
+    @ViewBuilder let content: Content
+
+    init(
+        cornerRadius: CGFloat = WoadieTheme.radiusLarge,
+        interactive: Bool = false,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.cornerRadius = cornerRadius
+        self.interactive = interactive
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .background {
+                if #available(macOS 26.0, *) {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(.clear)
+                        .glassEffect(
+                            interactive
+                                ? .regular.tint(.white.opacity(0.10)).interactive()
+                                : .regular.tint(.white.opacity(0.10)),
+                            in: .rect(cornerRadius: cornerRadius)
+                        )
+                } else {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(WoadieTheme.borderSubtle, lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.10), radius: 8, y: 4)
+    }
 }

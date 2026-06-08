@@ -29,19 +29,16 @@ struct WoadieButton: View {
                 Text(title)
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 7)
-            .font(WoadieTheme.mono(size: 12, weight: .medium))
-            .textCase(.uppercase)
-            .tracking(1)
-            .frame(height: 34)
+            .padding(.vertical, 9)
+            .font(WoadieTheme.rounded(size: 12, weight: .semibold))
             .foregroundStyle(foreground)
             .background(background)
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
                     .stroke(border, lineWidth: 1)
             )
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .shadow(color: variant == .primary ? WoadieTheme.primary.opacity(0.35) : .clear, radius: 12, x: 0, y: 0)
+            .clipShape(Capsule())
+            .shadow(color: variant == .primary ? .black.opacity(0.16) : .clear, radius: 8, y: 4)
         }
         .buttonStyle(WoadiePressStyle())
     }
@@ -49,9 +46,9 @@ struct WoadieButton: View {
     private var background: Color {
         switch variant {
         case .default:
-            return WoadieTheme.surface
+            return Color.white.opacity(0.12)
         case .primary:
-            return WoadieTheme.primary
+            return Color.primary
         case .ghost:
             return Color.clear
         }
@@ -60,9 +57,9 @@ struct WoadieButton: View {
     private var foreground: Color {
         switch variant {
         case .default:
-            return WoadieTheme.foregroundMuted
+            return WoadieTheme.foreground
         case .primary:
-            return WoadieTheme.primaryForeground
+            return Color(nsColor: .windowBackgroundColor)
         case .ghost:
             return WoadieTheme.foregroundMuted
         }
@@ -73,7 +70,7 @@ struct WoadieButton: View {
         case .default:
             return WoadieTheme.border
         case .primary:
-            return WoadieTheme.primary.opacity(0.7)
+            return Color.primary.opacity(0.18)
         case .ghost:
             return Color.clear
         }

@@ -4,6 +4,90 @@ import SwiftData
 @testable import Woadie
 
 final class EngineSupervisorTests: XCTestCase {
+    func testAppearanceDefaultsToSystemAndPersistsSelection() {
+        let suiteName = "AppearanceTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertEqual(AppAppearance.load(from: defaults), .system)
+
+        AppAppearance.dark.save(to: defaults)
+
+        XCTAssertEqual(AppAppearance.load(from: defaults), .dark)
+    }
+
+    @MainActor
+    func testSpeechEntryArchiveRoundTripCopiesAudioAndPreservesMetadata() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let support = root.appendingPathComponent("Support", isDirectory: true)
+        let exports = root.appendingPathComponent("Exports", isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceDirectory = support.appendingPathComponent("Woadie/Clips/source", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        let sourceAudio = sourceDirectory.appendingPathComponent("clip.wav")
+        try Data("audio".utf8).write(to: sourceAudio)
+
+        let entry = SpeechEntry(
+            textContent: "Archive me",
+            voice: "af_heart",
+            segmentRelativePaths: ["Woadie/Clips/source/clip.wav"],
+            segmentDurations: [1.25],
+            totalDurationSeconds: 1.25,
+            stats: QueryStats(
+                tokenCount: 2,
+                generationTimeSeconds: 0.5,
+                fileSizeBytes: 5,
+                characterCount: 10,
+                segmentCount: 1,
+                resourceBefore: .empty,
+                resourceAfter: .empty
+            )
+        )
+        let service = SpeechEntryArchiveService(fileManager: .default, applicationSupportDirectory: support)
+
+        let exported = try service.export(entry: entry, to: exports)
+        let imported = try service.importEntry(from: exported)
+
+        XCTAssertEqual(imported.textContent, entry.textContent)
+        XCTAssertEqual(imported.voice, entry.voice)
+        XCTAssertEqual(imported.segmentDurations, [1.25])
+        XCTAssertEqual(imported.stats.characterCount, 10)
+        XCTAssertEqual(imported.segmentRelativePaths.count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: support.appendingPathComponent(imported.segmentRelativePaths[0]).path))
+    }
+
+    @MainActor
+    func testSpeechEntryArchiveRejectsMissingSegmentBeforeImport() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let support = root.appendingPathComponent("Support", isDirectory: true)
+        let archive = root.appendingPathComponent("SpeechExport_Test", isDirectory: true)
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let manifest = SpeechEntryArchiveManifest(
+            id: UUID(),
+            createdAt: Date(),
+            textContent: "Missing",
+            voice: "af_heart",
+            model: "Kokoro",
+            audioPaths: ["segment_000.wav"],
+            segmentDurations: [1],
+            totalDurationSeconds: 1,
+            stats: .empty,
+            appMode: .pro
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(manifest).write(to: archive.appendingPathComponent("manifest.json"))
+        let service = SpeechEntryArchiveService(fileManager: .default, applicationSupportDirectory: support)
+
+        XCTAssertThrowsError(try service.importEntry(from: archive)) {
+            XCTAssertEqual(($0 as? SpeechEntryArchiveError), .missingAudioFile("segment_000.wav"))
+        }
+    }
+
     func testEngineErrorDescriptionsAreHumanReadable() {
         XCTAssertEqual(EngineError.exitCode(9).errorDescription, "Kokoro exited unexpectedly with code 9.")
         XCTAssertEqual(EngineError.portConflict.errorDescription, "Port 7777 is already in use by another process.")
@@ -529,7 +613,8 @@ private extension AppDependencies {
                     for: SpeechEntry.self,
                     configurations: ModelConfiguration(isStoredInMemoryOnly: true)
                 )
-            )
+            ),
+            speechEntryArchiveService: SpeechEntryArchiveService()
         )
     }
 }

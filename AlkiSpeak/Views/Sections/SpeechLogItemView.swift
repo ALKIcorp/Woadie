@@ -4,6 +4,8 @@ import AppKit
 struct SpeechLogItemView: View {
     let entry: SpeechEntry
     let isPlaying: Bool
+    let isSelected: Bool
+    let onSelect: () -> Void
     let onOpen: () -> Void
     let onDelete: () -> Void
     @State private var isHovered = false
@@ -23,7 +25,7 @@ struct SpeechLogItemView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 Text(entry.textContent)
-                    .font(WoadieTheme.mono(size: 13, weight: .regular))
+                    .font(WoadieTheme.rounded(size: 13, weight: .regular))
                     .foregroundStyle(WoadieTheme.foreground)
                     .lineSpacing(3)
                     .lineLimit(2)
@@ -46,10 +48,10 @@ struct SpeechLogItemView: View {
             .padding(14)
             .frame(width: 260, alignment: .leading)
         }
-        .background(isPlaying ? WoadieTheme.primary.opacity(0.08) : WoadieTheme.surface.opacity(0.7))
+        .background(isSelected ? Color.primary.opacity(0.08) : Color.white.opacity(0.05))
         .overlay(
             RoundedRectangle(cornerRadius: 14)
-                .stroke(isPlaying ? WoadieTheme.primary.opacity(0.5) : WoadieTheme.borderSubtle, lineWidth: 1)
+                .stroke(isSelected || isPlaying ? Color.primary.opacity(0.32) : WoadieTheme.borderSubtle, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(alignment: .topTrailing) {
@@ -70,6 +72,7 @@ struct SpeechLogItemView: View {
         .onHover { hovering in
             isHovered = hovering
         }
+        .onTapGesture { onSelect() }
         .contextMenu {
             Button("Open") { confirmOpen = true }
             Button("Stats") { showStats = true }

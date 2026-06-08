@@ -3,12 +3,15 @@ import SwiftUI
 struct SpeechLogView: View {
     let entries: [SpeechEntry]
     let playingId: UUID?
+    let selectedId: UUID?
     let logMode: LogMode
     let onLogModeChanged: (LogMode) -> Void
+    let onSelect: (SpeechEntry) -> Void
     let onOpen: (SpeechEntry) -> Void
     let onDelete: (SpeechEntry) -> Void
 
     var body: some View {
+        AlkiGlassSurface {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Log Console")
@@ -59,6 +62,8 @@ struct SpeechLogView: View {
                                 SpeechLogItemView(
                                     entry: entry,
                                     isPlaying: playingId == entry.id,
+                                    isSelected: selectedId == entry.id,
+                                    onSelect: { onSelect(entry) },
                                     onOpen: { onOpen(entry) },
                                     onDelete: { onDelete(entry) }
                                 )
@@ -81,6 +86,8 @@ struct SpeechLogView: View {
                     }
                 }
             }
+        }
+        .padding(18)
         }
     }
 }

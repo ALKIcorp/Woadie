@@ -31,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static func applyWindowChrome(_ windows: [NSWindow]) {
         consoleTrace("applyWindowChrome windowCount=\(windows.count)")
         for window in windows where window.styleMask.contains(.titled) {
+            window.backgroundColor = .clear
+            window.isOpaque = false
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.styleMask.insert(.fullSizeContentView)
@@ -74,6 +76,7 @@ struct AlkiSpeakApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(model)
+                .preferredColorScheme(model.appearance.preferredColorScheme)
                 .onChange(of: scenePhase) { _, phase in
                     guard !AppConfig.isRunningUnitTests else { return }
                     switch phase {
@@ -86,5 +89,44 @@ struct AlkiSpeakApp: App {
                     }
                 }
         }
+        .commands {
+            CommandGroup(after: .saveItem) {
+                Button("Export") {
+                    model.exportSelectedEntry()
+                }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(model.selectedLogEntry == nil)
+
+                Button("Import") {
+                    model.importSpeechEntry()
+                }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+            }
+        }
+
+        Settings {
+            SettingsView(model: model)
+                .preferredColorScheme(model.appearance.preferredColorScheme)
+        }
+    }
+}
+
+private struct SettingsView: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        Form {
+            Picker("Appearance", selection: Binding(
+                get: { model.appearance },
+                set: { model.setAppearance($0) }
+            )) {
+                ForEach(AppAppearance.allCases, id: \.self) { appearance in
+                    Text(appearance.label).tag(appearance)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+        .padding(24)
+        .frame(width: 360)
     }
 }

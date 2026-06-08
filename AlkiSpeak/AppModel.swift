@@ -1,5 +1,6 @@
 import Combine
 import AVFoundation
+import AppKit
 import Foundation
 
 @MainActor
@@ -46,10 +47,15 @@ final class AppModel: ObservableObject {
     var playback: PlaybackSnapshot { store.playback }
     var appMode: AppMode { store.appMode }
     var logMode: LogMode { store.logMode }
+    var appearance: AppAppearance { store.appearance }
     var isProMode: Bool { appMode == .pro }
     var showAddToLog: Bool { isProMode && logMode == .manual }
     var fftMagnitudes: [Float] {
         (dependencies.playbackCoordinator as? AVAudioPlaybackCoordinator)?.fftMagnitudes ?? Array(repeating: 0, count: 128)
+    }
+    var selectedLogEntry: SpeechEntry? {
+        guard let id = store.selectedLogEntryID else { return nil }
+        return store.speechEntries.first(where: { $0.id == id })
     }
 
     var canSpeak: Bool {
@@ -297,6 +303,10 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func refreshResourceStats() {
+        refreshTelemetry()
+    }
+
     func speak() {
         if appMode == .quick {
             deleteActiveQuickClips()
@@ -320,6 +330,63 @@ final class AppModel: ObservableObject {
     func setLogMode(_ mode: LogMode) {
         store.logMode = mode
         UserDefaults.standard.set(mode.rawValue, forKey: "AlkiSpeak.logMode")
+    }
+
+    func setAppearance(_ appearance: AppAppearance) {
+        store.appearance = appearance
+        appearance.save()
+    }
+
+    func selectLogEntry(_ entry: SpeechEntry) {
+        store.selectedLogEntryID = entry.id
+    }
+
+    func exportSelectedEntry() {
+        guard let entry = selectedLogEntry else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Choose Export Location"
+        panel.prompt = "Export"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        do {
+            let exportedURL = try dependencies.speechEntryArchiveService.export(entry: entry, to: destination)
+            store.userMessage = "Exported \(exportedURL.lastPathComponent)"
+        } catch {
+            record(AlkiSpeakError(
+                code: "archive.export",
+                title: "Export Failed",
+                message: error.localizedDescription,
+                recoverySuggestion: "Choose another destination and try again."
+            ))
+        }
+    }
+
+    func importSpeechEntry() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Speech Entry"
+        panel.prompt = "Import"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let source = panel.url else { return }
+        do {
+            let entry = try dependencies.speechEntryArchiveService.importEntry(from: source)
+            try dependencies.speechEntryStore.insert(entry)
+            loadSpeechEntries()
+            store.selectedLogEntryID = entry.id
+            store.appMode = .pro
+            store.userMessage = "Imported \(source.lastPathComponent)"
+        } catch {
+            record(AlkiSpeakError(
+                code: "archive.import",
+                title: "Import Failed",
+                message: error.localizedDescription,
+                recoverySuggestion: "Select a complete AlkiSpeak export folder."
+            ))
+        }
     }
 
     func addCurrentToLog() {
@@ -356,6 +423,9 @@ final class AppModel: ObservableObject {
     func delete(_ entry: SpeechEntry) {
         do {
             try dependencies.speechEntryStore.delete(entry)
+            if store.selectedLogEntryID == entry.id {
+                store.selectedLogEntryID = nil
+            }
             loadSpeechEntries()
         } catch {
             record(AlkiSpeakError(code: "persistence.log.delete", title: "Delete Failed", message: error.localizedDescription, recoverySuggestion: "Try again."))
@@ -784,6 +854,7 @@ final class AppModel: ObservableObject {
     }
 
     private func loadPreferences() {
+        store.appearance = AppAppearance.load()
         if let raw = UserDefaults.standard.string(forKey: "AlkiSpeak.appMode"), let mode = AppMode(rawValue: raw) {
             store.appMode = mode
         }

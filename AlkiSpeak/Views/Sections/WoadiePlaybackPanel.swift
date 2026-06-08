@@ -15,63 +15,82 @@ struct WoadiePlaybackPanel: View {
     }
 
     var body: some View {
-        HStack(spacing: 16) {
-            WoadieCDControl(
-                isPlaying: isPlaying,
-                isEnabled: hasPlayableClip || isPlaying,
-                onTogglePlayback: onTogglePlayback
-            )
-                .frame(width: 84, height: 84)
+        AlkiGlassSurface {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("PLAYBACK")
+                    .font(WoadieTheme.mono(size: 9, weight: .semibold))
+                    .tracking(1.55)
+                    .foregroundStyle(WoadieTheme.foregroundSubtle)
+                Text("Transport")
+                    .font(WoadieTheme.rounded(size: 20, weight: .medium))
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Text(statusLabel)
-                        .font(WoadieTheme.mono(size: 11, weight: .medium))
-                        .foregroundStyle(isPlaying ? WoadieTheme.success : WoadieTheme.foregroundSubtle)
-                        .textCase(.uppercase)
-                        .tracking(1.2)
+                Spacer(minLength: 8)
 
-                    if isPlaying {
-                        Text("Live")
-                            .font(WoadieTheme.mono(size: 10, weight: .medium))
-                            .foregroundStyle(WoadieTheme.primaryForeground)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 2)
-                            .background(WoadieTheme.primary)
-                            .clipShape(Capsule())
+                HStack {
+                    Button { model.skip(by: -10) } label: {
+                        Label("10", systemImage: "gobackward.10").labelStyle(.iconOnly)
                     }
+                    .disabled(!model.canSkip(by: -10))
+                    Spacer()
+                    WoadieCDControl(
+                        isPlaying: isPlaying,
+                        isEnabled: hasPlayableClip || isPlaying,
+                        onTogglePlayback: onTogglePlayback
+                    )
+                    .frame(width: 72, height: 72)
+                    Spacer()
+                    Button { model.skip(by: 10) } label: {
+                        Label("10", systemImage: "goforward.10").labelStyle(.iconOnly)
+                    }
+                    .disabled(!model.canSkip(by: 10))
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 21, weight: .medium))
+
+                Spacer(minLength: 8)
+                ProgressiveScrubber(model: model)
+                HStack {
+                    Text(format(model.playback.elapsedTime))
+                    Spacer()
+                    Text(format(model.playback.duration ?? 0))
+                }
+                .font(WoadieTheme.mono(size: 10, weight: .medium))
+                .foregroundStyle(WoadieTheme.foregroundSubtle)
+
+                HStack(spacing: 8) {
+                    metric("CPU", value: model.store.dashboardTelemetry.resourceSnapshot.cpuPercent.map { String(format: "%.0f%%", $0) } ?? "-")
+                    metric("RAM", value: model.store.dashboardTelemetry.resourceSnapshot.memoryBytes.map {
+                        ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .memory)
+                    } ?? "-")
                 }
 
-                WoadieWaveformView(isActive: isPlaying, magnitudes: model.fftMagnitudes)
-                    .frame(height: 78)
-                    .background(WoadieTheme.surface.opacity(0.6))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16)
-                            .stroke(WoadieTheme.borderSubtle, lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-
-                ProgressiveScrubber(model: model)
-                HStack(spacing: 8) {
-                    ForEach([-30, -15, -5, 5, 15, 30], id: \.self) { seconds in
-                        Button(seconds > 0 ? "+\(seconds)s" : "\(seconds)s") { model.skip(by: Double(seconds)) }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .disabled(!model.canSkip(by: Double(seconds)))
-                    }
-                    if let status = model.playback.statusMessage {
-                        Text(status).font(.caption).foregroundStyle(.secondary)
-                    }
+                if let status = model.playback.statusMessage {
+                    Text(status)
+                        .font(WoadieTheme.mono(size: 10, weight: .medium))
+                        .foregroundStyle(WoadieTheme.warning)
                 }
             }
+            .padding(20)
         }
-        .padding(12)
-        .background(WoadieTheme.surface.opacity(0.35))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18)
-                .stroke(WoadieTheme.borderSubtle, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 18))
+    }
+
+    private func metric(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(WoadieTheme.mono(size: 9, weight: .semibold))
+                .tracking(1.2)
+                .foregroundStyle(WoadieTheme.foregroundSubtle)
+            Text(value)
+                .font(WoadieTheme.rounded(size: 14, weight: .semibold))
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(WoadieTheme.borderSubtle))
+    }
+
+    private func format(_ seconds: TimeInterval) -> String {
+        String(format: "%02d:%02d", Int(seconds) / 60, Int(seconds) % 60)
     }
 }
 
@@ -109,7 +128,7 @@ private struct WoadieCDControl: View {
         Button(action: onTogglePlayback) {
             ZStack {
                 Circle()
-                    .fill(WoadieTheme.surface)
+                    .fill(Color.primary)
                 Circle()
                     .stroke(WoadieTheme.border, lineWidth: 2)
 
@@ -120,12 +139,12 @@ private struct WoadieCDControl: View {
                     .animation(isPlaying ? .linear(duration: 3).repeatForever(autoreverses: false) : .default, value: rotation)
 
                 Circle()
-                    .fill(WoadieTheme.background)
+                    .fill(Color(nsColor: .windowBackgroundColor))
                     .frame(width: 18, height: 18)
 
                 Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(isPlaying ? WoadieTheme.primary : WoadieTheme.foregroundSubtle)
+                    .foregroundStyle(Color(nsColor: .windowBackgroundColor))
             }
         }
         .buttonStyle(.plain)

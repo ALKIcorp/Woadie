@@ -9,42 +9,30 @@ struct VoicePickerView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Text("Voice")
-                .font(WoadieTheme.mono(size: 11, weight: .medium))
-                .foregroundStyle(WoadieTheme.foregroundSubtle)
-                .textCase(.uppercase)
-                .tracking(1.2)
-
-            HStack(spacing: 8) {
-                Button { onStep(-1) } label: {
-                    Image(systemName: "triangle.fill").font(.system(size: 9))
-                }
-                Text(selectedLabel)
-                    .lineLimit(1)
-                    .contentTransition(.opacity)
-                    .animation(.easeInOut(duration: 0.18), value: selectedLabel)
-                    .onLongPressGesture { showingVoices = true }
-                    .help("Press and hold to show all voices")
-                Button { onStep(1) } label: {
-                    Image(systemName: "triangle.fill").font(.system(size: 9)).rotationEffect(.degrees(180))
-                }
+            Button { onStep(-1) } label: {
+                Image(systemName: "chevron.up").frame(width: 24, height: 24)
             }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 12)
-                .frame(height: 34)
-                .font(WoadieTheme.mono(size: 12, weight: .medium))
-                .foregroundStyle(WoadieTheme.foreground)
-                .background(WoadieTheme.surface)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(WoadieTheme.borderSubtle, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-            .frame(maxWidth: 260)
+            Text(selectedLabel.uppercased())
+                .lineLimit(1)
+                .contentTransition(.opacity)
+                .animation(.easeInOut(duration: 0.18), value: selectedLabel)
+                .onLongPressGesture { showingVoices = true }
+                .help("Press and hold to show all voices")
+            Button { onStep(1) } label: {
+                Image(systemName: "chevron.down").frame(width: 24, height: 24)
+            }
         }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .font(WoadieTheme.rounded(size: 11, weight: .semibold))
+        .background(Color.white.opacity(0.12), in: Capsule())
+        .overlay(Capsule().strokeBorder(WoadieTheme.borderSubtle))
+        .frame(maxWidth: 280)
         .sheet(isPresented: $showingVoices) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Choose Voice").font(.headline)
+                Text("Choose Voice")
+                    .font(WoadieTheme.rounded(size: 20, weight: .semibold))
                 List {
                     ForEach(categories, id: \.title) { category in
                         Section(category.title) {
@@ -61,6 +49,7 @@ struct VoicePickerView: View {
             }
             .padding()
             .frame(width: 420, height: 440)
+            .background(.ultraThinMaterial)
         }
     }
 }
