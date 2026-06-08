@@ -30,11 +30,16 @@ struct ContentView: View {
                         .padding(.horizontal, 2)
                 }
 
-                SpeechLogView(
-                    entries: model.chatItems,
-                    playingId: model.playingId,
-                    onReplay: { model.replay(item: $0) }
-                )
+                if model.isProMode {
+                    SpeechLogView(
+                        entries: model.chatItems,
+                        playingId: model.playingId,
+                        logMode: model.logMode,
+                        onLogModeChanged: model.setLogMode,
+                        onOpen: model.open,
+                        onDelete: model.delete
+                    )
+                }
 
                 WoadieFooter()
                 Spacer(minLength: 0)

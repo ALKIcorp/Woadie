@@ -11,6 +11,7 @@ struct AppDependencies {
     let logStore: SavedLogPersisting
     let clipStore: SegmentedClipStoring
     let packageStore: SpeechPackageImportExporting
+    let speechEntryStore: SpeechEntryStore
 
     static func live() -> AppDependencies {
         AppDependencies(
@@ -22,7 +23,8 @@ struct AppDependencies {
             workspaceStore: UserDefaultsWorkspaceStore(),
             logStore: UserDefaultsSavedLogStore(),
             clipStore: FileSegmentedClipStore(),
-            packageStore: FileSpeechPackageStore()
+            packageStore: FileSpeechPackageStore(),
+            speechEntryStore: try! SpeechEntryStore()
         )
     }
 }

@@ -1,19 +1,33 @@
 import SwiftUI
 
 struct SpeechLogView: View {
-    let entries: [SavedLogEntry]
+    let entries: [SpeechEntry]
     let playingId: UUID?
-    let onReplay: (SavedLogEntry) -> Void
+    let logMode: LogMode
+    let onLogModeChanged: (LogMode) -> Void
+    let onOpen: (SpeechEntry) -> Void
+    let onDelete: (SpeechEntry) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("History")
+                Text("Log Console")
                     .font(WoadieTheme.mono(size: 11, weight: .medium))
                     .foregroundStyle(WoadieTheme.foregroundSubtle)
                     .textCase(.uppercase)
                     .tracking(1.4)
                 Spacer()
+                Picker("Log Mode", selection: Binding(
+                    get: { logMode },
+                    set: { onLogModeChanged($0) }
+                )) {
+                    Text("Auto").tag(LogMode.auto)
+                    Text("Manual").tag(LogMode.manual)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 150)
+                .help(logMode == .auto ? "Every speech is automatically added to the log" : "Manually choose which speeches to save to the log")
+
                 Text("\(entries.count) \(entries.count == 1 ? "entry" : "entries")")
                     .font(WoadieTheme.mono(size: 10, weight: .medium))
                     .foregroundStyle(WoadieTheme.foregroundSubtle.opacity(0.6))
@@ -21,12 +35,12 @@ struct SpeechLogView: View {
 
             if entries.isEmpty {
                 VStack(spacing: 4) {
-                    Text("No history yet")
+                    Text("No log entries yet")
                         .font(WoadieTheme.mono(size: 11, weight: .medium))
                         .foregroundStyle(WoadieTheme.foregroundSubtle)
                         .textCase(.uppercase)
                         .tracking(1.2)
-                    Text("Speak something to see it here")
+                    Text(logMode == .auto ? "Every Pro speech appears here" : "Use Add to Log after generating speech")
                         .font(WoadieTheme.mono(size: 11, weight: .regular))
                         .foregroundStyle(WoadieTheme.foregroundSubtle.opacity(0.6))
                 }
@@ -39,13 +53,14 @@ struct SpeechLogView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 14))
             } else {
                 ZStack(alignment: .bottom) {
-                    ScrollView {
-                        LazyVStack(spacing: 10) {
+                    ScrollView(.horizontal) {
+                        LazyHStack(spacing: 10) {
                             ForEach(entries) { entry in
                                 SpeechLogItemView(
                                     entry: entry,
                                     isPlaying: playingId == entry.id,
-                                    onReplay: { onReplay(entry) }
+                                    onOpen: { onOpen(entry) },
+                                    onDelete: { onDelete(entry) }
                                 )
                             }
                         }

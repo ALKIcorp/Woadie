@@ -15,6 +15,7 @@ final class AppStore: ObservableObject {
     @Published var persistence: PersistenceSnapshot = .idle
     @Published var savedPackages: [SavedSpeechPackage] = []
     @Published var savedLogEntries: [SavedLogEntry] = []
+    @Published var speechEntries: [SpeechEntry] = []
     @Published var voiceOptions: [VoiceOption] = []
     @Published var composerText: String = ""
     @Published var userMessage: String = ""

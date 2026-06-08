@@ -23,6 +23,16 @@ struct WoadieInputRow: View {
             }
             .disabled(!model.canSpeak)
             .keyboardShortcut(.return, modifiers: [.command])
+
+            if model.showAddToLog {
+                WoadieButton(
+                    title: "Add to Log",
+                    systemImage: "plus",
+                    variant: .default
+                ) {
+                    model.addCurrentToLog()
+                }
+            }
         }
     }
 }

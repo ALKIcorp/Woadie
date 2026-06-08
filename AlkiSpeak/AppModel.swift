@@ -11,6 +11,8 @@ final class AppModel: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var engineStartTask: Task<Void, Never>?
     private var engineStartGeneration: UInt64 = 0
+    private var queryStartedAt: ContinuousClock.Instant?
+    private var queryResourceBefore: SystemResourceSnapshot = .empty
 
     private func consoleTrace(_ message: String, function: StaticString = #function, line: UInt = #line) {
         NSLog("[Woadie][AppModel][\(function):\(line)] \(message)")
@@ -34,7 +36,7 @@ final class AppModel: ObservableObject {
     var engineStatusLabel: String {
         dependencies.engineSupervisor.engineState.statusText
     }
-    var chatItems: [SavedLogEntry] { store.savedLogEntries }
+    var chatItems: [SpeechEntry] { store.speechEntries }
     var playingId: UUID? { store.playback.activeLogEntryID }
     var showPortInUseAlert: Bool {
         get { store.showPortInUseAlert }
@@ -42,6 +44,10 @@ final class AppModel: ObservableObject {
     }
     var portInUsePids: [Int32] { store.portInUsePids }
     var playback: PlaybackSnapshot { store.playback }
+    var appMode: AppMode { store.appMode }
+    var logMode: LogMode { store.logMode }
+    var isProMode: Bool { appMode == .pro }
+    var showAddToLog: Bool { isProMode && logMode == .manual }
     var fftMagnitudes: [Float] {
         (dependencies.playbackCoordinator as? AVAudioPlaybackCoordinator)?.fftMagnitudes ?? Array(repeating: 0, count: 128)
     }
@@ -149,8 +155,10 @@ final class AppModel: ObservableObject {
 
         consoleTrace("wiring service callbacks")
         wireServiceCallbacks()
+        loadPreferences()
         consoleTrace("loading workspace")
         loadWorkspace()
+        loadSpeechEntries()
         consoleTrace("refreshing local voices")
         refreshLocalVoices()
         if !AppConfig.isRunningUnitTests {
@@ -290,11 +298,68 @@ final class AppModel: ObservableObject {
     }
 
     func speak() {
-        speak(text: inputText, addToHistory: true, targetLogEntryID: nil)
+        if appMode == .quick {
+            deleteActiveQuickClips()
+            stopPlayback()
+        }
+        speak(text: inputText, addToHistory: isProMode && logMode == .auto, targetLogEntryID: nil)
+        if appMode == .quick {
+            inputText = ""
+        }
     }
 
-    func replay(item: SavedLogEntry) {
-        speak(text: item.text, addToHistory: false, targetLogEntryID: item.id)
+    func setAppMode(_ mode: AppMode) {
+        guard mode != store.appMode else { return }
+        store.appMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: "AlkiSpeak.appMode")
+        if mode == .quick {
+            store.logMode = .auto
+        }
+    }
+
+    func setLogMode(_ mode: LogMode) {
+        store.logMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: "AlkiSpeak.logMode")
+    }
+
+    func addCurrentToLog() {
+        guard showAddToLog,
+              let job = store.speechJobs.first,
+              job.status != .failed,
+              !job.segments.isEmpty,
+              job.segments.allSatisfy({ $0.audioURL != nil })
+        else { return }
+        saveEntry(for: job)
+    }
+
+    func open(_ entry: SpeechEntry) {
+        stopPlayback()
+        inputText = entry.textContent
+        selectedVoice = entry.voice
+        let urls = entry.segmentRelativePaths.compactMap { try? dependencies.speechEntryStore.absoluteURL(for: $0) }
+        let segments = urls.enumerated().map { index, url in
+            SpeechSegment(index: index, text: "", status: .ready, audioURL: url)
+        }
+        let job = SpeechJob(text: entry.textContent, voiceID: entry.voice, segments: segments, status: .completed, logEntryID: entry.id)
+        store.speechJobs.insert(job, at: 0)
+        dependencies.playbackCoordinator.prepare(characterCounts: Array(repeating: 1, count: urls.count))
+        for (index, url) in urls.enumerated() {
+            try? dependencies.playbackCoordinator.append(audioURL: url, segmentID: segments[index].id, index: index)
+        }
+        dependencies.playbackCoordinator.finishEnqueuing()
+        store.playback.activeJobID = job.id
+        store.playback.activeLogEntryID = entry.id
+        store.playback.duration = entry.totalDurationSeconds
+        store.playback.bufferedDuration = entry.totalDurationSeconds
+    }
+
+    func delete(_ entry: SpeechEntry) {
+        do {
+            try dependencies.speechEntryStore.delete(entry)
+            loadSpeechEntries()
+        } catch {
+            record(AlkiSpeakError(code: "persistence.log.delete", title: "Delete Failed", message: error.localizedDescription, recoverySuggestion: "Try again."))
+        }
     }
 
     func togglePlayback() {
@@ -332,10 +397,7 @@ final class AppModel: ObservableObject {
         let jobID = UUID()
 
         if addToHistory {
-            let entry = SavedLogEntry(id: UUID(), text: trimmed, isUser: true, jobID: jobID, segments: segments)
-            store.savedLogEntries.insert(entry, at: 0)
-            try? dependencies.logStore.saveLog(entry, workspaceID: store.activeWorkspace.id)
-            logEntryID = entry.id
+            logEntryID = UUID()
         } else if let targetLogEntryID {
             logEntryID = targetLogEntryID
         } else {
@@ -351,6 +413,8 @@ final class AppModel: ObservableObject {
             logEntryID: logEntryID
         )
         store.speechJobs.insert(job, at: 0)
+        queryStartedAt = ContinuousClock.now
+        Task { queryResourceBefore = await SystemResourceMonitor.shared.snapshot() }
         store.playback = PlaybackSnapshot(
             state: .preparing,
             activeJobID: job.id,
@@ -384,7 +448,13 @@ final class AppModel: ObservableObject {
 
             await ttsQueue.enqueue(segments)
             dependencies.playbackCoordinator.prepare(characterCounts: segments.map { $0.text.count })
-            await ttsQueue.process { [generationService = dependencies.generationService, clipStore = dependencies.clipStore, workspaceID = store.activeWorkspace.id] segment in
+            await ttsQueue.process(canGenerate: {
+                await SystemResourceMonitor.shared.canProceed()
+            }, onWaiting: { waiting in
+                await MainActor.run {
+                    self.store.playback.statusMessage = waiting ? "Waiting for resources…" : nil
+                }
+            }) { [generationService = dependencies.generationService, clipStore = dependencies.clipStore, workspaceID = store.activeWorkspace.id] segment in
                 let result = try await generationService.synthesize(
                     text: segment.text,
                     voice: voice,
@@ -418,6 +488,9 @@ final class AppModel: ObservableObject {
             }
 
             dependencies.playbackCoordinator.finishEnqueuing()
+            if self.isProMode && self.logMode == .auto, let job = self.store.speechJobs.first(where: { $0.id == jobID }) {
+                self.saveEntry(for: job)
+            }
         } catch is CancellationError {
             updateJob(jobID, status: .cancelled, error: nil)
             store.playback = .idle
@@ -595,6 +668,9 @@ final class AppModel: ObservableObject {
         store.playback.elapsedTime = 0
         store.playback.currentSegmentID = nil
         store.dashboardTelemetry.generatedJobCount += 1
+        if appMode == .quick {
+            deleteActiveQuickClips()
+        }
     }
 
     private func failPlayback(jobID: UUID, logEntryID: UUID, error: AlkiSpeakError) {
@@ -704,6 +780,81 @@ final class AppModel: ObservableObject {
                     underlyingError: error
                 )
             )
+        }
+    }
+
+    private func loadPreferences() {
+        if let raw = UserDefaults.standard.string(forKey: "AlkiSpeak.appMode"), let mode = AppMode(rawValue: raw) {
+            store.appMode = mode
+        }
+        if let raw = UserDefaults.standard.string(forKey: "AlkiSpeak.logMode"), let mode = LogMode(rawValue: raw) {
+            store.logMode = mode
+        }
+    }
+
+    private func loadSpeechEntries() {
+        do {
+            _ = try dependencies.speechEntryStore.migrateLegacyHistoryIfNeeded()
+            store.speechEntries = try dependencies.speechEntryStore.fetchAll()
+        } catch {
+            record(AlkiSpeakError(code: "persistence.log.load", title: "Log Load Failed", message: error.localizedDescription, recoverySuggestion: "The legacy data was preserved. Restart and try again."))
+        }
+    }
+
+    private func saveEntry(for job: SpeechJob) {
+        guard !store.speechEntries.contains(where: { $0.id == job.logEntryID }) else { return }
+        let urls = job.segments.compactMap(\.audioURL)
+        let paths = urls.compactMap { try? dependencies.speechEntryStore.relativePath(for: $0) }
+        guard !paths.isEmpty else { return }
+        let elapsed = queryStartedAt.map { $0.duration(to: ContinuousClock.now) } ?? .zero
+        let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        let fileSize = urls.reduce(Int64(0)) {
+            $0 + Int64((try? FileManager.default.attributesOfItem(atPath: $1.path)[.size] as? NSNumber)?.int64Value ?? 0)
+        }
+        Task {
+            let after = await SystemResourceMonitor.shared.snapshot()
+            let durations = await audioDurations(urls)
+            let entry = SpeechEntry(
+                id: job.logEntryID ?? UUID(),
+                textContent: job.text,
+                voice: job.voiceID,
+                segmentRelativePaths: paths,
+                segmentDurations: durations,
+                totalDurationSeconds: durations.reduce(0, +),
+                stats: QueryStats(
+                    tokenCount: max(1, job.text.count / 4),
+                    generationTimeSeconds: abs(seconds),
+                    fileSizeBytes: fileSize,
+                    characterCount: job.text.count,
+                    segmentCount: job.segments.count,
+                    resourceBefore: queryResourceBefore,
+                    resourceAfter: after
+                ),
+                appMode: .pro
+            )
+            do {
+                try dependencies.speechEntryStore.insert(entry)
+                loadSpeechEntries()
+            } catch {
+                record(AlkiSpeakError(code: "persistence.log.save", title: "Save Failed", message: error.localizedDescription, recoverySuggestion: "Try Add to Log again."))
+            }
+        }
+    }
+
+    private func audioDurations(_ urls: [URL]) async -> [Double] {
+        var values: [Double] = []
+        for url in urls {
+            values.append((try? await AVURLAsset(url: url).load(.duration).seconds) ?? 0)
+        }
+        return values
+    }
+
+    private func deleteActiveQuickClips() {
+        guard let jobID = store.playback.activeJobID,
+              let job = store.speechJobs.first(where: { $0.id == jobID })
+        else { return }
+        for segment in job.segments {
+            if let url = segment.audioURL { try? FileManager.default.removeItem(at: url) }
         }
     }
 

@@ -5,6 +5,16 @@ struct WoadieControlsBar: View {
 
     var body: some View {
         HStack(spacing: 12) {
+            Picker("Mode", selection: Binding(
+                get: { model.appMode },
+                set: { model.setAppMode($0) }
+            )) {
+                Text("Quick").tag(AppMode.quick)
+                Text("Pro").tag(AppMode.pro)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 150)
+
             WoadieButton(
                 title: model.startStopLabel,
                 systemImage: model.startStopSystemImage,

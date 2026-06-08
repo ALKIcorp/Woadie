@@ -188,6 +188,8 @@ actor TTSQueue {
     }
 
     func process(
+        canGenerate: @escaping () async -> Bool = { true },
+        onWaiting: @escaping (Bool) async -> Void = { _ in },
         generate: @escaping (TTSSegment) async throws -> GeneratedSegment,
         onReady: @escaping (TTSSegment) async throws -> Void
     ) async {
@@ -198,6 +200,12 @@ actor TTSQueue {
 
         for index in segments.indices {
             guard isProcessing, !Task.isCancelled else { return }
+            while !(await canGenerate()) {
+                guard isProcessing, !Task.isCancelled else { return }
+                await onWaiting(true)
+                try? await Task.sleep(for: .seconds(2))
+            }
+            await onWaiting(false)
             segments[index].status = .generating
             let segment = segments[index]
             logger.debug("Generating segment index=\(segment.index) chars=\(segment.text.count)")

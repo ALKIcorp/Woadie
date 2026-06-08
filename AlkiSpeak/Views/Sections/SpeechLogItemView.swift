@@ -2,11 +2,15 @@ import SwiftUI
 import AppKit
 
 struct SpeechLogItemView: View {
-    let entry: SavedLogEntry
+    let entry: SpeechEntry
     let isPlaying: Bool
-    let onReplay: () -> Void
+    let onOpen: () -> Void
+    let onDelete: () -> Void
     @State private var isHovered = false
     @State private var copied = false
+    @State private var confirmOpen = false
+    @State private var confirmDelete = false
+    @State private var showStats = false
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -18,20 +22,29 @@ struct SpeechLogItemView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text(entry.text)
+                Text(entry.textContent)
                     .font(WoadieTheme.mono(size: 13, weight: .regular))
                     .foregroundStyle(WoadieTheme.foreground)
                     .lineSpacing(3)
+                    .lineLimit(2)
                     .padding(.trailing, 60)
 
-                Text(WoadieTheme.timeFormatter.string(from: entry.timestamp))
-                    .font(WoadieTheme.mono(size: 10, weight: .medium))
-                    .foregroundStyle(WoadieTheme.foregroundSubtle)
-                    .textCase(.uppercase)
-                    .tracking(1.2)
+                HStack(spacing: 8) {
+                    Text(entry.voice)
+                        .font(WoadieTheme.mono(size: 9, weight: .semibold))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(WoadieTheme.primary.opacity(0.14))
+                        .clipShape(Capsule())
+                    Text(WoadieTheme.timeFormatter.string(from: entry.createdAt))
+                        .font(WoadieTheme.mono(size: 10, weight: .medium))
+                        .foregroundStyle(WoadieTheme.foregroundSubtle)
+                        .textCase(.uppercase)
+                        .tracking(1.2)
+                }
             }
             .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: 260, alignment: .leading)
         }
         .background(isPlaying ? WoadieTheme.primary.opacity(0.08) : WoadieTheme.surface.opacity(0.7))
         .overlay(
@@ -44,8 +57,11 @@ struct SpeechLogItemView: View {
                 IconActionButton(systemImage: copied ? "checkmark" : "doc.on.doc") {
                     copyToClipboard()
                 }
-                IconActionButton(systemImage: "speaker.wave.2.fill") {
-                    onReplay()
+                IconActionButton(systemImage: "chart.bar.doc.horizontal") {
+                    showStats = true
+                }
+                IconActionButton(systemImage: "arrow.down.left.and.arrow.up.right") {
+                    confirmOpen = true
                 }
             }
             .opacity(isHovered ? 1 : 0)
@@ -54,15 +70,66 @@ struct SpeechLogItemView: View {
         .onHover { hovering in
             isHovered = hovering
         }
+        .contextMenu {
+            Button("Open") { confirmOpen = true }
+            Button("Stats") { showStats = true }
+            Button("Delete", role: .destructive) { confirmDelete = true }
+        }
+        .confirmationDialog("Opening this will replace what's currently in your workspace. Continue?", isPresented: $confirmOpen) {
+            Button("Yes") { onOpen() }
+            Button("No", role: .cancel) {}
+        }
+        .confirmationDialog("Delete this entry? The audio files will be permanently removed from your device.", isPresented: $confirmDelete) {
+            Button("Delete", role: .destructive) { onDelete() }
+            Button("Cancel", role: .cancel) {}
+        }
+        .sheet(isPresented: $showStats) {
+            SpeechStatsView(entry: entry)
+        }
     }
 
     private func copyToClipboard() {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(entry.text, forType: .string)
+        pasteboard.setString(entry.textContent, forType: .string)
         copied = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             copied = false
         }
+    }
+}
+
+private struct SpeechStatsView: View {
+    let entry: SpeechEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Stats ID Card")
+                .font(WoadieTheme.mono(size: 14, weight: .bold))
+            stat("Tokens used", entry.stats.tokenCount.map(String.init) ?? "-")
+            stat("Generation time", String(format: "%.2f s", entry.stats.generationTimeSeconds))
+            stat("Audio file size", ByteCountFormatter.string(fromByteCount: entry.stats.fileSizeBytes, countStyle: .file))
+            stat("CPU delta", String(format: "%.1f%%", entry.stats.resourceAfter.cpuPercent - entry.stats.resourceBefore.cpuPercent))
+            stat("RAM delta", String(format: "%.1f MB", entry.stats.resourceAfter.ramUsedMB - entry.stats.resourceBefore.ramUsedMB))
+            stat("Character count", "\(entry.stats.characterCount)")
+            stat("Segment count", "\(entry.stats.segmentCount)")
+            stat("Voice", entry.voice)
+            stat("Model", entry.model)
+            stat("Timestamp", entry.createdAt.formatted(date: .abbreviated, time: .standard))
+        }
+        .padding(24)
+        .frame(width: 360)
+        .background(WoadieTheme.background)
+    }
+
+    private func stat(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label)
+                .foregroundStyle(WoadieTheme.foregroundSubtle)
+            Spacer()
+            Text(value)
+                .foregroundStyle(WoadieTheme.foreground)
+        }
+        .font(WoadieTheme.mono(size: 11, weight: .medium))
     }
 }

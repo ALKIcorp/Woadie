@@ -1,5 +1,6 @@
 import AVFoundation
 import XCTest
+import SwiftData
 @testable import Woadie
 
 final class EngineSupervisorTests: XCTestCase {
@@ -522,7 +523,13 @@ private extension AppDependencies {
             workspaceStore: FakeWorkspaceStore(),
             logStore: FakeLogStore(),
             clipStore: FakeClipStore(),
-            packageStore: FakePackageStore()
+            packageStore: FakePackageStore(),
+            speechEntryStore: try! SpeechEntryStore(
+                container: ModelContainer(
+                    for: SpeechEntry.self,
+                    configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+                )
+            )
         )
     }
 }

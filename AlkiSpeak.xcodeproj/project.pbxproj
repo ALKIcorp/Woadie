@@ -38,6 +38,9 @@
 		A100001D /* LocalPersistenceServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001F /* LocalPersistenceServices.swift */; };
 		A100001E /* VisualCompatibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000020 /* VisualCompatibility.swift */; };
 		A100001F /* EngineInfrastructure.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000021 /* EngineInfrastructure.swift */; };
+		A1000022 /* SpeechEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000022 /* SpeechEntry.swift */; };
+		A1000023 /* SpeechEntryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000023 /* SpeechEntryStore.swift */; };
+		A1000024 /* SystemResourceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000024 /* SystemResourceMonitor.swift */; };
 		B1000001 /* EngineSupervisorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001 /* EngineSupervisorTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -85,6 +88,9 @@
 		A200001F /* LocalPersistenceServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPersistenceServices.swift; sourceTree = "<group>"; };
 		A2000020 /* VisualCompatibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualCompatibility.swift; sourceTree = "<group>"; };
 		A2000021 /* EngineInfrastructure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineInfrastructure.swift; sourceTree = "<group>"; };
+		A2000022 /* SpeechEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechEntry.swift; sourceTree = "<group>"; };
+		A2000023 /* SpeechEntryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechEntryStore.swift; sourceTree = "<group>"; };
+		A2000024 /* SystemResourceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemResourceMonitor.swift; sourceTree = "<group>"; };
 		B2000001 /* EngineSupervisorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineSupervisorTests.swift; sourceTree = "<group>"; };
 		B2000002 /* WoadieTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WoadieTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -194,6 +200,7 @@
 			isa = PBXGroup;
 			children = (
 				A2000019 /* DomainModels.swift */,
+				A2000022 /* SpeechEntry.swift */,
 				A200001A /* AlkiSpeakError.swift */,
 			);
 			path = Models;
@@ -206,6 +213,7 @@
 				A200001C /* EngineServices.swift */,
 				A2000021 /* EngineInfrastructure.swift */,
 				A200001D /* AudioServices.swift */,
+				A2000024 /* SystemResourceMonitor.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -215,6 +223,7 @@
 			children = (
 				A200001E /* PersistenceProtocols.swift */,
 				A200001F /* LocalPersistenceServices.swift */,
+				A2000023 /* SpeechEntryStore.swift */,
 			);
 			path = Persistence;
 			sourceTree = "<group>";
@@ -368,6 +377,9 @@
 				A100001C /* PersistenceProtocols.swift in Sources */,
 				A100001D /* LocalPersistenceServices.swift in Sources */,
 				A100001E /* VisualCompatibility.swift in Sources */,
+				A1000022 /* SpeechEntry.swift in Sources */,
+				A1000023 /* SpeechEntryStore.swift in Sources */,
+				A1000024 /* SystemResourceMonitor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
