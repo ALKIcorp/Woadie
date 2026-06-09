@@ -4,46 +4,41 @@ struct ContentView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        ZStack {
-            WoadieBackground()
+        ScrollView(.vertical) {
+            AlkiGlassSurface(cornerRadius: 30) {
+                VStack(spacing: 12) {
+                    WoadieHeaderView(model: model)
+                    topControls
 
-            ScrollView(.vertical) {
-                AlkiGlassSurface(cornerRadius: 30) {
-                    VStack(spacing: 12) {
-                        WoadieHeaderView(model: model)
-                        topControls
-
-                        HStack(alignment: .top, spacing: 12) {
-                            waveformPanel
-                            WoadiePlaybackPanel(model: model, onTogglePlayback: model.togglePlayback)
-                                .frame(width: 330)
-                        }
-
-                        WoadieInputRow(model: model)
-
-                        messageArea
-
-                        if model.isProMode {
-                            SpeechLogView(
-                                entries: model.chatItems,
-                                playingId: model.playingId,
-                                selectedId: model.store.selectedLogEntryID,
-                                logMode: model.logMode,
-                                onLogModeChanged: model.setLogMode,
-                                onSelect: model.selectLogEntry,
-                                onOpen: model.open,
-                                onDelete: model.delete
-                            )
-                            .transition(.opacity.combined(with: .move(edge: .bottom)))
-                        }
+                    HStack(alignment: .top, spacing: 12) {
+                        waveformPanel
+                        WoadiePlaybackPanel(model: model, onTogglePlayback: model.togglePlayback)
+                            .frame(width: 330)
                     }
-                    .padding(16)
+
+                    WoadieInputRow(model: model)
+
+                    messageArea
+
+                    if model.isProMode {
+                        SpeechLogView(
+                            entries: model.chatItems,
+                            playingId: model.playingId,
+                            selectedId: model.store.selectedLogEntryID,
+                            logMode: model.logMode,
+                            onLogModeChanged: model.setLogMode,
+                            onSelect: model.selectLogEntry,
+                            onOpen: model.open,
+                            onDelete: model.delete
+                        )
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    }
                 }
-                .frame(maxWidth: 1080)
-                .padding(24)
-                .frame(maxWidth: .infinity)
+                .padding(16)
             }
+            .frame(maxWidth: .infinity)
         }
+        .ignoresSafeArea(.container, edges: .top)
         .frame(minWidth: 900, minHeight: 680)
         .tint(WoadieTheme.primary)
         .task {
