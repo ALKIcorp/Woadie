@@ -28,6 +28,8 @@ struct SpeechLogView: View {
                     Text("Manual").tag(LogMode.manual)
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityLabel("Log Mode")
                 .frame(width: 150)
                 .help(logMode == .auto ? "Every speech is automatically added to the log" : "Manually choose which speeches to save to the log")
 

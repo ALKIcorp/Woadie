@@ -61,8 +61,9 @@ struct StatusIndicatorView: View {
                             value: Double(model.store.dashboardTelemetry.resourceSnapshot.memoryBytes ?? 0) / 1_048_576,
                             suffix: " MB"
                         )
-                        Button("Restart Engine") { model.restartEngine() }
-                            .buttonStyle(.borderedProminent)
+                        WoadieButton(title: "Restart Engine", variant: .primary) {
+                            model.restartEngine()
+                        }
                     }
                     .font(WoadieTheme.mono(size: 10, weight: .medium))
                     .padding(14)

@@ -7,39 +7,42 @@ struct ContentView: View {
         ZStack {
             WoadieBackground()
 
-            AlkiGlassSurface(cornerRadius: 30) {
-                VStack(spacing: 12) {
-                    WoadieHeaderView(model: model)
-                    topControls
+            ScrollView(.vertical) {
+                AlkiGlassSurface(cornerRadius: 30) {
+                    VStack(spacing: 12) {
+                        WoadieHeaderView(model: model)
+                        topControls
 
-                    HStack(alignment: .top, spacing: 12) {
-                        waveformPanel
-                        WoadiePlaybackPanel(model: model, onTogglePlayback: model.togglePlayback)
-                            .frame(width: 330)
+                        HStack(alignment: .top, spacing: 12) {
+                            waveformPanel
+                            WoadiePlaybackPanel(model: model, onTogglePlayback: model.togglePlayback)
+                                .frame(width: 330)
+                        }
+
+                        WoadieInputRow(model: model)
+
+                        messageArea
+
+                        if model.isProMode {
+                            SpeechLogView(
+                                entries: model.chatItems,
+                                playingId: model.playingId,
+                                selectedId: model.store.selectedLogEntryID,
+                                logMode: model.logMode,
+                                onLogModeChanged: model.setLogMode,
+                                onSelect: model.selectLogEntry,
+                                onOpen: model.open,
+                                onDelete: model.delete
+                            )
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        }
                     }
-
-                    WoadieInputRow(model: model)
-
-                    messageArea
-
-                    if model.isProMode {
-                        SpeechLogView(
-                            entries: model.chatItems,
-                            playingId: model.playingId,
-                            selectedId: model.store.selectedLogEntryID,
-                            logMode: model.logMode,
-                            onLogModeChanged: model.setLogMode,
-                            onSelect: model.selectLogEntry,
-                            onOpen: model.open,
-                            onDelete: model.delete
-                        )
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
-                    }
+                    .padding(16)
                 }
-                .padding(16)
+                .frame(maxWidth: 1080)
+                .padding(24)
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: 1080)
-            .padding(24)
         }
         .frame(minWidth: 900, minHeight: 680)
         .tint(WoadieTheme.primary)
@@ -63,7 +66,7 @@ struct ContentView: View {
     }
 
     private var topControls: some View {
-        HStack {
+        HStack(alignment: .top) {
             Picker("Mode", selection: Binding(
                 get: { model.appMode },
                 set: { model.setAppMode($0) }
