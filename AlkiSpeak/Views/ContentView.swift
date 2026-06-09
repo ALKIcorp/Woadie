@@ -57,6 +57,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity)
             .frame(minHeight: max(windowHeight, minimumContentHeight))
         }
+        .ignoresSafeArea(.container, edges: .top)
         .frame(minWidth: 900, minHeight: 680)
         .onPreferenceChange(MinimumContentHeightKey.self) { height in
             guard height > 0, abs(height - minimumContentHeight) > 0.5 else { return }
