@@ -58,6 +58,8 @@ struct ContentView: View {
             .frame(minHeight: max(windowHeight, minimumContentHeight))
         }
         .ignoresSafeArea(.container, edges: .top)
+        .toolbarBackground(.hidden, for: .windowToolbar)
+        .hidingWindowToolbarTitle()
         .frame(minWidth: 900, minHeight: 680)
         .onPreferenceChange(MinimumContentHeightKey.self) { height in
             guard height > 0, abs(height - minimumContentHeight) > 0.5 else { return }
@@ -188,6 +190,17 @@ private struct MinimumContentHeightKey: PreferenceKey {
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func hidingWindowToolbarTitle() -> some View {
+        if #available(macOS 15.0, *) {
+            toolbar(removing: .title)
+        } else {
+            self
+        }
     }
 }
 
