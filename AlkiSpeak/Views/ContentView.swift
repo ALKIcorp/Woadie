@@ -4,7 +4,7 @@ struct ContentView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        ScrollView(.vertical) {
+        GeometryReader { proxy in
             AlkiGlassSurface(cornerRadius: 30) {
                 VStack(spacing: 12) {
                     WoadieHeaderView(model: model)
@@ -35,10 +35,15 @@ struct ContentView: View {
                     }
                 }
                 .padding(16)
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: proxy.size.height,
+                    alignment: .top
+                )
             }
             .frame(maxWidth: .infinity)
+            .frame(minHeight: proxy.size.height)
         }
-        .ignoresSafeArea(.container, edges: .top)
         .frame(minWidth: 900, minHeight: 680)
         .tint(WoadieTheme.primary)
         .task {

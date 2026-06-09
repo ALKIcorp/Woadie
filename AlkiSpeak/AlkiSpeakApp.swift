@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private static let minimumContentSize = NSSize(width: 900, height: 680)
+
     weak var model: AppModel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -37,9 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.titlebarAppearsTransparent = true
             window.styleMask.insert(.fullSizeContentView)
             window.titlebarSeparatorStyle = .none
-            if #available(macOS 11.0, *) {
-                window.toolbarStyle = .unified
-            }
+            window.contentMinSize = minimumContentSize
         }
     }
 
