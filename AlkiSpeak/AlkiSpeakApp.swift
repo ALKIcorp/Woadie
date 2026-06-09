@@ -2,8 +2,6 @@ import AppKit
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private static let minimumContentSize = NSSize(width: 900, height: 680)
-
     weak var model: AppModel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -15,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
         DispatchQueue.main.async {
-            Self.applyWindowChrome(NSApplication.shared.windows)
+            self.applyWindowChrome(NSApplication.shared.windows)
         }
     }
 
@@ -26,12 +24,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func windowDidBecomeKey(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         Self.consoleTrace("windowDidBecomeKey title=\(window.title) isVisible=\(window.isVisible)")
-        Self.applyWindowChrome([window])
+        applyWindowChrome([window])
     }
 
     /// Hidden title bar without SwiftUI `.hiddenTitleBar`, which often spins up ViewBridge remote hosting (noisy teardown + debugger artifacts).
-    private static func applyWindowChrome(_ windows: [NSWindow]) {
-        consoleTrace("applyWindowChrome windowCount=\(windows.count)")
+    private func applyWindowChrome(_ windows: [NSWindow]) {
+        Self.consoleTrace("applyWindowChrome windowCount=\(windows.count)")
         for window in windows where window.styleMask.contains(.titled) {
             window.backgroundColor = .clear
             window.isOpaque = false
@@ -39,7 +37,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.titlebarAppearsTransparent = true
             window.styleMask.insert(.fullSizeContentView)
             window.titlebarSeparatorStyle = .none
-            window.contentMinSize = minimumContentSize
         }
     }
 

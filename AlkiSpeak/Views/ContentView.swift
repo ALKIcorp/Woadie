@@ -1,10 +1,14 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var minimumContentHeight: CGFloat = 0
 
     var body: some View {
         GeometryReader { proxy in
+            let windowHeight = proxy.size.height - proxy.safeAreaInsets.top
+
             AlkiGlassSurface(cornerRadius: 30) {
                 VStack(spacing: 12) {
                     WoadieHeaderView(model: model)
@@ -35,16 +39,30 @@ struct ContentView: View {
                     }
                 }
                 .padding(16)
+                .fixedSize(horizontal: false, vertical: true)
+                .background {
+                    GeometryReader { contentProxy in
+                        Color.clear.preference(
+                            key: MinimumContentHeightKey.self,
+                            value: contentProxy.size.height
+                        )
+                    }
+                }
                 .frame(
                     maxWidth: .infinity,
-                    minHeight: proxy.size.height,
+                    minHeight: max(windowHeight, minimumContentHeight),
                     alignment: .top
                 )
             }
             .frame(maxWidth: .infinity)
-            .frame(minHeight: proxy.size.height)
+            .frame(minHeight: max(windowHeight, minimumContentHeight))
         }
         .frame(minWidth: 900, minHeight: 680)
+        .onPreferenceChange(MinimumContentHeightKey.self) { height in
+            guard height > 0, abs(height - minimumContentHeight) > 0.5 else { return }
+            minimumContentHeight = height
+            NSApp.keyWindow?.contentMinSize = NSSize(width: 900, height: height)
+        }
         .tint(WoadieTheme.primary)
         .task {
             while !Task.isCancelled {
@@ -147,6 +165,14 @@ struct ContentView: View {
         let ready = model.store.speechJobs.first?.segments.filter { $0.audioURL != nil }.count ?? 0
         let total = model.store.speechJobs.first?.segments.count ?? 0
         return "BUFFER \(String(format: "%02d", ready)) / \(String(format: "%02d", total))"
+    }
+}
+
+private struct MinimumContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
