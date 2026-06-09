@@ -2,16 +2,26 @@ import AppKit
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private static let chromeRefreshNotifications: [Notification.Name] = [
+        NSWindow.didBecomeKeyNotification,
+        NSWindow.didResignKeyNotification,
+        NSWindow.didMiniaturizeNotification,
+        NSWindow.didDeminiaturizeNotification,
+        NSWindow.didChangeOcclusionStateNotification
+    ]
+
     weak var model: AppModel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.consoleTrace("applicationDidFinishLaunching")
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(windowDidBecomeKey(_:)),
-            name: NSWindow.didBecomeKeyNotification,
-            object: nil
-        )
+        for name in Self.chromeRefreshNotifications {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowChromeNeedsRefresh(_:)),
+                name: name,
+                object: nil
+            )
+        }
         DispatchQueue.main.async {
             self.applyWindowChrome(NSApplication.shared.windows)
         }
@@ -21,9 +31,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.removeObserver(self)
     }
 
-    @objc private func windowDidBecomeKey(_ notification: Notification) {
+    @objc private func windowChromeNeedsRefresh(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
-        Self.consoleTrace("windowDidBecomeKey title=\(window.title) isVisible=\(window.isVisible)")
+        Self.consoleTrace("windowChromeNeedsRefresh title=\(window.title) event=\(notification.name.rawValue)")
         applyWindowChrome([window])
     }
 

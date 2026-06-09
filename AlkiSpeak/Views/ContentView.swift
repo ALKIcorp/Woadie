@@ -9,7 +9,7 @@ struct ContentView: View {
         GeometryReader { proxy in
             let windowHeight = proxy.size.height
 
-            AlkiGlassSurface(cornerRadius: 16) {
+            AlkiGlassSurface(cornerRadius: 16, keepsActiveAppearance: true) {
                 VStack(spacing: 12) {
                     WoadieHeaderView(model: model)
                     topControls

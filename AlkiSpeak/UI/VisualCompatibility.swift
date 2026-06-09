@@ -1,4 +1,33 @@
+import AppKit
 import SwiftUI
+
+struct PersistentVisualEffectView: NSViewRepresentable {
+    let cornerRadius: CGFloat
+
+    static func makeVisualEffectView(cornerRadius: CGFloat) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        configure(view, cornerRadius: cornerRadius)
+        return view
+    }
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        Self.makeVisualEffectView(cornerRadius: cornerRadius)
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        Self.configure(view, cornerRadius: cornerRadius)
+    }
+
+    private static func configure(_ view: NSVisualEffectView, cornerRadius: CGFloat) {
+        view.material = .underWindowBackground
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.wantsLayer = true
+        view.layer?.cornerRadius = cornerRadius
+        view.layer?.cornerCurve = .continuous
+        view.layer?.masksToBounds = true
+    }
+}
 
 struct WoadieGlassPanelModifier: ViewModifier {
     let cornerRadius: CGFloat

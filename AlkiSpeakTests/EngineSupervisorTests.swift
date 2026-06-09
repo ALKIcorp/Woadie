@@ -1,9 +1,20 @@
 import AVFoundation
+import AppKit
 import XCTest
 import SwiftData
 @testable import Woadie
 
 final class EngineSupervisorTests: XCTestCase {
+    @MainActor
+    func testPersistentGlassBackgroundAlwaysUsesActiveAppearance() {
+        let view = PersistentVisualEffectView.makeVisualEffectView(cornerRadius: 16)
+
+        XCTAssertEqual(view.state, .active)
+        XCTAssertEqual(view.blendingMode, .behindWindow)
+        XCTAssertEqual(view.material, .underWindowBackground)
+        XCTAssertEqual(view.layer?.cornerRadius, 16)
+    }
+
     func testAppearanceDefaultsToSystemAndPersistsSelection() {
         let suiteName = "AppearanceTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
