@@ -9,7 +9,7 @@ struct ContentView: View {
         GeometryReader { proxy in
             let windowHeight = proxy.size.height
 
-            AlkiGlassSurface(cornerRadius: 16, keepsActiveAppearance: true) {
+            AlkiGlassSurface(cornerRadius: 16) {
                 VStack(spacing: 12) {
                     WoadieHeaderView(model: model)
                     topControls
@@ -57,6 +57,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity)
             .frame(minHeight: max(windowHeight, minimumContentHeight))
         }
+        .environment(\.appearsActive, GlassAppearancePolicy.appearsActive)
         .ignoresSafeArea(.container, edges: .top)
         .toolbarBackground(.hidden, for: .windowToolbar)
         .hidingWindowToolbarTitle()

@@ -62,28 +62,22 @@ enum WoadieTheme {
 struct AlkiGlassSurface<Content: View>: View {
     let cornerRadius: CGFloat
     let interactive: Bool
-    let keepsActiveAppearance: Bool
     @ViewBuilder let content: Content
 
     init(
         cornerRadius: CGFloat = WoadieTheme.radiusLarge,
         interactive: Bool = false,
-        keepsActiveAppearance: Bool = false,
         @ViewBuilder content: () -> Content
     ) {
         self.cornerRadius = cornerRadius
         self.interactive = interactive
-        self.keepsActiveAppearance = keepsActiveAppearance
         self.content = content()
     }
 
     var body: some View {
         content
             .background {
-                if keepsActiveAppearance {
-                    PersistentVisualEffectView(cornerRadius: cornerRadius)
-                        .overlay(Color.white.opacity(0.10))
-                } else if #available(macOS 26.0, *) {
+                if #available(macOS 26.0, *) {
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .fill(.clear)
                         .glassEffect(
@@ -103,4 +97,8 @@ struct AlkiGlassSurface<Content: View>: View {
             }
             .shadow(color: .black.opacity(0.10), radius: 8, y: 4)
     }
+}
+
+enum GlassAppearancePolicy {
+    static let appearsActive = true
 }
