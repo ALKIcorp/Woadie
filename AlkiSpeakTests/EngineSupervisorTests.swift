@@ -4,8 +4,13 @@ import SwiftData
 @testable import Woadie
 
 final class EngineSupervisorTests: XCTestCase {
-    func testGlassSurfacesUseKeyWindowRenderingState() {
-        XCTAssertEqual(GlassActivityPolicy.controlState, .key)
+    @available(macOS 26.0, *)
+    func testGlassSurfacesAlwaysUseActiveMaterialAppearance() {
+        XCTAssertEqual(GlassActivityPolicy.materialAppearance, .active)
+    }
+
+    func testWindowChromeIsNotReappliedDuringActivationChanges() {
+        XCTAssertFalse(WindowChromePolicy.reappliesDuringActivationChanges)
     }
 
     func testAppearanceDefaultsToSystemAndPersistsSelection() {

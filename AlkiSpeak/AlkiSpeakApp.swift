@@ -1,40 +1,18 @@
 import AppKit
 import SwiftUI
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    private static let chromeRefreshNotifications: [Notification.Name] = [
-        NSWindow.didBecomeKeyNotification,
-        NSWindow.didResignKeyNotification,
-        NSWindow.didMiniaturizeNotification,
-        NSWindow.didDeminiaturizeNotification,
-        NSWindow.didChangeOcclusionStateNotification
-    ]
+enum WindowChromePolicy {
+    static let reappliesDuringActivationChanges = false
+}
 
+final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var model: AppModel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.consoleTrace("applicationDidFinishLaunching")
-        for name in Self.chromeRefreshNotifications {
-            NotificationCenter.default.addObserver(
-                self,
-                selector: #selector(windowChromeNeedsRefresh(_:)),
-                name: name,
-                object: nil
-            )
-        }
         DispatchQueue.main.async {
             self.applyWindowChrome(NSApplication.shared.windows)
         }
-    }
-
-    deinit {
-        NotificationCenter.default.removeObserver(self)
-    }
-
-    @objc private func windowChromeNeedsRefresh(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow else { return }
-        Self.consoleTrace("windowChromeNeedsRefresh title=\(window.title) event=\(notification.name.rawValue)")
-        applyWindowChrome([window])
     }
 
     /// Hidden title bar without SwiftUI `.hiddenTitleBar`, which often spins up ViewBridge remote hosting (noisy teardown + debugger artifacts).

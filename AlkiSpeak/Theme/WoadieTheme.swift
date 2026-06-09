@@ -59,8 +59,9 @@ enum WoadieTheme {
     }()
 }
 
+@available(macOS 26.0, *)
 enum GlassActivityPolicy {
-    static let controlState: ControlActiveState = .key
+    static let materialAppearance: MaterialActiveAppearance = .active
 }
 
 struct AlkiGlassSurface<Content: View>: View {
@@ -91,12 +92,12 @@ struct AlkiGlassSurface<Content: View>: View {
                                     : .regular.tint(.white.opacity(0.10)),
                                 in: .rect(cornerRadius: cornerRadius)
                             )
+                            .materialActiveAppearance(GlassActivityPolicy.materialAppearance)
                     } else {
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                             .fill(.ultraThinMaterial)
                     }
                 }
-                .environment(\.controlActiveState, GlassActivityPolicy.controlState)
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
