@@ -57,7 +57,6 @@ struct ContentView: View {
             .frame(maxWidth: .infinity)
             .frame(minHeight: max(windowHeight, minimumContentHeight))
         }
-        .environment(\.appearsActive, GlassAppearancePolicy.appearsActive)
         .ignoresSafeArea(.container, edges: .top)
         .toolbarBackground(.hidden, for: .windowToolbar)
         .hidingWindowToolbarTitle()

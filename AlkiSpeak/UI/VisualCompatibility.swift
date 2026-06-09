@@ -8,6 +8,7 @@ struct WoadieGlassPanelModifier: ViewModifier {
         if #available(macOS 26.0, *) {
             content
                 .glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
+                .environment(\.controlActiveState, GlassActivityPolicy.controlState)
         } else {
             content
                 .background(WoadieTheme.surface.opacity(fallbackOpacity))

@@ -59,6 +59,10 @@ enum WoadieTheme {
     }()
 }
 
+enum GlassActivityPolicy {
+    static let controlState: ControlActiveState = .key
+}
+
 struct AlkiGlassSurface<Content: View>: View {
     let cornerRadius: CGFloat
     let interactive: Bool
@@ -77,19 +81,22 @@ struct AlkiGlassSurface<Content: View>: View {
     var body: some View {
         content
             .background {
-                if #available(macOS 26.0, *) {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(.clear)
-                        .glassEffect(
-                            interactive
-                                ? .regular.tint(.white.opacity(0.10)).interactive()
-                                : .regular.tint(.white.opacity(0.10)),
-                            in: .rect(cornerRadius: cornerRadius)
-                        )
-                } else {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(.ultraThinMaterial)
+                Group {
+                    if #available(macOS 26.0, *) {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(.clear)
+                            .glassEffect(
+                                interactive
+                                    ? .regular.tint(.white.opacity(0.10)).interactive()
+                                    : .regular.tint(.white.opacity(0.10)),
+                                in: .rect(cornerRadius: cornerRadius)
+                            )
+                    } else {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                    }
                 }
+                .environment(\.controlActiveState, GlassActivityPolicy.controlState)
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -97,8 +104,4 @@ struct AlkiGlassSurface<Content: View>: View {
             }
             .shadow(color: .black.opacity(0.10), radius: 8, y: 4)
     }
-}
-
-enum GlassAppearancePolicy {
-    static let appearsActive = true
 }

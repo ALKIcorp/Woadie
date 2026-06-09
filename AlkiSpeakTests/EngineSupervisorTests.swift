@@ -4,8 +4,8 @@ import SwiftData
 @testable import Woadie
 
 final class EngineSupervisorTests: XCTestCase {
-    func testGlassAppearanceRemainsActiveWhenWindowLosesFocus() {
-        XCTAssertTrue(GlassAppearancePolicy.appearsActive)
+    func testGlassSurfacesUseKeyWindowRenderingState() {
+        XCTAssertEqual(GlassActivityPolicy.controlState, .key)
     }
 
     func testAppearanceDefaultsToSystemAndPersistsSelection() {
