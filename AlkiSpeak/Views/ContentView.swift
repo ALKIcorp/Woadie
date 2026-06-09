@@ -7,7 +7,7 @@ struct ContentView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let windowHeight = proxy.size.height - proxy.safeAreaInsets.top
+            let windowHeight = proxy.size.height
 
             AlkiGlassSurface(cornerRadius: 30) {
                 VStack(spacing: 12) {
@@ -61,7 +61,21 @@ struct ContentView: View {
         .onPreferenceChange(MinimumContentHeightKey.self) { height in
             guard height > 0, abs(height - minimumContentHeight) > 0.5 else { return }
             minimumContentHeight = height
-            NSApp.keyWindow?.contentMinSize = NSSize(width: 900, height: height)
+            guard let window = NSApp.keyWindow else { return }
+            window.contentMinSize = NSSize(width: 900, height: height)
+
+            let currentContentSize = window.contentLayoutRect.size
+            guard currentContentSize.height > height else { return }
+
+            let topEdge = window.frame.maxY
+            let contentRect = NSRect(
+                origin: .zero,
+                size: NSSize(width: currentContentSize.width, height: height)
+            )
+            var fittedFrame = window.frameRect(forContentRect: contentRect)
+            fittedFrame.origin.x = window.frame.origin.x
+            fittedFrame.origin.y = topEdge - fittedFrame.height
+            window.setFrame(fittedFrame, display: true, animate: false)
         }
         .tint(WoadieTheme.primary)
         .task {
