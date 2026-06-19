@@ -253,6 +253,32 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     @MainActor
+    func testSelectedTextServiceProviderSpeaksPasteboardString() async {
+        let localSpeech = FakeLocalSpeechSynthesizing()
+        let store = AppStore()
+        store.activeWorkspace.selectedVoiceID = "apple:test"
+        let model = AppModel(
+            store: store,
+            dependencies: .test(
+                engineSupervisor: FakeEngineSupervisor(),
+                localSpeechService: localSpeech
+            )
+        )
+        let provider = SelectedTextServiceProvider(model: model)
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Read this from another app.", forType: .string)
+        var serviceError: NSString?
+
+        provider.speakSelection(pasteboard, userData: nil, error: &serviceError)
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertNil(serviceError)
+        XCTAssertEqual(localSpeech.spokenTexts, ["Read this from another app."])
+        XCTAssertEqual(store.composerText, "Read this from another app.")
+    }
+
+    @MainActor
     func testFinishedPlaybackRetainsClipForReplayAndUnblocksSpeak() {
         let playback = FakePlaybackCoordinating()
         let store = AppStore()
@@ -563,8 +589,11 @@ private final class FakePlaybackCoordinating: PlaybackCoordinating {
 
 private final class FakeLocalSpeechSynthesizing: LocalSpeechSynthesizing {
     var voiceOptions: [VoiceOption] = [VoiceOption(id: "apple:test", label: "Apple Test", isLocal: true)]
+    private(set) var spokenTexts: [String] = []
     func refreshVoices() {}
-    func speak(text: String, voiceID: String) throws {}
+    func speak(text: String, voiceID: String) throws {
+        spokenTexts.append(text)
+    }
     func stop() {}
 }
 
@@ -605,13 +634,14 @@ private final class FakePackageStore: SpeechPackageImportExporting {
 private extension AppDependencies {
     static func test(
         engineSupervisor: EngineSupervising,
-        playbackCoordinator: PlaybackCoordinating = FakePlaybackCoordinating()
+        playbackCoordinator: PlaybackCoordinating = FakePlaybackCoordinating(),
+        localSpeechService: LocalSpeechSynthesizing = FakeLocalSpeechSynthesizing()
     ) -> AppDependencies {
         AppDependencies(
             engineSupervisor: engineSupervisor,
             generationService: FakeSpeechGenerating(),
             playbackCoordinator: playbackCoordinator,
-            localSpeechService: FakeLocalSpeechSynthesizing(),
+            localSpeechService: localSpeechService,
             telemetryService: FakeTelemetryCapturing(),
             workspaceStore: FakeWorkspaceStore(),
             logStore: FakeLogStore(),

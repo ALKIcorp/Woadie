@@ -59,10 +59,7 @@ final class AppModel: ObservableObject {
     }
 
     var canSpeak: Bool {
-        let hasText = !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return hasText
-            && !store.playback.state.blocksNewSpeech
-            && (status.isAvailableForRemoteSpeech || isSelectedVoiceLocal)
+        canSpeak(text: inputText)
     }
 
     var canEditText: Bool {
@@ -318,6 +315,20 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func speakExternalText(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if appMode == .quick {
+            deleteActiveQuickClips()
+        }
+        stopPlayback()
+        inputText = trimmed
+        if !status.isProcessExpectedAlive && !dependencies.engineSupervisor.isRunning && !isSelectedVoiceLocal {
+            startEngine()
+        }
+        speak(text: trimmed, addToHistory: false, targetLogEntryID: nil)
+    }
+
     func setAppMode(_ mode: AppMode) {
         guard mode != store.appMode else { return }
         store.appMode = mode
@@ -454,8 +465,8 @@ final class AppModel: ObservableObject {
     }
 
     private func speak(text: String, addToHistory: Bool, targetLogEntryID: UUID?) {
-        guard canSpeak else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canSpeak(text: trimmed) else { return }
         guard !trimmed.isEmpty else { return }
         store.clearErrorMessage()
 
@@ -949,5 +960,12 @@ final class AppModel: ObservableObject {
             )
             record(appError)
         }
+    }
+
+    private func canSpeak(text: String) -> Bool {
+        let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return hasText
+            && !store.playback.state.blocksNewSpeech
+            && (status.isAvailableForRemoteSpeech || isSelectedVoiceLocal)
     }
 }

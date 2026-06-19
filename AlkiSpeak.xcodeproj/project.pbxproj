@@ -41,6 +41,7 @@
 		A1000022 /* SpeechEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000022 /* SpeechEntry.swift */; };
 		A1000023 /* SpeechEntryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000023 /* SpeechEntryStore.swift */; };
 		A1000024 /* SystemResourceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000024 /* SystemResourceMonitor.swift */; };
+		A1000025 /* SelectedTextServiceProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000025 /* SelectedTextServiceProvider.swift */; };
 		B1000001 /* EngineSupervisorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001 /* EngineSupervisorTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -91,6 +92,7 @@
 		A2000022 /* SpeechEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechEntry.swift; sourceTree = "<group>"; };
 		A2000023 /* SpeechEntryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechEntryStore.swift; sourceTree = "<group>"; };
 		A2000024 /* SystemResourceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemResourceMonitor.swift; sourceTree = "<group>"; };
+		A2000025 /* SelectedTextServiceProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectedTextServiceProvider.swift; sourceTree = "<group>"; };
 		B2000001 /* EngineSupervisorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineSupervisorTests.swift; sourceTree = "<group>"; };
 		B2000002 /* WoadieTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WoadieTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -214,6 +216,7 @@
 				A2000021 /* EngineInfrastructure.swift */,
 				A200001D /* AudioServices.swift */,
 				A2000024 /* SystemResourceMonitor.swift */,
+				A2000025 /* SelectedTextServiceProvider.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -380,6 +383,7 @@
 				A1000022 /* SpeechEntry.swift in Sources */,
 				A1000023 /* SpeechEntryStore.swift in Sources */,
 				A1000024 /* SystemResourceMonitor.swift in Sources */,
+				A1000025 /* SelectedTextServiceProvider.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
