@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.consoleTrace("applicationDidFinishLaunching")
         NSApp.setActivationPolicy(.regular)
+        FrontmostAppTracker.shared.start()
         installSelectedTextServiceProvider()
         DispatchQueue.main.async {
             self.applyWindowChrome(NSApplication.shared.windows)
@@ -153,6 +154,19 @@ private struct MenuBarQuickSpeakView: View {
                 .disabled(model.playback.bufferedDuration <= 0 && model.playback.state != .playing)
                 .help(model.playback.state == .playing ? "Pause playback" : "Play cached audio")
             }
+
+            Button {
+                model.speakSelectedTextFromMenuBar()
+            } label: {
+                Label("Speak Selected Text", systemImage: "text.cursor")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+            .overlay(Capsule(style: .continuous).strokeBorder(WoadieTheme.borderSubtle))
+            .help("Speak the currently selected text from the frontmost app")
 
             TextEditor(text: $quickText)
                 .font(WoadieTheme.rounded(size: 13, weight: .regular))

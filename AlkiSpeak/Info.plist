@@ -33,8 +33,16 @@
             <string>speakSelection</string>
             <key>NSPortName</key>
             <string>Woadie</string>
+            <key>NSKeyEquivalent</key>
+            <dict>
+                <key>default</key>
+                <string>@$s</string>
+            </dict>
+            <key>NSRequiredContext</key>
+            <dict/>
             <key>NSSendTypes</key>
             <array>
+                <string>public.utf8-plain-text</string>
                 <string>NSStringPboardType</string>
             </array>
         </dict>

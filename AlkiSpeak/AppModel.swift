@@ -329,6 +329,15 @@ final class AppModel: ObservableObject {
         speak(text: trimmed, addToHistory: false, targetLogEntryID: nil)
     }
 
+    func speakSelectedTextFromMenuBar() {
+        guard let selectedText = SelectedTextReader.readFocusedSelection(promptForPermission: true) else {
+            store.userMessage = "Select text in another app, or allow AlkiSpeak in Accessibility settings."
+            return
+        }
+
+        speakExternalText(selectedText)
+    }
+
     func setAppMode(_ mode: AppMode) {
         guard mode != store.appMode else { return }
         store.appMode = mode

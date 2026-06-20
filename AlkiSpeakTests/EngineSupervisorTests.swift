@@ -279,6 +279,28 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     @MainActor
+    func testMenuBarSpeakSelectedTextUsesGeneralPasteboardFallback() async {
+        let localSpeech = FakeLocalSpeechSynthesizing()
+        let store = AppStore()
+        store.activeWorkspace.selectedVoiceID = "apple:test"
+        let model = AppModel(
+            store: store,
+            dependencies: .test(
+                engineSupervisor: FakeEngineSupervisor(),
+                localSpeechService: localSpeech
+            )
+        )
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("Fallback selected text.", forType: .string)
+
+        model.speakSelectedTextFromMenuBar()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(localSpeech.spokenTexts, ["Fallback selected text."])
+        XCTAssertEqual(store.composerText, "Fallback selected text.")
+    }
+
+    @MainActor
     func testFinishedPlaybackRetainsClipForReplayAndUnblocksSpeak() {
         let playback = FakePlaybackCoordinating()
         let store = AppStore()
