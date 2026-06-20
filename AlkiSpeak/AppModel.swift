@@ -17,6 +17,7 @@ final class AppModel: ObservableObject {
     private var queryResourceBefore: SystemResourceSnapshot = .empty
     private var resourceSamples: [SystemResourceSnapshot] = []
     private var resourceSamplingTask: Task<Void, Never>?
+    private var hasRequestedAccessibilityPrompt = false
 
     private func consoleTrace(_ message: String, function: StaticString = #function, line: UInt = #line) {
         NSLog("[Woadie][AppModel][\(function):\(line)] \(message)")
@@ -66,7 +67,7 @@ final class AppModel: ObservableObject {
     }
 
     var canEditText: Bool {
-        status.isAvailableForRemoteSpeech || isSelectedVoiceLocal
+        status.isAvailableForRemoteSpeech || isSelectedVoiceLocal || isSelectedVoiceEdge
     }
 
     var isEngineRunning: Bool {
@@ -133,10 +134,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var voiceCategories: [(title: String, voices: [VoiceOption])] {
-        voiceSections.map { (title: $0.title, voices: $0.voices) }
-    }
-
     /// Grouped voices for the dropdown: Favorites first, then per-source sections.
     var voiceSections: [VoiceGrouping.Section] {
         VoiceGrouping.sections(voices: voiceOptions, favorites: store.voiceFavorites)
@@ -185,6 +182,17 @@ final class AppModel: ObservableObject {
         selectedVoice.hasPrefix("apple:")
     }
 
+    /// Edge voices are reached over the network like Kokoro, but don't depend
+    /// on the local Kokoro engine being up — they should remain speakable even
+    /// while the engine is starting, stopped, or failed.
+    private var isSelectedVoiceEdge: Bool {
+        selectedVoice.hasPrefix(EdgeSpeechGenerationService.idPrefix)
+    }
+
+    private func remoteService(for voice: String) -> SpeechGenerating {
+        voice.hasPrefix(EdgeSpeechGenerationService.idPrefix) ? dependencies.edgeSpeechService : dependencies.generationService
+    }
+
     init(store: AppStore, dependencies: AppDependencies) {
         self.store = store
         self.dependencies = dependencies
@@ -205,6 +213,9 @@ final class AppModel: ObservableObject {
         if !AppConfig.isRunningUnitTests {
             consoleTrace("auto-starting engine from AppModel.init")
             startEngine()
+            // Edge voices don't depend on the Kokoro engine, so fetch them right
+            // away instead of waiting on waitForEngineReady().
+            Task { await fetchVoices() }
         } else {
             consoleTrace("unit test mode detected; skipping auto-start")
         }
@@ -361,19 +372,45 @@ final class AppModel: ObservableObject {
         }
         stopPlayback()
         inputText = trimmed
-        if !status.isProcessExpectedAlive && !dependencies.engineSupervisor.isRunning && !isSelectedVoiceLocal {
+        if !status.isProcessExpectedAlive && !dependencies.engineSupervisor.isRunning && !isSelectedVoiceLocal && !isSelectedVoiceEdge {
             startEngine()
         }
         speak(text: trimmed, addToHistory: false, targetLogEntryID: nil)
     }
 
     func speakSelectedTextFromMenuBar() {
-        guard let selectedText = SelectedTextReader.readFocusedSelection(promptForPermission: true) else {
-            store.userMessage = "Select text in another app, or allow AlkiSpeak in Accessibility settings."
+        // Check permission silently first. Never let the system prompt fire on this
+        // action path — when untrusted, macOS stacks a fresh dialog on every click,
+        // which is what produced the duplicate/repeated pop-ups.
+        guard SelectedTextReader.isAccessibilityTrusted else {
+            requestAccessibilityAccessOnce()
+            store.userMessage = "Allow AlkiSpeak under System Settings → Privacy & Security → Accessibility, then try again."
+            return
+        }
+
+        guard let selectedText = SelectedTextReader.readFocusedSelection() else {
+            store.userMessage = "Select text in another app first."
             return
         }
 
         speakExternalText(selectedText)
+    }
+
+    /// Fires the macOS Accessibility prompt at most once per app launch and opens
+    /// the relevant Settings pane. Repeated invocations are no-ops while still
+    /// untrusted, so rapid clicks can never stack multiple system dialogs.
+    private func requestAccessibilityAccessOnce() {
+        guard !hasRequestedAccessibilityPrompt else { return }
+        hasRequestedAccessibilityPrompt = true
+
+        let options = [
+            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+        ] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     func setAppMode(_ mode: AppMode) {
@@ -583,7 +620,7 @@ final class AppModel: ObservableObject {
                 await MainActor.run {
                     self.store.playback.statusMessage = waiting ? "Waiting for resources…" : nil
                 }
-            }) { [generationService = dependencies.generationService, clipStore = dependencies.clipStore, workspaceID = store.activeWorkspace.id] segment in
+            }) { [generationService = remoteService(for: voice), clipStore = dependencies.clipStore, workspaceID = store.activeWorkspace.id] segment in
                 let result = try await generationService.synthesize(
                     text: segment.text,
                     voice: voice,
@@ -687,18 +724,32 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Fetches the Kokoro and Edge voice lists independently — each is a
+    /// different network dependency (local engine vs. Microsoft's service),
+    /// so one being unreachable should not blank out the other's voices.
     private func fetchVoices() async {
+        consoleTrace("fetchVoices starting")
+        async let kokoroResult = fetchVoicesResult(from: dependencies.generationService, label: "kokoro")
+        async let edgeResult = fetchVoicesResult(from: dependencies.edgeSpeechService, label: "edge")
+        let (kokoro, edge) = await (kokoroResult, edgeResult)
+
+        var combined: [String] = []
+        if let kokoro { combined += kokoro }
+        if let edge { combined += edge }
+
+        consoleTrace("fetchVoices completed count=\(combined.count) voices=\(combined.joined(separator: ","))")
+        if combined.isEmpty {
+            store.userMessage = "Voice list empty. Using last voice."
+        }
+        mergeVoiceOptions(remote: combined)
+    }
+
+    private func fetchVoicesResult(from service: SpeechGenerating, label: String) async -> [String]? {
         do {
-            consoleTrace("fetchVoices starting")
-            let remote = try await dependencies.generationService.fetchVoices()
-            consoleTrace("fetchVoices succeeded count=\(remote.count) voices=\(remote.joined(separator: ","))")
-            if remote.isEmpty {
-                store.userMessage = "Voice list empty. Using last voice."
-            }
-            mergeVoiceOptions(remote: remote)
+            return try await service.fetchVoices()
         } catch {
-            consoleTrace("fetchVoices failed error=\(String(describing: error))")
-            record(normalizeEngineError(error))
+            consoleTrace("fetchVoices(\(label)) failed error=\(String(describing: error))")
+            return nil
         }
     }
 
@@ -720,8 +771,12 @@ final class AppModel: ObservableObject {
         {
             remoteIDs.append(selectedVoice)
         }
-        let remoteOptions = remoteIDs.map { name in
-            VoiceOption(id: name, label: "Kokoro - \(name)", source: .kokoro)
+        let remoteOptions = remoteIDs.map { id -> VoiceOption in
+            if id.hasPrefix(EdgeSpeechGenerationService.idPrefix) {
+                let name = EdgeSpeechGenerationService.stripPrefix(id)
+                return VoiceOption(id: id, label: "Edge - \(name)", source: .edge)
+            }
+            return VoiceOption(id: id, label: "Kokoro - \(id)", source: .kokoro)
         }
         store.voiceOptions = dependencies.localSpeechService.voiceOptions + remoteOptions
         if isSelectedVoiceLocal, let remoteDefault = remoteOptions.first(where: { $0.id == AppConfig.defaultVoice }) ?? remoteOptions.first {
@@ -1101,6 +1156,6 @@ final class AppModel: ObservableObject {
         let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return hasText
             && !store.playback.state.blocksNewSpeech
-            && (status.isAvailableForRemoteSpeech || isSelectedVoiceLocal)
+            && (status.isAvailableForRemoteSpeech || isSelectedVoiceLocal || isSelectedVoiceEdge)
     }
 }

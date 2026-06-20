@@ -42,7 +42,11 @@
 		A1000023 /* SpeechEntryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000023 /* SpeechEntryStore.swift */; };
 		A1000024 /* SystemResourceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000024 /* SystemResourceMonitor.swift */; };
 		A1000025 /* SelectedTextServiceProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000025 /* SelectedTextServiceProvider.swift */; };
+		A1000026 /* AlkiComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000026 /* AlkiComponents.swift */; };
+		A1000027 /* SettingsOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000027 /* SettingsOverlayView.swift */; };
 		B1000001 /* EngineSupervisorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001 /* EngineSupervisorTests.swift */; };
+		A1000028 /* EdgeSpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000028 /* EdgeSpeechService.swift */; };
+		B1000002 /* EdgeSpeechServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000003 /* EdgeSpeechServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -93,8 +97,12 @@
 		A2000023 /* SpeechEntryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechEntryStore.swift; sourceTree = "<group>"; };
 		A2000024 /* SystemResourceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemResourceMonitor.swift; sourceTree = "<group>"; };
 		A2000025 /* SelectedTextServiceProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectedTextServiceProvider.swift; sourceTree = "<group>"; };
+		A2000026 /* AlkiComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlkiComponents.swift; sourceTree = "<group>"; };
+		A2000027 /* SettingsOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsOverlayView.swift; sourceTree = "<group>"; };
 		B2000001 /* EngineSupervisorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineSupervisorTests.swift; sourceTree = "<group>"; };
 		B2000002 /* WoadieTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WoadieTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000028 /* EdgeSpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSpeechService.swift; sourceTree = "<group>"; };
+		B2000003 /* EdgeSpeechServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSpeechServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -142,6 +150,15 @@
 			path = AlkiSpeak;
 			sourceTree = "<group>";
 		};
+		A3000002 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A2000006 /* Woadie.app */,
+				B2000002 /* WoadieTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
 		A3000003 /* Views */ = {
 			isa = PBXGroup;
 			children = (
@@ -169,6 +186,7 @@
 				A200000B /* VoicePickerView.swift */,
 				A200000C /* WoadieTextEditor.swift */,
 				A200000D /* IconActionButton.swift */,
+				A2000026 /* AlkiComponents.swift */,
 			);
 			path = Components;
 			sourceTree = "<group>";
@@ -184,6 +202,7 @@
 				A2000013 /* SpeechLogView.swift */,
 				A2000014 /* SpeechLogItemView.swift */,
 				A2000015 /* WoadieFooter.swift */,
+				A2000027 /* SettingsOverlayView.swift */,
 			);
 			path = Sections;
 			sourceTree = "<group>";
@@ -217,6 +236,7 @@
 				A200001D /* AudioServices.swift */,
 				A2000024 /* SystemResourceMonitor.swift */,
 				A2000025 /* SelectedTextServiceProvider.swift */,
+				A2000028 /* EdgeSpeechService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -239,19 +259,11 @@
 			path = UI;
 			sourceTree = "<group>";
 		};
-		A3000002 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				A2000006 /* Woadie.app */,
-				B2000002 /* WoadieTests.xctest */,
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
 		B3000001 /* AlkiSpeakTests */ = {
 			isa = PBXGroup;
 			children = (
 				B2000001 /* EngineSupervisorTests.swift */,
+				B2000003 /* EdgeSpeechServiceTests.swift */,
 			);
 			path = AlkiSpeakTests;
 			sourceTree = "<group>";
@@ -384,6 +396,9 @@
 				A1000023 /* SpeechEntryStore.swift in Sources */,
 				A1000024 /* SystemResourceMonitor.swift in Sources */,
 				A1000025 /* SelectedTextServiceProvider.swift in Sources */,
+				A1000026 /* AlkiComponents.swift in Sources */,
+				A1000027 /* SettingsOverlayView.swift in Sources */,
+				A1000028 /* EdgeSpeechService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -392,6 +407,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B1000001 /* EngineSupervisorTests.swift in Sources */,
+				B1000002 /* EdgeSpeechServiceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -448,7 +464,7 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 5YMA9Q78K8;
 				ENABLE_TESTABILITY = YES;
 				INFOPLIST_FILE = AlkiSpeak/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Woadie GPT";
@@ -471,7 +487,7 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 5YMA9Q78K8;
 				INFOPLIST_FILE = AlkiSpeak/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Woadie GPT";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";

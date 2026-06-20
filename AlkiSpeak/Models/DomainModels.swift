@@ -471,9 +471,9 @@ struct SavedLogEntry: Identifiable, Codable, Hashable {
     }
 }
 
-/// Where a voice comes from. Edge and API are modeled now so the dropdown and
-/// app state can group them, but their synthesis paths are intentionally not
-/// wired up in this pass (`isSynthesisSupported == false`).
+/// Where a voice comes from. `api` is modeled now so the dropdown and app
+/// state can group it, but its synthesis path is intentionally not wired up
+/// in this pass (`isSynthesisSupported == false`).
 enum VoiceSource: String, Codable, Hashable, CaseIterable {
     case apple
     case kokoro
@@ -491,8 +491,8 @@ enum VoiceSource: String, Codable, Hashable, CaseIterable {
 
     var isSynthesisSupported: Bool {
         switch self {
-        case .apple, .kokoro: return true
-        case .edge, .api: return false
+        case .apple, .kokoro, .edge: return true
+        case .api: return false
         }
     }
 }
@@ -523,7 +523,9 @@ enum VoiceGrouping {
     static let favoritesSectionID = "favorites"
 
     /// Order in which provider sections appear after the synthetic Favorites group.
-    static let sourceOrder: [VoiceSource] = [.apple, .kokoro, .edge, .api]
+    /// Derived from `VoiceSource.allCases` so a newly added source automatically
+    /// gets its own section without needing a second list kept in sync.
+    static let sourceOrder: [VoiceSource] = VoiceSource.allCases
 
     struct Section: Identifiable, Hashable {
         let id: String

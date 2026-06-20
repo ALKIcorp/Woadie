@@ -114,6 +114,11 @@ private struct SpeechStatsView: View {
             stat("Audio file size", ByteCountFormatter.string(fromByteCount: entry.stats.fileSizeBytes, countStyle: .file))
             stat("CPU delta", String(format: "%.1f%%", entry.stats.resourceAfter.cpuPercent - entry.stats.resourceBefore.cpuPercent))
             stat("RAM delta", String(format: "%.1f MB", entry.stats.resourceAfter.ramUsedMB - entry.stats.resourceBefore.ramUsedMB))
+            if let usage = entry.stats.resourceUsage {
+                stat("CPU used avg", String(format: "%.0f%%", usage.averageCPUPercent))
+                stat("RAM used avg", String(format: "%.0f MB", usage.averageRAMUsedMB))
+                stat("RAM peak", String(format: "%.0f MB", usage.peakRAMUsedMB))
+            }
             stat("Character count", "\(entry.stats.characterCount)")
             stat("Segment count", "\(entry.stats.segmentCount)")
             stat("Voice", entry.voice)

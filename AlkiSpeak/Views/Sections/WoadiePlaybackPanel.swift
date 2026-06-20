@@ -27,25 +27,22 @@ struct WoadiePlaybackPanel: View {
                 Spacer(minLength: 8)
 
                 HStack {
-                    Button { model.skip(by: -10) } label: {
-                        Label("10", systemImage: "gobackward.10").labelStyle(.iconOnly)
+                    TransportButton(systemImage: "gobackward.10", isEnabled: model.canSkip(by: -10)) {
+                        model.skip(by: -10)
                     }
-                    .disabled(!model.canSkip(by: -10))
                     Spacer()
-                    WoadieCDControl(
-                        isPlaying: isPlaying,
+                    TransportButton(
+                        systemImage: isPlaying ? "pause.fill" : "play.fill",
+                        size: 30,
                         isEnabled: hasPlayableClip || isPlaying,
-                        onTogglePlayback: onTogglePlayback
+                        action: onTogglePlayback
                     )
-                    .frame(width: 72, height: 72)
+                    .help(isPlaying ? "Pause playback" : "Play cached audio")
                     Spacer()
-                    Button { model.skip(by: 10) } label: {
-                        Label("10", systemImage: "goforward.10").labelStyle(.iconOnly)
+                    TransportButton(systemImage: "goforward.10", isEnabled: model.canSkip(by: 10)) {
+                        model.skip(by: 10)
                     }
-                    .disabled(!model.canSkip(by: 10))
                 }
-                .buttonStyle(.plain)
-                .font(.system(size: 21, weight: .medium))
 
                 Spacer(minLength: 8)
                 ProgressiveScrubber(model: model)
@@ -58,10 +55,8 @@ struct WoadiePlaybackPanel: View {
                 .foregroundStyle(WoadieTheme.foregroundSubtle)
 
                 HStack(spacing: 8) {
-                    metric("CPU", value: model.store.dashboardTelemetry.resourceSnapshot.cpuPercent.map { String(format: "%.0f%%", $0) } ?? "-")
-                    metric("RAM", value: model.store.dashboardTelemetry.resourceSnapshot.memoryBytes.map {
-                        ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .memory)
-                    } ?? "-")
+                    metric("CPU USED AVG", value: model.lastQueryResourceUsage.map { String(format: "%.0f%%", $0.averageCPUPercent) } ?? "-")
+                    metric("RAM USED AVG", value: model.lastQueryResourceUsage.map { String(format: "%.0f MB", $0.averageRAMUsedMB) } ?? "-")
                 }
 
                 if let status = model.playback.statusMessage {
@@ -118,40 +113,3 @@ private struct ProgressiveScrubber: View {
     }
 }
 
-private struct WoadieCDControl: View {
-    let isPlaying: Bool
-    let isEnabled: Bool
-    let onTogglePlayback: () -> Void
-    @State private var rotation: Double = 0
-
-    var body: some View {
-        Button(action: onTogglePlayback) {
-            ZStack {
-                Circle()
-                    .fill(Color.primary)
-                Circle()
-                    .stroke(WoadieTheme.border, lineWidth: 2)
-
-                Circle()
-                    .stroke(WoadieTheme.primary.opacity(0.6), lineWidth: 3)
-                    .padding(6)
-                    .rotationEffect(.degrees(rotation))
-                    .animation(isPlaying ? .linear(duration: 3).repeatForever(autoreverses: false) : .default, value: rotation)
-
-                Circle()
-                    .fill(Color(nsColor: .windowBackgroundColor))
-                    .frame(width: 18, height: 18)
-
-                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Color(nsColor: .windowBackgroundColor))
-            }
-        }
-        .buttonStyle(.plain)
-        .disabled(!isEnabled)
-        .onAppear {
-            rotation = 360
-        }
-        .help(isPlaying ? "Pause playback" : "Play cached audio")
-    }
-}

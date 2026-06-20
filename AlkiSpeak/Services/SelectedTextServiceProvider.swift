@@ -1,8 +1,15 @@
 import AppKit
 
 enum SelectedTextReader {
-    static func readFocusedSelection(promptForPermission: Bool = false) -> String? {
-        if let text = readAccessibilitySelection(promptForPermission: promptForPermission) {
+    /// Whether the app currently holds Accessibility (AX) permission. This is a
+    /// pure check that never shows a system dialog, so it is safe to call on every
+    /// invocation. Triggering the permission prompt is handled separately and
+    /// deliberately (see `AppModel.requestAccessibilityAccessOnce`) so we never
+    /// stack duplicate dialogs on the hot path.
+    static var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
+
+    static func readFocusedSelection() -> String? {
+        if let text = readAccessibilitySelection() {
             return text
         }
 
@@ -11,11 +18,8 @@ enum SelectedTextReader {
             .nilIfEmpty
     }
 
-    private static func readAccessibilitySelection(promptForPermission: Bool) -> String? {
-        let options = [
-            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: promptForPermission
-        ] as CFDictionary
-        guard AXIsProcessTrustedWithOptions(options) else { return nil }
+    private static func readAccessibilitySelection() -> String? {
+        guard AXIsProcessTrusted() else { return nil }
 
         guard let frontmostApp = NSWorkspace.shared.frontmostApplication else { return nil }
         let appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier)

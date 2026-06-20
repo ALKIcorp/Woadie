@@ -4,6 +4,7 @@ import Foundation
 struct AppDependencies {
     let engineSupervisor: EngineSupervising
     let generationService: SpeechGenerating
+    let edgeSpeechService: SpeechGenerating
     let playbackCoordinator: PlaybackCoordinating
     let localSpeechService: LocalSpeechSynthesizing
     let telemetryService: TelemetryCapturing
@@ -18,6 +19,7 @@ struct AppDependencies {
         AppDependencies(
             engineSupervisor: EngineManager.shared,
             generationService: KokoroSpeechGenerationService(),
+            edgeSpeechService: EdgeSpeechGenerationService(),
             playbackCoordinator: AVAudioPlaybackCoordinator(),
             localSpeechService: AppleSpeechService(),
             telemetryService: ProcessTelemetryService(),

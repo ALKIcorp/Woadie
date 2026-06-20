@@ -531,6 +531,259 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertEqual(store.engineStatus, .starting)
         model.stopEngine()
     }
+
+    // MARK: Voice grouping, favorites, availability
+
+    func testVoiceGroupingProducesFavoritesAppleAndKokoroSections() {
+        let voices = [
+            VoiceOption(id: "apple:a", label: "Apple A", source: .apple),
+            VoiceOption(id: "af_heart", label: "Kokoro Heart", source: .kokoro),
+            VoiceOption(id: "af_sky", label: "Kokoro Sky", source: .kokoro),
+        ]
+
+        let sections = VoiceGrouping.sections(voices: voices, favorites: ["af_heart"])
+
+        XCTAssertEqual(sections.map(\.title), ["Favorites", "Apple", "Kokoro"])
+        XCTAssertEqual(sections.first?.voices.map(\.id), ["af_heart"])
+        XCTAssertEqual(sections.last?.voices.map(\.id), ["af_heart", "af_sky"])
+    }
+
+    func testVoiceGroupingOmitsFavoritesSectionWhenEmpty() {
+        let voices = [VoiceOption(id: "af_heart", label: "Heart", source: .kokoro)]
+
+        XCTAssertEqual(VoiceGrouping.sections(voices: voices, favorites: []).map(\.title), ["Kokoro"])
+    }
+
+    func testUnsupportedVoiceSourcesAreModeledButNotSynthesisReady() {
+        XCTAssertFalse(VoiceSource.api.isSynthesisSupported)
+        XCTAssertTrue(VoiceSource.apple.isSynthesisSupported)
+        XCTAssertTrue(VoiceSource.kokoro.isSynthesisSupported)
+        XCTAssertTrue(VoiceSource.edge.isSynthesisSupported)
+    }
+
+    func testSelectionPreservedWhenStillPresentEvenIfUnavailable() {
+        let voices = [
+            VoiceOption(id: "af_heart", label: "Heart", source: .kokoro, isAvailable: false),
+            VoiceOption(id: "apple:a", label: "A", source: .apple),
+        ]
+
+        XCTAssertEqual(VoiceSelection.resolved(current: "af_heart", in: voices, fallback: "x"), "af_heart")
+    }
+
+    func testSelectionFallsBackToFirstAvailableWhenMissing() {
+        let voices = [
+            VoiceOption(id: "edge:x", label: "Edge", source: .edge, isAvailable: false),
+            VoiceOption(id: "apple:a", label: "A", source: .apple, isAvailable: true),
+        ]
+
+        XCTAssertEqual(VoiceSelection.resolved(current: "gone", in: voices, fallback: "fb"), "apple:a")
+    }
+
+    func testSelectionFallsBackToDefaultWhenCatalogEmpty() {
+        XCTAssertEqual(VoiceSelection.resolved(current: "x", in: [], fallback: "af_heart"), "af_heart")
+    }
+
+    func testVoiceFavoritesPersistAcrossStores() {
+        let suite = "VoiceFavorites-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        VoiceFavoritesStore(defaults: defaults).save(["af_heart", "apple:a"])
+
+        XCTAssertEqual(VoiceFavoritesStore(defaults: defaults).load(), ["af_heart", "apple:a"])
+    }
+
+    // MARK: Query resource usage
+
+    func testQueryResourceUsageAveragesSamplesAndTracksPeak() {
+        let samples = [
+            SystemResourceSnapshot(cpuPercent: 20, ramUsedMB: 1000, ramAvailableMB: 0),
+            SystemResourceSnapshot(cpuPercent: 40, ramUsedMB: 1400, ramAvailableMB: 0),
+        ]
+
+        let usage = QueryResourceUsage(samples: samples)
+
+        XCTAssertEqual(usage?.sampleCount, 2)
+        XCTAssertEqual(usage?.averageCPUPercent ?? 0, 30, accuracy: 0.001)
+        XCTAssertEqual(usage?.averageRAMUsedMB ?? 0, 1200, accuracy: 0.001)
+        XCTAssertEqual(usage?.peakRAMUsedMB ?? 0, 1400, accuracy: 0.001)
+    }
+
+    func testQueryResourceUsageNilForEmptySamples() {
+        XCTAssertNil(QueryResourceUsage(samples: []))
+    }
+
+    func testLegacyQueryStatsDecodesWithoutResourceUsage() throws {
+        let json = """
+        {
+          "generationTimeSeconds": 1.5,
+          "fileSizeBytes": 2048,
+          "characterCount": 42,
+          "segmentCount": 2,
+          "resourceBefore": {"cpuPercent": 0, "ramUsedMB": 0, "ramAvailableMB": 0},
+          "resourceAfter": {"cpuPercent": 0, "ramUsedMB": 0, "ramAvailableMB": 0}
+        }
+        """.data(using: .utf8)!
+
+        let stats = try JSONDecoder().decode(QueryStats.self, from: json)
+
+        XCTAssertNil(stats.resourceUsage)
+        XCTAssertEqual(stats.characterCount, 42)
+        XCTAssertNil(stats.tokenCount)
+    }
+
+    // MARK: Playback tuning
+
+    func testPlaybackTuningClampsToRanges() {
+        let fast = PlaybackTuning(speed: 5, pitch: 99)
+        XCTAssertEqual(fast.speed, PlaybackTuning.speedRange.upperBound)
+        XCTAssertEqual(fast.pitch, PlaybackTuning.pitchRange.upperBound)
+
+        let slow = PlaybackTuning(speed: 0.1, pitch: -99)
+        XCTAssertEqual(slow.speed, PlaybackTuning.speedRange.lowerBound)
+        XCTAssertEqual(slow.pitch, PlaybackTuning.pitchRange.lowerBound)
+    }
+
+    func testPlaybackTuningDefaultIsNeutral() {
+        XCTAssertEqual(PlaybackTuning.default.speed, 1.0)
+        XCTAssertEqual(PlaybackTuning.default.pitch, 0)
+        XCTAssertTrue(PlaybackTuning.default.isDefault)
+    }
+
+    func testPlaybackTuningPersistsRoundTrip() {
+        let suite = "Tuning-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        PlaybackTuning(speed: 1.25, pitch: -3).save(to: defaults)
+        let loaded = PlaybackTuning.load(from: defaults)
+
+        XCTAssertEqual(loaded.speed, 1.25, accuracy: 0.0001)
+        XCTAssertEqual(loaded.pitch, -3, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testSetPlaybackSpeedClampsAndForwardsToCoordinator() {
+        let playback = FakePlaybackCoordinating()
+        let store = AppStore()
+        let model = AppModel(
+            store: store,
+            dependencies: .test(engineSupervisor: FakeEngineSupervisor(), playbackCoordinator: playback)
+        )
+
+        model.setPlaybackSpeed(5.0)
+
+        XCTAssertEqual(model.playbackTuning.speed, PlaybackTuning.speedRange.upperBound)
+        XCTAssertEqual(playback.lastTuning?.speed, PlaybackTuning.speedRange.upperBound)
+    }
+
+    func testPlaybackTuningDoesNotRewriteQueuedClipURLs() throws {
+        let url = try makeTestAudioFile(sampleRate: 24_000, duration: 0.2)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let coordinator = AVAudioPlaybackCoordinator()
+        coordinator.prepare(characterCounts: [30])
+        try coordinator.append(audioURL: url, segmentID: UUID(), index: 0)
+        let before = coordinator.queuedAudioURLs
+
+        coordinator.applyTuning(PlaybackTuning(speed: 1.5, pitch: 4))
+
+        XCTAssertEqual(coordinator.queuedAudioURLs, before)
+        XCTAssertEqual(coordinator.queuedAudioURLs, [url])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        coordinator.stop()
+    }
+
+    // MARK: Storage inventory
+
+    func testClipInventorySortsByEachField() {
+        let now = Date()
+        let items = [
+            ClipInventoryItem(id: UUID(), displayName: "Banana", text: "b", voice: "af_sky", model: "Kokoro", createdAt: now.addingTimeInterval(100), durationSeconds: 5, fileSizeBytes: 300, segmentRelativePaths: []),
+            ClipInventoryItem(id: UUID(), displayName: "apple", text: "a", voice: "af_heart", model: "Kokoro", createdAt: now, durationSeconds: 2, fileSizeBytes: 900, segmentRelativePaths: []),
+        ]
+
+        XCTAssertEqual(ClipInventory.sorted(items, by: .name).map(\.displayName), ["apple", "Banana"])
+        XCTAssertEqual(ClipInventory.sorted(items, by: .date).map(\.displayName), ["apple", "Banana"])
+        XCTAssertEqual(ClipInventory.sorted(items, by: .duration).map(\.displayName), ["apple", "Banana"])
+        XCTAssertEqual(ClipInventory.sorted(items, by: .voice).map(\.displayName), ["apple", "Banana"])
+        XCTAssertEqual(ClipInventory.sorted(items, by: .size).map(\.displayName), ["Banana", "apple"])
+        XCTAssertEqual(ClipInventory.sorted(items, by: .name, ascending: false).map(\.displayName), ["Banana", "apple"])
+    }
+
+    func testOrphanedClipPathsAreOnDiskButUnreferenced() {
+        let onDisk: Set<String> = ["a.wav", "b.wav", "c.wav"]
+        let referenced: Set<String> = ["b.wav"]
+
+        XCTAssertEqual(ClipInventory.orphanedClipPaths(onDisk: onDisk, referenced: referenced), ["a.wav", "c.wav"])
+    }
+
+    func testNoOrphansWhenAllReferenced() {
+        let paths: Set<String> = ["a.wav"]
+
+        XCTAssertTrue(ClipInventory.orphanedClipPaths(onDisk: paths, referenced: paths).isEmpty)
+    }
+
+    @MainActor
+    func testClipInventoryMapsEntriesUsingDisplayNameFallback() {
+        let entry = SpeechEntry(
+            textContent: "Hello world",
+            voice: "af_heart",
+            totalDurationSeconds: 3,
+            stats: QueryStats(
+                tokenCount: 1,
+                generationTimeSeconds: 0,
+                fileSizeBytes: 512,
+                characterCount: 11,
+                segmentCount: 1,
+                resourceBefore: .empty,
+                resourceAfter: .empty
+            )
+        )
+
+        let items = ClipInventory.items(from: [entry])
+
+        XCTAssertEqual(items.first?.displayName, "Hello world")
+        XCTAssertEqual(items.first?.fileSizeBytes, 512)
+    }
+
+    @MainActor
+    func testRenameUpdatesDisplayNameWithoutChangingText() throws {
+        let store = try SpeechEntryStore(
+            container: ModelContainer(
+                for: SpeechEntry.self,
+                configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+            )
+        )
+        let entry = SpeechEntry(textContent: "Original transcript", voice: "af_heart")
+        try store.insert(entry)
+
+        try store.rename(entry, to: "My Clip")
+        XCTAssertEqual(entry.displayName, "My Clip")
+        XCTAssertEqual(entry.textContent, "Original transcript")
+        XCTAssertEqual(entry.resolvedDisplayName, "My Clip")
+
+        try store.rename(entry, to: "   ")
+        XCTAssertNil(entry.displayName)
+        XCTAssertEqual(entry.resolvedDisplayName, "Original transcript")
+    }
+
+    @MainActor
+    func testDeleteRemovesEntryFromStore() throws {
+        let store = try SpeechEntryStore(
+            container: ModelContainer(
+                for: SpeechEntry.self,
+                configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+            )
+        )
+        let entry = SpeechEntry(textContent: "Delete me", voice: "af_heart")
+        try store.insert(entry)
+        XCTAssertEqual(try store.fetchAll().count, 1)
+
+        try store.delete(entry)
+
+        XCTAssertEqual(try store.fetchAll().count, 0)
+    }
 }
 
 private actor QueueRecorder {
@@ -597,12 +850,14 @@ private final class FakePlaybackCoordinating: PlaybackCoordinating {
     var onSnapshotChanged: ((PlaybackTransportSnapshot) -> Void)?
     var onFinished: (() -> Void)?
     private(set) var toggleCallCount = 0
+    private(set) var lastTuning: PlaybackTuning?
     func prepare(characterCounts: [Int]) {}
     func append(audioURL: URL, segmentID: UUID, index: Int) throws {}
     func finishEnqueuing() {}
     func seek(to globalTime: TimeInterval) -> Bool { false }
     func togglePlayback() { toggleCallCount += 1 }
     func stop() {}
+    func applyTuning(_ tuning: PlaybackTuning) { lastTuning = tuning }
 
     func finish() {
         onFinished?()
@@ -662,6 +917,7 @@ private extension AppDependencies {
         AppDependencies(
             engineSupervisor: engineSupervisor,
             generationService: FakeSpeechGenerating(),
+            edgeSpeechService: FakeSpeechGenerating(),
             playbackCoordinator: playbackCoordinator,
             localSpeechService: localSpeechService,
             telemetryService: FakeTelemetryCapturing(),

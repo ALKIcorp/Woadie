@@ -4,6 +4,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @State private var minimumContentHeight: CGFloat = 0
+    @State private var activeOverlay: AppOverlay?
 
     var body: some View {
         GeometryReader { proxy in
@@ -11,7 +12,11 @@ struct ContentView: View {
 
             AlkiGlassSurface(cornerRadius: 16) {
                 VStack(spacing: 12) {
-                    WoadieHeaderView(model: model)
+                    WoadieHeaderView(
+                        model: model,
+                        onOpenSettings: { activeOverlay = .settings },
+                        onOpenStorage: { activeOverlay = .storage }
+                    )
                     topControls
 
                     HStack(alignment: .top, spacing: 12) {
@@ -98,6 +103,27 @@ struct ContentView: View {
         } message: {
             Text("Port 7777 is already in use. Switch to this engine by stopping the existing service?")
         }
+        .overlay {
+            overlayContent
+        }
+    }
+
+    @ViewBuilder
+    private var overlayContent: some View {
+        switch activeOverlay {
+        case .settings:
+            SettingsOverlayView(
+                model: model,
+                onOpenStorage: { activeOverlay = .storage },
+                onClose: { activeOverlay = nil }
+            )
+            .zIndex(10)
+        case .storage:
+            StorageDashboardView(model: model, onClose: { activeOverlay = nil })
+                .zIndex(10)
+        case .none:
+            EmptyView()
+        }
     }
 
     private var topControls: some View {
@@ -136,7 +162,7 @@ struct ContentView: View {
                         .foregroundStyle(WoadieTheme.foregroundSubtle)
                 }
 
-                WoadieWaveformView(
+                VocalSignalView(
                     isActive: model.playback.state == .playing || model.playback.state == .preparing,
                     magnitudes: model.fftMagnitudes
                 )
@@ -149,8 +175,10 @@ struct ContentView: View {
                             set: { model.selectedVoice = $0 }
                         ),
                         selectedLabel: model.selectedVoiceLabel,
-                        categories: model.voiceCategories,
-                        onStep: model.cycleVoice
+                        sections: model.voiceSections,
+                        favorites: model.voiceFavorites,
+                        onStep: model.cycleVoice,
+                        onToggleFavorite: model.toggleFavorite
                     )
                     Spacer()
                     Text("48 KHZ - MONO - FFT LIVE")

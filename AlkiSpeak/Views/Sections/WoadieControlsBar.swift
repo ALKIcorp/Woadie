@@ -44,8 +44,10 @@ struct WoadieControlsBar: View {
                     set: { model.selectedVoice = $0 }
                 ),
                 selectedLabel: model.selectedVoiceLabel,
-                categories: model.voiceCategories,
-                onStep: model.cycleVoice
+                sections: model.voiceSections,
+                favorites: model.voiceFavorites,
+                onStep: model.cycleVoice,
+                onToggleFavorite: model.toggleFavorite
             )
         }
         .padding(12)
