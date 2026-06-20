@@ -9,11 +9,14 @@ final class AppModel: ObservableObject {
     private let dependencies: AppDependencies
     private let requestPolicy = EngineRequestPolicy.live
     private let ttsQueue = TTSQueue()
+    private let favoritesStore = VoiceFavoritesStore()
     private var cancellables: Set<AnyCancellable> = []
     private var engineStartTask: Task<Void, Never>?
     private var engineStartGeneration: UInt64 = 0
     private var queryStartedAt: ContinuousClock.Instant?
     private var queryResourceBefore: SystemResourceSnapshot = .empty
+    private var resourceSamples: [SystemResourceSnapshot] = []
+    private var resourceSamplingTask: Task<Void, Never>?
 
     private func consoleTrace(_ message: String, function: StaticString = #function, line: UInt = #line) {
         NSLog("[Woadie][AppModel][\(function):\(line)] \(message)")
@@ -131,17 +134,52 @@ final class AppModel: ObservableObject {
     }
 
     var voiceCategories: [(title: String, voices: [VoiceOption])] {
-        let local = voiceOptions.filter { $0.isLocal }
-        let remote = voiceOptions.filter { !$0.isLocal }
-        var categories: [(title: String, voices: [VoiceOption])] = []
-        if !local.isEmpty {
-            categories.append((title: "Apple", voices: local))
-        }
-        if !remote.isEmpty {
-            categories.append((title: "Kokoro", voices: remote))
-        }
-        return categories
+        voiceSections.map { (title: $0.title, voices: $0.voices) }
     }
+
+    /// Grouped voices for the dropdown: Favorites first, then per-source sections.
+    var voiceSections: [VoiceGrouping.Section] {
+        VoiceGrouping.sections(voices: voiceOptions, favorites: store.voiceFavorites)
+    }
+
+    var voiceFavorites: Set<String> { store.voiceFavorites }
+
+    func isFavorite(_ voiceID: String) -> Bool {
+        store.voiceFavorites.contains(voiceID)
+    }
+
+    func toggleFavorite(_ voiceID: String) {
+        if store.voiceFavorites.contains(voiceID) {
+            store.voiceFavorites.remove(voiceID)
+        } else {
+            store.voiceFavorites.insert(voiceID)
+        }
+        favoritesStore.save(store.voiceFavorites)
+    }
+
+    // MARK: Listen-only playback tuning
+
+    var playbackTuning: PlaybackTuning { store.playbackTuning }
+
+    func setPlaybackSpeed(_ speed: Double) {
+        applyTuning(store.playbackTuning.withSpeed(speed))
+    }
+
+    func setPlaybackPitch(_ pitch: Double) {
+        applyTuning(store.playbackTuning.withPitch(pitch))
+    }
+
+    func resetPlaybackTuning() {
+        applyTuning(.default)
+    }
+
+    private func applyTuning(_ tuning: PlaybackTuning) {
+        store.playbackTuning = tuning
+        tuning.save()
+        dependencies.playbackCoordinator.applyTuning(tuning)
+    }
+
+    var lastQueryResourceUsage: QueryResourceUsage? { store.lastQueryResourceUsage }
 
     private var isSelectedVoiceLocal: Bool {
         selectedVoice.hasPrefix("apple:")
@@ -505,6 +543,7 @@ final class AppModel: ObservableObject {
         store.speechJobs.insert(job, at: 0)
         queryStartedAt = ContinuousClock.now
         Task { queryResourceBefore = await SystemResourceMonitor.shared.snapshot() }
+        startResourceSampling()
         store.playback = PlaybackSnapshot(
             state: .preparing,
             activeJobID: job.id,
@@ -578,13 +617,16 @@ final class AppModel: ObservableObject {
             }
 
             dependencies.playbackCoordinator.finishEnqueuing()
+            finishResourceSampling()
             if self.isProMode && self.logMode == .auto, let job = self.store.speechJobs.first(where: { $0.id == jobID }) {
                 self.saveEntry(for: job)
             }
         } catch is CancellationError {
+            finishResourceSampling()
             updateJob(jobID, status: .cancelled, error: nil)
             store.playback = .idle
         } catch {
+            finishResourceSampling()
             let appError = normalizeGenerationError(error)
             failPlayback(jobID: jobID, logEntryID: logEntryID, error: appError)
         }
@@ -679,15 +721,17 @@ final class AppModel: ObservableObject {
             remoteIDs.append(selectedVoice)
         }
         let remoteOptions = remoteIDs.map { name in
-            VoiceOption(id: name, label: "Kokoro - \(name)", isLocal: false)
+            VoiceOption(id: name, label: "Kokoro - \(name)", source: .kokoro)
         }
         store.voiceOptions = dependencies.localSpeechService.voiceOptions + remoteOptions
         if isSelectedVoiceLocal, let remoteDefault = remoteOptions.first(where: { $0.id == AppConfig.defaultVoice }) ?? remoteOptions.first {
             selectedVoice = remoteDefault.id
         }
-        if !store.voiceOptions.contains(where: { $0.id == selectedVoice }) {
-            selectedVoice = store.voiceOptions.first?.id ?? AppConfig.defaultVoice
-        }
+        selectedVoice = VoiceSelection.resolved(
+            current: selectedVoice,
+            in: store.voiceOptions,
+            fallback: AppConfig.defaultVoice
+        )
         saveWorkspace()
     }
 
@@ -753,6 +797,7 @@ final class AppModel: ObservableObject {
     }
 
     private func finishPlayback() {
+        finishResourceSampling()
         markActiveJobsCompleted()
         store.playback.state = .stopped
         store.playback.elapsedTime = 0
@@ -854,6 +899,83 @@ final class AppModel: ObservableObject {
         )
     }
 
+    // MARK: Query resource sampling
+
+    private func startResourceSampling() {
+        resourceSamplingTask?.cancel()
+        resourceSamples = []
+        resourceSamplingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let snapshot = await SystemResourceMonitor.shared.snapshot()
+                await MainActor.run { self?.resourceSamples.append(snapshot) }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
+    }
+
+    @discardableResult
+    private func finishResourceSampling() -> QueryResourceUsage? {
+        resourceSamplingTask?.cancel()
+        resourceSamplingTask = nil
+        guard let usage = QueryResourceUsage(samples: resourceSamples) else { return nil }
+        store.lastQueryResourceUsage = usage
+        return usage
+    }
+
+    // MARK: Storage inventory
+
+    var clipInventory: [ClipInventoryItem] {
+        ClipInventory.items(from: store.speechEntries)
+    }
+
+    func sortedClipInventory(by field: ClipSortField, ascending: Bool) -> [ClipInventoryItem] {
+        ClipInventory.sorted(clipInventory, by: field, ascending: ascending)
+    }
+
+    var totalStorageBytes: Int64 {
+        ClipInventory.totalBytes(of: clipInventory)
+    }
+
+    func rename(_ entry: SpeechEntry, to displayName: String?) {
+        do {
+            try dependencies.speechEntryStore.rename(entry, to: displayName)
+            loadSpeechEntries()
+        } catch {
+            record(AlkiSpeakError(code: "persistence.log.rename", title: "Rename Failed", message: error.localizedDescription, recoverySuggestion: "Try again."))
+        }
+    }
+
+    func cleanupOrphanClips() {
+        do {
+            let removed = try dependencies.speechEntryStore.cleanupOrphanClips()
+            store.userMessage = removed == 0 ? "No orphaned clips found." : "Removed \(removed) orphaned clip\(removed == 1 ? "" : "s")."
+        } catch {
+            record(AlkiSpeakError(code: "persistence.clips.cleanup", title: "Cleanup Failed", message: error.localizedDescription, recoverySuggestion: "Try again."))
+        }
+    }
+
+    func openClipsFolder() {
+        guard let url = try? dependencies.speechEntryStore.clipsRootURL() else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    func showClipInFinder(_ item: ClipInventoryItem) {
+        let urls = item.segmentRelativePaths.compactMap { try? dependencies.speechEntryStore.absoluteURL(for: $0) }
+        guard !urls.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
+    }
+
+    func copyClipText(_ item: ClipInventoryItem) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(item.text, forType: .string)
+    }
+
+    func deleteClip(_ item: ClipInventoryItem) {
+        guard let entry = store.speechEntries.first(where: { $0.id == item.id }) else { return }
+        delete(entry)
+    }
+
     private func loadWorkspace() {
         do {
             if let workspace = try dependencies.workspaceStore.loadActiveWorkspace() {
@@ -881,6 +1003,9 @@ final class AppModel: ObservableObject {
         if let raw = UserDefaults.standard.string(forKey: "AlkiSpeak.logMode"), let mode = LogMode(rawValue: raw) {
             store.logMode = mode
         }
+        store.voiceFavorites = favoritesStore.load()
+        store.playbackTuning = PlaybackTuning.load()
+        dependencies.playbackCoordinator.applyTuning(store.playbackTuning)
     }
 
     private func loadSpeechEntries() {
@@ -919,7 +1044,8 @@ final class AppModel: ObservableObject {
                     characterCount: job.text.count,
                     segmentCount: job.segments.count,
                     resourceBefore: queryResourceBefore,
-                    resourceAfter: after
+                    resourceAfter: after,
+                    resourceUsage: store.lastQueryResourceUsage
                 ),
                 appMode: .pro
             )

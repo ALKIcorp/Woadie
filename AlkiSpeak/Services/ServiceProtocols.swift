@@ -43,6 +43,9 @@ protocol PlaybackCoordinating: AnyObject {
     func seek(to globalTime: TimeInterval) -> Bool
     func togglePlayback()
     func stop()
+    /// Applies listen-only speed/pitch to the live audio graph. Never rewrites
+    /// or re-encodes the generated clip files.
+    func applyTuning(_ tuning: PlaybackTuning)
 }
 
 struct PlaybackTransportSnapshot {

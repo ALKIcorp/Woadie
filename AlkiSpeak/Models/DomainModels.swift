@@ -471,10 +471,140 @@ struct SavedLogEntry: Identifiable, Codable, Hashable {
     }
 }
 
+/// Where a voice comes from. Edge and API are modeled now so the dropdown and
+/// app state can group them, but their synthesis paths are intentionally not
+/// wired up in this pass (`isSynthesisSupported == false`).
+enum VoiceSource: String, Codable, Hashable, CaseIterable {
+    case apple
+    case kokoro
+    case edge
+    case api
+
+    var title: String {
+        switch self {
+        case .apple: return "Apple"
+        case .kokoro: return "Kokoro"
+        case .edge: return "Edge"
+        case .api: return "Cloud API"
+        }
+    }
+
+    var isSynthesisSupported: Bool {
+        switch self {
+        case .apple, .kokoro: return true
+        case .edge, .api: return false
+        }
+    }
+}
+
 struct VoiceOption: Identifiable, Codable, Hashable {
     let id: String
     let label: String
-    let isLocal: Bool
+    let source: VoiceSource
+    let isAvailable: Bool
+
+    /// Apple voices synthesize locally; everything else routes through a server.
+    var isLocal: Bool { source == .apple }
+
+    init(id: String, label: String, source: VoiceSource, isAvailable: Bool = true) {
+        self.id = id
+        self.label = label
+        self.source = source
+        self.isAvailable = isAvailable
+    }
+
+    /// Convenience initializer preserving the original `isLocal` call sites.
+    init(id: String, label: String, isLocal: Bool) {
+        self.init(id: id, label: label, source: isLocal ? .apple : .kokoro, isAvailable: true)
+    }
+}
+
+enum VoiceGrouping {
+    static let favoritesSectionID = "favorites"
+
+    /// Order in which provider sections appear after the synthetic Favorites group.
+    static let sourceOrder: [VoiceSource] = [.apple, .kokoro, .edge, .api]
+
+    struct Section: Identifiable, Hashable {
+        let id: String
+        let title: String
+        let voices: [VoiceOption]
+    }
+
+    /// Builds the `Favorites`, then per-source sections. Favorited voices appear
+    /// both in the Favorites group and in their own provider section. Empty
+    /// sections are omitted so unsupported providers stay hidden until populated.
+    static func sections(voices: [VoiceOption], favorites: Set<String>) -> [Section] {
+        var result: [Section] = []
+        let favoriteVoices = voices.filter { favorites.contains($0.id) }
+        if !favoriteVoices.isEmpty {
+            result.append(Section(id: favoritesSectionID, title: "Favorites", voices: favoriteVoices))
+        }
+        for source in sourceOrder {
+            let group = voices.filter { $0.source == source }
+            if !group.isEmpty {
+                result.append(Section(id: source.rawValue, title: source.title, voices: group))
+            }
+        }
+        return result
+    }
+}
+
+enum VoiceSelection {
+    /// Preserves the user's current voice whenever it still exists in the catalog
+    /// — even if it is temporarily unavailable — so a transient empty voice list
+    /// never silently swaps the selection. Falls back to the first available
+    /// voice, then any voice, then the provided default.
+    static func resolved(current: String, in voices: [VoiceOption], fallback: String) -> String {
+        if voices.contains(where: { $0.id == current }) {
+            return current
+        }
+        if let firstAvailable = voices.first(where: { $0.isAvailable }) {
+            return firstAvailable.id
+        }
+        return voices.first?.id ?? fallback
+    }
+}
+
+/// Listen-only playback tuning. Applied to the audio graph so speed and pitch
+/// change what the user hears without ever rewriting the generated clips.
+struct PlaybackTuning: Codable, Hashable {
+    static let speedRange: ClosedRange<Double> = 0.65...1.75
+    static let pitchRange: ClosedRange<Double> = -6...6
+    static let `default` = PlaybackTuning(speed: 1.0, pitch: 0)
+
+    static let speedDefaultsKey = "AlkiSpeak.playback.speed"
+    static let pitchDefaultsKey = "AlkiSpeak.playback.pitch"
+
+    let speed: Double
+    let pitch: Double
+
+    init(speed: Double, pitch: Double) {
+        self.speed = PlaybackTuning.speedRange.clampingValue(speed)
+        self.pitch = PlaybackTuning.pitchRange.clampingValue(pitch)
+    }
+
+    var isDefault: Bool { self == PlaybackTuning.default }
+
+    func withSpeed(_ value: Double) -> PlaybackTuning { PlaybackTuning(speed: value, pitch: pitch) }
+    func withPitch(_ value: Double) -> PlaybackTuning { PlaybackTuning(speed: speed, pitch: value) }
+
+    static func load(from defaults: UserDefaults = .standard) -> PlaybackTuning {
+        let speed = defaults.object(forKey: speedDefaultsKey) as? Double ?? PlaybackTuning.default.speed
+        let pitch = defaults.object(forKey: pitchDefaultsKey) as? Double ?? PlaybackTuning.default.pitch
+        return PlaybackTuning(speed: speed, pitch: pitch)
+    }
+
+    func save(to defaults: UserDefaults = .standard) {
+        defaults.set(speed, forKey: PlaybackTuning.speedDefaultsKey)
+        defaults.set(pitch, forKey: PlaybackTuning.pitchDefaultsKey)
+    }
+}
+
+extension ClosedRange where Bound == Double {
+    func clampingValue(_ value: Bound) -> Bound {
+        Swift.min(Swift.max(value, lowerBound), upperBound)
+    }
 }
 
 struct DashboardTelemetry: Codable, Hashable {

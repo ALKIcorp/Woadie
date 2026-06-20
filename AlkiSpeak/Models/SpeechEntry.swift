@@ -9,6 +9,9 @@ struct QueryStats: Codable, Hashable {
     var segmentCount: Int
     var resourceBefore: SystemResourceSnapshot
     var resourceAfter: SystemResourceSnapshot
+    /// Averaged CPU/RAM usage sampled across the whole query. Optional so older
+    /// persisted stats (written before this field existed) keep decoding.
+    var resourceUsage: QueryResourceUsage?
 
     static let empty = QueryStats(
         tokenCount: nil,
@@ -19,6 +22,61 @@ struct QueryStats: Codable, Hashable {
         resourceBefore: .empty,
         resourceAfter: .empty
     )
+
+    init(
+        tokenCount: Int?,
+        generationTimeSeconds: Double,
+        fileSizeBytes: Int64,
+        characterCount: Int,
+        segmentCount: Int,
+        resourceBefore: SystemResourceSnapshot,
+        resourceAfter: SystemResourceSnapshot,
+        resourceUsage: QueryResourceUsage? = nil
+    ) {
+        self.tokenCount = tokenCount
+        self.generationTimeSeconds = generationTimeSeconds
+        self.fileSizeBytes = fileSizeBytes
+        self.characterCount = characterCount
+        self.segmentCount = segmentCount
+        self.resourceBefore = resourceBefore
+        self.resourceAfter = resourceAfter
+        self.resourceUsage = resourceUsage
+    }
+}
+
+/// Query-wide CPU/RAM averages used by the playback panel tiles and the stats card.
+struct QueryResourceUsage: Codable, Hashable {
+    var sampleCount: Int
+    var averageCPUPercent: Double
+    var averageRAMUsedMB: Double
+    var peakRAMUsedMB: Double
+
+    static let empty = QueryResourceUsage(
+        sampleCount: 0,
+        averageCPUPercent: 0,
+        averageRAMUsedMB: 0,
+        peakRAMUsedMB: 0
+    )
+
+    init(sampleCount: Int, averageCPUPercent: Double, averageRAMUsedMB: Double, peakRAMUsedMB: Double) {
+        self.sampleCount = sampleCount
+        self.averageCPUPercent = averageCPUPercent
+        self.averageRAMUsedMB = averageRAMUsedMB
+        self.peakRAMUsedMB = peakRAMUsedMB
+    }
+
+    /// Averages a series of resource samples taken during a query. Returns `nil`
+    /// when no samples were collected so callers can leave usage unset.
+    init?(samples: [SystemResourceSnapshot]) {
+        guard !samples.isEmpty else { return nil }
+        let count = Double(samples.count)
+        self.init(
+            sampleCount: samples.count,
+            averageCPUPercent: samples.reduce(0) { $0 + $1.cpuPercent } / count,
+            averageRAMUsedMB: samples.reduce(0) { $0 + $1.ramUsedMB } / count,
+            peakRAMUsedMB: samples.map(\.ramUsedMB).max() ?? 0
+        )
+    }
 }
 
 struct SystemResourceSnapshot: Codable, Hashable {
@@ -41,6 +99,9 @@ final class SpeechEntry {
     var totalDurationSeconds: Double
     var stats: QueryStats
     var appMode: AppMode
+    /// Optional user-facing name for storage/rename. Falls back to `textContent`
+    /// for display; renaming never mutates the transcript text.
+    var displayName: String?
 
     init(
         id: UUID = UUID(),
@@ -52,7 +113,8 @@ final class SpeechEntry {
         segmentDurations: [Double] = [],
         totalDurationSeconds: Double = 0,
         stats: QueryStats = .empty,
-        appMode: AppMode = .pro
+        appMode: AppMode = .pro,
+        displayName: String? = nil
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -64,6 +126,15 @@ final class SpeechEntry {
         self.totalDurationSeconds = totalDurationSeconds
         self.stats = stats
         self.appMode = appMode
+        self.displayName = displayName
+    }
+
+    /// Name to show in storage views, falling back to the transcript text.
+    var resolvedDisplayName: String {
+        if let displayName, !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return displayName
+        }
+        return textContent
     }
 }
 

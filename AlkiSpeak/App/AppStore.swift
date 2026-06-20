@@ -19,6 +19,9 @@ final class AppStore: ObservableObject {
     @Published var savedLogEntries: [SavedLogEntry] = []
     @Published var speechEntries: [SpeechEntry] = []
     @Published var voiceOptions: [VoiceOption] = []
+    @Published var voiceFavorites: Set<String> = []
+    @Published var playbackTuning: PlaybackTuning = .default
+    @Published var lastQueryResourceUsage: QueryResourceUsage?
     @Published var composerText: String = ""
     @Published var userMessage: String = ""
     @Published var lastError: AlkiSpeakError?

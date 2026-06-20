@@ -151,6 +151,105 @@ final class SpeechEntryArchiveService {
     }()
 }
 
+/// Persists the set of favorited voice IDs. Backed by `UserDefaults` so favorites
+/// survive relaunch and can be reused by every voice surface.
+final class VoiceFavoritesStore {
+    static let defaultsKey = "AlkiSpeak.voiceFavorites"
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func load() -> Set<String> {
+        Set(defaults.stringArray(forKey: Self.defaultsKey) ?? [])
+    }
+
+    func save(_ favorites: Set<String>) {
+        defaults.set(favorites.sorted(), forKey: Self.defaultsKey)
+    }
+}
+
+/// A single saved clip row for the storage dashboard.
+struct ClipInventoryItem: Identifiable, Hashable {
+    let id: UUID
+    let displayName: String
+    let text: String
+    let voice: String
+    let model: String
+    let createdAt: Date
+    let durationSeconds: Double
+    let fileSizeBytes: Int64
+    let segmentRelativePaths: [String]
+}
+
+enum ClipSortField: String, CaseIterable, Identifiable {
+    case name
+    case date
+    case duration
+    case voice
+    case size
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .name: return "Name"
+        case .date: return "Date"
+        case .duration: return "Duration"
+        case .voice: return "Voice"
+        case .size: return "Size"
+        }
+    }
+}
+
+/// Pure helpers that turn saved entries into sortable rows and reason about
+/// orphaned clip files. Kept free of view code so storage logic stays testable.
+enum ClipInventory {
+    @MainActor
+    static func items(from entries: [SpeechEntry]) -> [ClipInventoryItem] {
+        entries.map { entry in
+            ClipInventoryItem(
+                id: entry.id,
+                displayName: entry.resolvedDisplayName,
+                text: entry.textContent,
+                voice: entry.voice,
+                model: entry.model,
+                createdAt: entry.createdAt,
+                durationSeconds: entry.totalDurationSeconds,
+                fileSizeBytes: entry.stats.fileSizeBytes,
+                segmentRelativePaths: entry.segmentRelativePaths
+            )
+        }
+    }
+
+    static func sorted(_ items: [ClipInventoryItem], by field: ClipSortField, ascending: Bool = true) -> [ClipInventoryItem] {
+        let ordered: [ClipInventoryItem]
+        switch field {
+        case .name:
+            ordered = items.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        case .date:
+            ordered = items.sorted { $0.createdAt < $1.createdAt }
+        case .duration:
+            ordered = items.sorted { $0.durationSeconds < $1.durationSeconds }
+        case .voice:
+            ordered = items.sorted { $0.voice.localizedCaseInsensitiveCompare($1.voice) == .orderedAscending }
+        case .size:
+            ordered = items.sorted { $0.fileSizeBytes < $1.fileSizeBytes }
+        }
+        return ascending ? ordered : ordered.reversed()
+    }
+
+    /// Clips physically on disk that no saved entry references — safe to delete.
+    static func orphanedClipPaths(onDisk: Set<String>, referenced: Set<String>) -> [String] {
+        onDisk.subtracting(referenced).sorted()
+    }
+
+    static func totalBytes(of items: [ClipInventoryItem]) -> Int64 {
+        items.reduce(0) { $0 + $1.fileSizeBytes }
+    }
+}
+
 final class UserDefaultsWorkspaceStore: ActiveWorkspacePersisting {
     private let key = "AlkiSpeak.activeWorkspace"
     private let defaults: UserDefaults

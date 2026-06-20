@@ -2,44 +2,43 @@ import AVFoundation
 import Accelerate
 import Foundation
 
+/// Audio playback built on `AVAudioEngine` so listen-only speed/pitch tuning can
+/// be applied live through an `AVAudioUnitTimePitch`. Generated clip files are
+/// only ever read — tuning never re-encodes or rewrites them.
 final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
     var onSnapshotChanged: ((PlaybackTransportSnapshot) -> Void)?
     var onFinished: (() -> Void)?
     private(set) var fftMagnitudes = Array(repeating: Float.zero, count: 128)
-    private let player = AVQueuePlayer()
-    private var analysisEngine: AVAudioEngine?
-    private var analysisNode: AVAudioPlayerNode?
-    private var timeline = PlaybackTimeline(segmentCharacterCounts: [])
+
+    private let engine = AVAudioEngine()
+    private let player = AVAudioPlayerNode()
+    private let timePitch = AVAudioUnitTimePitch()
+    private var graphReady = false
+
     private struct QueueEntry {
         let id: UUID
         let url: URL
-        var item: AVPlayerItem
+        let index: Int
+        let frameLength: AVAudioFramePosition
+        let sampleRate: Double
     }
 
     private var entries: [QueueEntry] = []
+    private var timeline = PlaybackTimeline(segmentCharacterCounts: [])
     private var expectedFormat: (sampleRate: Double, channels: AVAudioChannelCount)?
-    private var timeObserver: Any?
-    private var endObserver: NSObjectProtocol?
     private var allSegmentsEnqueued = false
-    private var analysisFile: AVAudioFile?
+    private var completedSegmentIDs: Set<UUID> = []
+    /// Source-time offset for the current play/seek session. `player`'s sample
+    /// time resets to 0 on each `play()` after a `stop()`, so this carries any
+    /// seek target forward when computing elapsed time.
+    private var baseOffsetSeconds: TimeInterval = 0
+    private var scheduleGeneration: UInt64 = 0
+    private var isPaused = false
+    private var tuning: PlaybackTuning = .default
 
-    override init() {
-        super.init()
-        timeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600),
-            queue: .main
-        ) { [weak self] _ in self?.publish() }
-        endObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: nil,
-            queue: .main
-        ) { [weak self] note in self?.itemEnded(note.object as? AVPlayerItem) }
-    }
-
-    deinit {
-        if let timeObserver { player.removeTimeObserver(timeObserver) }
-        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
-    }
+    /// URLs of every clip currently queued, in order. Used to assert that tuning
+    /// changes never alter the underlying generated files.
+    var queuedAudioURLs: [URL] { entries.map(\.url) }
 
     func prepare(characterCounts: [Int]) {
         stop()
@@ -49,7 +48,6 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
     }
 
     func append(audioURL: URL, segmentID: UUID, index: Int) throws {
-        setupAnalysisIfNeeded()
         let file = try AVAudioFile(forReading: audioURL)
         let format = file.processingFormat
         if let expectedFormat,
@@ -63,16 +61,27 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
             )
         }
         expectedFormat = (format.sampleRate, format.channelCount)
+        setupGraphIfNeeded(format: format)
+
         let duration = Double(file.length) / format.sampleRate
         timeline.markReady(index: index, duration: duration)
-        let item = AVPlayerItem(url: audioURL)
-        entries.append(QueueEntry(id: segmentID, url: audioURL, item: item))
-        let queueWasEmpty = player.currentItem == nil
-        player.insert(item, after: nil)
-        if entries.count == 1 || queueWasEmpty {
-            startAnalysis(url: audioURL)
+        let entry = QueueEntry(
+            id: segmentID,
+            url: audioURL,
+            index: index,
+            frameLength: file.length,
+            sampleRate: format.sampleRate
+        )
+        let wasEmpty = entries.isEmpty
+        entries.append(entry)
+
+        if wasEmpty {
+            baseOffsetSeconds = 0
+            isPaused = false
+            startEngineIfNeeded()
             player.play()
         }
+        scheduleFile(file, for: entry)
         publish(state: .playing)
     }
 
@@ -85,86 +94,132 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         guard let location = timeline.location(for: globalTime),
               entries.indices.contains(location.segmentIndex)
         else { return false }
-        let wasPlaying = player.rate != 0
-        player.removeAllItems()
-        for index in location.segmentIndex..<entries.count {
-            let item = AVPlayerItem(url: entries[index].url)
-            entries[index].item = item
-            player.insert(item, after: nil)
-        }
-        player.seek(to: CMTime(seconds: location.localTime, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
-        startAnalysis(url: entries[location.segmentIndex].url, at: location.localTime)
+        let wasPlaying = player.isPlaying && !isPaused
+
+        scheduleGeneration &+= 1
+        player.stop()
+        baseOffsetSeconds = timeline.globalTime(segmentIndex: location.segmentIndex, localTime: location.localTime)
+        completedSegmentIDs = Set(entries.prefix(location.segmentIndex).map(\.id))
+        isPaused = !wasPlaying
+
+        startEngineIfNeeded()
         if wasPlaying { player.play() }
+        for offset in location.segmentIndex..<entries.count {
+            let entry = entries[offset]
+            guard let file = try? AVAudioFile(forReading: entry.url) else { continue }
+            let startFrame = offset == location.segmentIndex
+                ? AVAudioFramePosition(min(location.localTime * entry.sampleRate, Double(entry.frameLength)))
+                : 0
+            scheduleFile(file, for: entry, startingFrame: startFrame)
+        }
         publish(state: wasPlaying ? .playing : .paused)
         return true
     }
 
     func togglePlayback() {
-        if player.rate != 0 {
+        if player.isPlaying && !isPaused {
             player.pause()
-            analysisNode?.pause()
+            isPaused = true
             publish(state: .paused)
             return
         }
 
-        if player.currentItem == nil {
-            rebuildQueue()
-            guard let first = entries.first else { return }
-            startAnalysis(url: first.url)
-        } else {
-            let index = entries.firstIndex(where: { $0.item === player.currentItem }) ?? 0
-            if entries.indices.contains(index) {
-                startAnalysis(url: entries[index].url, at: max(0, player.currentTime().seconds))
-            }
+        if entries.isEmpty { return }
+        if isPaused {
+            startEngineIfNeeded()
+            player.play()
+            isPaused = false
+            publish(state: .playing)
+            return
         }
+        // Finished previously — replay from the start.
+        _ = seek(to: 0)
+        startEngineIfNeeded()
         player.play()
+        isPaused = false
         publish(state: .playing)
     }
 
     func stop() {
-        player.pause()
-        player.removeAllItems()
-        analysisNode?.stop()
+        scheduleGeneration &+= 1
+        player.stop()
+        if engine.isRunning { engine.pause() }
         entries.removeAll()
+        completedSegmentIDs.removeAll()
         expectedFormat = nil
+        allSegmentsEnqueued = false
+        isPaused = false
+        baseOffsetSeconds = 0
         fftMagnitudes = Array(repeating: 0, count: 128)
     }
 
-    private func itemEnded(_ item: AVPlayerItem?) {
-        guard let item, let index = entries.firstIndex(where: { $0.item === item }) else { return }
-        if entries.indices.contains(index + 1) {
-            startAnalysis(url: entries[index + 1].url)
-        } else if allSegmentsEnqueued {
+    func applyTuning(_ tuning: PlaybackTuning) {
+        self.tuning = tuning
+        // `rate` is the time-stretch factor (speed); `pitch` is in cents, so a
+        // semitone is 100 cents. Both are applied live without touching clips.
+        timePitch.rate = Float(tuning.speed)
+        timePitch.pitch = Float(tuning.pitch * 100)
+    }
+
+    private func scheduleFile(_ file: AVAudioFile, for entry: QueueEntry, startingFrame: AVAudioFramePosition = 0) {
+        let generation = scheduleGeneration
+        let frames = AVAudioFrameCount(max(0, file.length - startingFrame))
+        guard frames > 0 else {
+            handleSegmentCompletion(entry.id, generation: generation)
+            return
+        }
+        if startingFrame > 0 {
+            player.scheduleSegment(
+                file,
+                startingFrame: startingFrame,
+                frameCount: frames,
+                at: nil,
+                completionCallbackType: .dataPlayedBack
+            ) { [weak self] _ in
+                DispatchQueue.main.async { self?.handleSegmentCompletion(entry.id, generation: generation) }
+            }
+        } else {
+            player.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                DispatchQueue.main.async { self?.handleSegmentCompletion(entry.id, generation: generation) }
+            }
+        }
+    }
+
+    private func handleSegmentCompletion(_ segmentID: UUID, generation: UInt64) {
+        guard generation == scheduleGeneration else { return }
+        completedSegmentIDs.insert(segmentID)
+        if allSegmentsEnqueued, completedSegmentIDs.count >= entries.count {
             complete()
         }
     }
 
     private func complete() {
-        analysisNode?.stop()
+        scheduleGeneration &+= 1
+        player.stop()
+        isPaused = false
         publish(state: .stopped)
         onFinished?()
     }
 
-    private func rebuildQueue() {
-        player.removeAllItems()
-        for index in entries.indices {
-            let item = AVPlayerItem(url: entries[index].url)
-            entries[index].item = item
-            player.insert(item, after: nil)
-        }
-        player.seek(to: .zero)
+    private func currentElapsed() -> TimeInterval {
+        guard player.isPlaying || isPaused,
+              let nodeTime = player.lastRenderTime,
+              let playerTime = player.playerTime(forNodeTime: nodeTime),
+              playerTime.sampleRate > 0
+        else { return min(baseOffsetSeconds, timeline.bufferedDuration) }
+        let played = Double(playerTime.sampleTime) / playerTime.sampleRate
+        return baseOffsetSeconds + max(0, played)
     }
 
     private func publish(state: PlaybackSnapshot.State? = nil) {
-        let currentItem = player.currentItem
-        let index = currentItem.flatMap { item in entries.firstIndex(where: { $0.item === item }) } ?? 0
-        let local = max(0, player.currentTime().seconds.isFinite ? player.currentTime().seconds : 0)
-        let elapsed = timeline.globalTime(segmentIndex: index, localTime: local)
+        let elapsed = min(currentElapsed(), timeline.bufferedDuration)
+        let index = timeline.location(for: elapsed)?.segmentIndex ?? 0
+        let resolvedState = state ?? (isPaused ? .paused : (player.isPlaying ? .playing : .stopped))
         onSnapshotChanged?(
             PlaybackTransportSnapshot(
-                state: state ?? (player.rate == 0 ? .paused : .playing),
+                state: resolvedState,
                 currentSegmentID: entries.indices.contains(index) ? entries[index].id : nil,
-                elapsedTime: min(elapsed, timeline.bufferedDuration),
+                elapsedTime: elapsed,
                 bufferedDuration: timeline.bufferedDuration,
                 totalDuration: timeline.totalDuration,
                 fftMagnitudes: fftMagnitudes
@@ -172,19 +227,26 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         )
     }
 
-    private func startAnalysis(url: URL, at seconds: TimeInterval = 0) {
-        guard let analysisNode else { return }
-        analysisNode.stop()
-        guard let file = try? AVAudioFile(forReading: url) else { return }
-        analysisFile = file
-        file.framePosition = min(AVAudioFramePosition(seconds * file.processingFormat.sampleRate), file.length)
-        analysisNode.scheduleFile(file, at: nil)
-        analysisNode.play()
+    private func startEngineIfNeeded() {
+        guard graphReady, !engine.isRunning else { return }
+        engine.prepare()
+        try? engine.start()
+    }
+
+    private func setupGraphIfNeeded(format: AVAudioFormat) {
+        guard !graphReady else { return }
+        engine.attach(player)
+        engine.attach(timePitch)
+        engine.connect(player, to: timePitch, format: format)
+        engine.connect(timePitch, to: engine.mainMixerNode, format: format)
+        applyTuning(tuning)
+        installAnalysisTap()
+        graphReady = true
+        startEngineIfNeeded()
     }
 
     private func installAnalysisTap() {
-        guard let analysisEngine else { return }
-        analysisEngine.mainMixerNode.installTap(
+        engine.mainMixerNode.installTap(
             onBus: 0,
             bufferSize: 1024,
             format: nil
@@ -223,19 +285,6 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
                 }
             }
         }
-    }
-
-    private func setupAnalysisIfNeeded() {
-        guard analysisEngine == nil else { return }
-        let engine = AVAudioEngine()
-        let node = AVAudioPlayerNode()
-        analysisEngine = engine
-        analysisNode = node
-        engine.attach(node)
-        engine.connect(node, to: engine.mainMixerNode, format: nil)
-        engine.mainMixerNode.outputVolume = 0
-        installAnalysisTap()
-        try? engine.start()
     }
 }
 

@@ -36,6 +36,14 @@ final class SpeechEntryStore {
         try context.save()
     }
 
+    /// Renames a saved entry's display name without touching its transcript text.
+    /// An empty/whitespace name clears the override so it falls back to the text.
+    func rename(_ entry: SpeechEntry, to displayName: String?) throws {
+        let trimmed = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        entry.displayName = (trimmed?.isEmpty == false) ? trimmed : nil
+        try context.save()
+    }
+
     func delete(_ entry: SpeechEntry) throws {
         for path in entry.segmentRelativePaths {
             let url = try absoluteURL(for: path)
@@ -106,6 +114,46 @@ final class SpeechEntryStore {
             }
         }
         return migrated
+    }
+
+    /// Root folder that holds generated/imported clips, created on demand.
+    func clipsRootURL() throws -> URL {
+        let directory = try applicationSupportDirectory().appendingPathComponent("Woadie", isDirectory: true)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    /// Relative paths of every `.wav` clip currently on disk under `Woadie/`.
+    func clipsOnDisk() throws -> Set<String> {
+        let root = try clipsRootURL()
+        let base = try applicationSupportDirectory().standardizedFileURL.path
+        guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: nil) else {
+            return []
+        }
+        var paths: Set<String> = []
+        for case let url as URL in enumerator where url.pathExtension.lowercased() == "wav" {
+            let path = url.standardizedFileURL.path
+            if path.hasPrefix(base + "/") {
+                paths.insert(String(path.dropFirst(base.count + 1)))
+            }
+        }
+        return paths
+    }
+
+    /// Deletes clip files that no saved entry references. Returns the count removed.
+    @discardableResult
+    func cleanupOrphanClips() throws -> Int {
+        let referenced = Set(try fetchAll().flatMap { $0.segmentRelativePaths })
+        let orphans = ClipInventory.orphanedClipPaths(onDisk: try clipsOnDisk(), referenced: referenced)
+        var removed = 0
+        for path in orphans {
+            let url = try absoluteURL(for: path)
+            if fileManager.fileExists(atPath: url.path) {
+                try fileManager.removeItem(at: url)
+                removed += 1
+            }
+        }
+        return removed
     }
 
     private func fileSize(paths: [String]) -> Int64 {
