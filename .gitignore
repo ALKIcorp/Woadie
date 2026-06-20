@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+
+# Xcode user state & build output
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad
+build/
+DerivedData/
+.derived/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode misc
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.xcscmblueprint
+*.xccheckout
+
+# Generated pet/asset runs
+hatch-pet-runs/

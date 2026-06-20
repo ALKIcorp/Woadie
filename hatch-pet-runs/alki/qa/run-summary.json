@@ -1,9 +1,0 @@
-{
-  "ok": true,
-  "run_dir": "/Users/alkicorp/Library/CloudStorage/GoogleDrive-alkibiades.corp@gmail.com/My Drive/ALKI Corp Dev/tts/kokoro/AlkiSpeak/hatch-pet-runs/alki",
-  "spritesheet": "/Users/alkicorp/Library/CloudStorage/GoogleDrive-alkibiades.corp@gmail.com/My Drive/ALKI Corp Dev/tts/kokoro/AlkiSpeak/hatch-pet-runs/alki/final/spritesheet.webp",
-  "validation": "/Users/alkicorp/Library/CloudStorage/GoogleDrive-alkibiades.corp@gmail.com/My Drive/ALKI Corp Dev/tts/kokoro/AlkiSpeak/hatch-pet-runs/alki/final/validation.json",
-  "contact_sheet": "/Users/alkicorp/Library/CloudStorage/GoogleDrive-alkibiades.corp@gmail.com/My Drive/ALKI Corp Dev/tts/kokoro/AlkiSpeak/hatch-pet-runs/alki/qa/contact-sheet.png",
-  "review": "/Users/alkicorp/Library/CloudStorage/GoogleDrive-alkibiades.corp@gmail.com/My Drive/ALKI Corp Dev/tts/kokoro/AlkiSpeak/hatch-pet-runs/alki/qa/review.json",
-  "package": "/Users/alkicorp/.codex/pets/alki"
-}
