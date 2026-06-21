@@ -60,15 +60,19 @@ struct SpeechLogItemView: View {
                 IconActionButton(systemImage: copied ? "checkmark" : "doc.on.doc") {
                     copyToClipboard()
                 }
+                .help(copied ? "Copied" : "Copy text")
                 IconActionButton(systemImage: "arrow.uturn.left") {
                     onReinsert()
                 }
+                .help("Load into playback")
                 IconActionButton(systemImage: "chart.bar.doc.horizontal") {
                     showStats = true
                 }
+                .help("View stats")
                 IconActionButton(systemImage: "arrow.down.left.and.arrow.up.right") {
                     confirmOpen = true
                 }
+                .help("Open in workspace")
             }
             .opacity(isHovered ? 1 : 0)
             .padding(10)

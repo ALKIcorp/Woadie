@@ -7,6 +7,19 @@ struct WoadieTextEditor: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                TextEditor(text: .constant(placeholder))
+                    .font(WoadieTheme.rounded(size: 14, weight: .regular))
+                    .foregroundStyle(WoadieTheme.foregroundSubtle)
+                    .scrollContentBackground(.hidden)
+                    .padding(4)
+                    .frame(minHeight: 58, idealHeight: 76, maxHeight: 150)
+                    .background(Color.clear)
+                    .disabled(true)
+                    .focusable(false)
+                    .allowsHitTesting(false)
+            }
+
             TextEditor(text: $text)
                 .font(WoadieTheme.rounded(size: 14, weight: .regular))
                 .foregroundStyle(WoadieTheme.foreground)
@@ -15,14 +28,6 @@ struct WoadieTextEditor: View {
                 .frame(minHeight: 58, idealHeight: 76, maxHeight: 150)
                 .background(Color.clear)
                 .disabled(isDisabled)
-
-            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(placeholder)
-                    .font(WoadieTheme.rounded(size: 14, weight: .regular))
-                    .foregroundStyle(WoadieTheme.foregroundSubtle)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 10)
-            }
         }
     }
 }

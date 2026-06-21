@@ -157,13 +157,20 @@ struct WoadieLiquidGlassKnob: View {
     }
     
     /// Computes the active progress arc shape based on whether value is above or below default.
+    ///
+    /// `currentAngle` is expressed in the indicator dot's frame where 0° = top (12 o'clock).
+    /// `DialArc` (via `Path.addArc`) uses the standard frame where 0° = right (3 o'clock),
+    /// so we shift by -90° to convert between them. The detent (1.0x) always sits at the top.
     private func activeProgressArc(currentAngle: Double) -> DialArc {
+        let topAngle = -90.0                  // 12 o'clock in DialArc's frame
+        let dialAngle = currentAngle - 90.0   // indicator position in DialArc's frame
+
         if value < defaultValue {
-            // Underclock: Arc from currentAngle to -90 (counter-clockwise)
-            return DialArc(startAngle: .degrees(currentAngle), endAngle: .degrees(-90), clockwise: false)
+            // Underclock: fill from the indicator up over the left side to the top.
+            return DialArc(startAngle: .degrees(dialAngle), endAngle: .degrees(topAngle), clockwise: false)
         } else {
-            // Overclock: Arc from -90 to currentAngle (clockwise)
-            return DialArc(startAngle: .degrees(-90), endAngle: .degrees(currentAngle), clockwise: false)
+            // Overclock: fill from the top over the right side down to the indicator.
+            return DialArc(startAngle: .degrees(topAngle), endAngle: .degrees(dialAngle), clockwise: false)
         }
     }
     
