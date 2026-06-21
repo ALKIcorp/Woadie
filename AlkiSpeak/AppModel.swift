@@ -15,11 +15,15 @@ final class AppModel: ObservableObject {
     private var engineStartGeneration: UInt64 = 0
     private var queryStartedAt: ContinuousClock.Instant?
     private var queryResourceBefore: SystemResourceSnapshot = .empty
-    private var resourceSamples: [SystemResourceSnapshot] = []
+    private var resourceUsageAccumulator = QueryResourceUsageAccumulator()
+    private var resourceSamplingGeneration: UInt64 = 0
     private var resourceSamplingTask: Task<Void, Never>?
+    private let playbackSnapshotMinimumInterval: TimeInterval = 1.0 / 15.0
+    private var lastPlaybackSnapshotAppliedAt: TimeInterval = 0
     private var hasRequestedAccessibilityPrompt = false
 
     private func consoleTrace(_ message: String, function: StaticString = #function, line: UInt = #line) {
+        guard AppConfig.isVerboseConsoleTracingEnabled else { return }
         NSLog("[Woadie][AppModel][\(function):\(line)] \(message)")
     }
 
@@ -177,6 +181,8 @@ final class AppModel: ObservableObject {
     }
 
     var lastQueryResourceUsage: QueryResourceUsage? { store.lastQueryResourceUsage }
+
+    var isResourceSamplingActiveForTesting: Bool { resourceSamplingTask != nil }
 
     private var isSelectedVoiceLocal: Bool {
         selectedVoice.hasPrefix("apple:")
@@ -379,21 +385,19 @@ final class AppModel: ObservableObject {
     }
 
     func speakSelectedTextFromMenuBar() {
-        // Check permission silently first. Never let the system prompt fire on this
-        // action path — when untrusted, macOS stacks a fresh dialog on every click,
-        // which is what produced the duplicate/repeated pop-ups.
+        if let selectedText = SelectedTextReader.readFocusedSelection() {
+            speakExternalText(selectedText)
+            return
+        }
+
+        // Only request Accessibility after the pasteboard fallback also fails.
+        // Repeated invocations remain guarded so rapid clicks cannot stack prompts.
         guard SelectedTextReader.isAccessibilityTrusted else {
             requestAccessibilityAccessOnce()
             store.userMessage = "Allow AlkiSpeak under System Settings → Privacy & Security → Accessibility, then try again."
             return
         }
-
-        guard let selectedText = SelectedTextReader.readFocusedSelection() else {
-            store.userMessage = "Select text in another app first."
-            return
-        }
-
-        speakExternalText(selectedText)
+        store.userMessage = "Select text in another app first."
     }
 
     /// Fires the macOS Accessibility prompt at most once per app launch and opens
@@ -532,6 +536,7 @@ final class AppModel: ObservableObject {
     }
 
     func stopPlayback() {
+        finishResourceSampling()
         dependencies.playbackCoordinator.stop()
         dependencies.localSpeechService.stop()
         Task { await ttsQueue.cancel() }
@@ -663,7 +668,6 @@ final class AppModel: ObservableObject {
             updateJob(jobID, status: .cancelled, error: nil)
             store.playback = .idle
         } catch {
-            finishResourceSampling()
             let appError = normalizeGenerationError(error)
             failPlayback(jobID: jobID, logEntryID: logEntryID, error: appError)
         }
@@ -824,12 +828,14 @@ final class AppModel: ObservableObject {
         dependencies.playbackCoordinator.onSnapshotChanged = { [weak self] snapshot in
             Task { @MainActor in
                 guard let self else { return }
-                self.store.playback.state = snapshot.state
-                self.store.playback.currentSegmentID = snapshot.currentSegmentID
-                self.store.playback.elapsedTime = snapshot.elapsedTime
-                self.store.playback.bufferedDuration = snapshot.bufferedDuration
-                self.store.playback.duration = snapshot.totalDuration
-                self.objectWillChange.send()
+                guard self.shouldApplyPlaybackSnapshot(snapshot) else { return }
+                var playback = self.store.playback
+                playback.state = snapshot.state
+                playback.currentSegmentID = snapshot.currentSegmentID
+                playback.elapsedTime = snapshot.elapsedTime
+                playback.bufferedDuration = snapshot.bufferedDuration
+                playback.duration = snapshot.totalDuration
+                self.store.playback = playback
             }
         }
 
@@ -851,6 +857,23 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func shouldApplyPlaybackSnapshot(_ snapshot: PlaybackTransportSnapshot) -> Bool {
+        let playback = store.playback
+        let now = Date.timeIntervalSinceReferenceDate
+        let shouldApplyImmediately =
+            snapshot.state != playback.state ||
+            snapshot.state != .playing ||
+            snapshot.currentSegmentID != playback.currentSegmentID ||
+            abs(snapshot.bufferedDuration - playback.bufferedDuration) > 0.001 ||
+            abs(snapshot.totalDuration - (playback.duration ?? 0)) > 0.001
+
+        guard shouldApplyImmediately || now - lastPlaybackSnapshotAppliedAt >= playbackSnapshotMinimumInterval else {
+            return false
+        }
+        lastPlaybackSnapshotAppliedAt = now
+        return true
+    }
+
     private func finishPlayback() {
         finishResourceSampling()
         markActiveJobsCompleted()
@@ -864,6 +887,7 @@ final class AppModel: ObservableObject {
     }
 
     private func failPlayback(jobID: UUID, logEntryID: UUID, error: AlkiSpeakError) {
+        finishResourceSampling()
         updateJob(jobID, status: .failed, error: error)
         store.playback = PlaybackSnapshot(
             state: .failed,
@@ -958,12 +982,18 @@ final class AppModel: ObservableObject {
 
     private func startResourceSampling() {
         resourceSamplingTask?.cancel()
-        resourceSamples = []
+        resourceSamplingGeneration &+= 1
+        let generation = resourceSamplingGeneration
+        resourceUsageAccumulator.reset()
         resourceSamplingTask = Task { [weak self] in
             while !Task.isCancelled {
                 let snapshot = await SystemResourceMonitor.shared.snapshot()
-                await MainActor.run { self?.resourceSamples.append(snapshot) }
-                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard !Task.isCancelled else { break }
+                await MainActor.run {
+                    guard let self, self.resourceSamplingGeneration == generation else { return }
+                    self.resourceUsageAccumulator.record(snapshot)
+                }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
     }
@@ -972,7 +1002,9 @@ final class AppModel: ObservableObject {
     private func finishResourceSampling() -> QueryResourceUsage? {
         resourceSamplingTask?.cancel()
         resourceSamplingTask = nil
-        guard let usage = QueryResourceUsage(samples: resourceSamples) else { return nil }
+        resourceSamplingGeneration &+= 1
+        guard let usage = resourceUsageAccumulator.usage else { return nil }
+        resourceUsageAccumulator.reset()
         store.lastQueryResourceUsage = usage
         return usage
     }

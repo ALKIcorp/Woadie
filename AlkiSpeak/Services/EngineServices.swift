@@ -95,6 +95,7 @@ final class EngineManager: EngineSupervising {
     }
 
     private func consoleTrace(_ message: String, function: StaticString = #function, line: UInt = #line) {
+        guard AppConfig.isVerboseConsoleTracingEnabled else { return }
         let text = "[Woadie][EngineSupervisor][\(function):\(line)] \(message)"
         NSLog("%@", text)
     }

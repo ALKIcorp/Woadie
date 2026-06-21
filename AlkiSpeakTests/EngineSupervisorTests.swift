@@ -369,6 +369,30 @@ final class EngineSupervisorTests: XCTestCase {
         coordinator.stop()
     }
 
+    func testPlaybackSpectrumAnalyzerProducesFiniteMagnitudesAndResets() {
+        let analyzer = PlaybackSpectrumAnalyzer(sampleCount: 2048, outputBinCount: 128)
+        var samples = [Float](repeating: 0, count: 2048)
+        for index in samples.indices {
+            samples[index] = index.isMultiple(of: 2) ? 0.35 : -0.35
+        }
+
+        let magnitudes = samples.withUnsafeBufferPointer { pointer in
+            analyzer.analyze(channel: pointer.baseAddress!, frameLength: pointer.count)
+        }
+
+        XCTAssertEqual(magnitudes.count, 128)
+        XCTAssertTrue(magnitudes.allSatisfy(\.isFinite))
+        XCTAssertGreaterThan(magnitudes.reduce(0, +), 0)
+
+        analyzer.reset()
+        let silence = [Float](repeating: 0, count: 2048)
+        let resetMagnitudes = silence.withUnsafeBufferPointer { pointer in
+            analyzer.analyze(channel: pointer.baseAddress!, frameLength: pointer.count)
+        }
+
+        XCTAssertEqual(resetMagnitudes, Array(repeating: 0, count: 128))
+    }
+
     private func makeTestAudioFile(sampleRate: Double, duration: TimeInterval) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -594,6 +618,49 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     // MARK: Query resource usage
+
+    @MainActor
+    func testStopPlaybackFinishesResourceSampling() {
+        let localSpeech = FakeLocalSpeechSynthesizing()
+        let store = AppStore()
+        let model = AppModel(
+            store: store,
+            dependencies: .test(
+                engineSupervisor: FakeEngineSupervisor(),
+                localSpeechService: localSpeech
+            )
+        )
+        store.selectedVoiceID = "apple:test"
+        store.composerText = "Capture resource usage while local speech is playing."
+
+        model.speak()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.7))
+        model.stopPlayback()
+
+        XCTAssertNotNil(store.lastQueryResourceUsage)
+        XCTAssertGreaterThan(store.lastQueryResourceUsage?.sampleCount ?? 0, 0)
+    }
+
+    @MainActor
+    func testLocalSpeechFailureFinishesResourceSampling() {
+        let localSpeech = ThrowingLocalSpeechSynthesizing(delayBeforeThrow: 0.7)
+        let store = AppStore()
+        let model = AppModel(
+            store: store,
+            dependencies: .test(
+                engineSupervisor: FakeEngineSupervisor(),
+                localSpeechService: localSpeech
+            )
+        )
+        store.selectedVoiceID = "apple:test"
+        store.composerText = "Fail after collecting resource usage."
+
+        model.speak()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.9))
+
+        XCTAssertEqual(store.playback.state, .failed)
+        XCTAssertFalse(model.isResourceSamplingActiveForTesting)
+    }
 
     func testQueryResourceUsageAveragesSamplesAndTracksPeak() {
         let samples = [
@@ -871,6 +938,29 @@ private final class FakeLocalSpeechSynthesizing: LocalSpeechSynthesizing {
     func speak(text: String, voiceID: String) throws {
         spokenTexts.append(text)
     }
+    func stop() {}
+}
+
+private final class ThrowingLocalSpeechSynthesizing: LocalSpeechSynthesizing {
+    var voiceOptions: [VoiceOption] = [VoiceOption(id: "apple:test", label: "Apple Test", isLocal: true)]
+    private let delayBeforeThrow: TimeInterval
+
+    init(delayBeforeThrow: TimeInterval) {
+        self.delayBeforeThrow = delayBeforeThrow
+    }
+
+    func refreshVoices() {}
+
+    func speak(text: String, voiceID: String) throws {
+        RunLoop.current.run(until: Date().addingTimeInterval(delayBeforeThrow))
+        throw AlkiSpeakError.playback(
+            code: "test.local-speech",
+            title: "Local Speech Failed",
+            message: "Synthetic local speech failure.",
+            recoverySuggestion: "Retry."
+        )
+    }
+
     func stop() {}
 }
 

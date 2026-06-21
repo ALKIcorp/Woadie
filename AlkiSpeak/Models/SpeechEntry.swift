@@ -79,6 +79,35 @@ struct QueryResourceUsage: Codable, Hashable {
     }
 }
 
+struct QueryResourceUsageAccumulator: Hashable {
+    private(set) var sampleCount = 0
+    private var totalCPUPercent: Double = 0
+    private var totalRAMUsedMB: Double = 0
+    private var peakRAMUsedMB: Double = 0
+
+    mutating func record(_ snapshot: SystemResourceSnapshot) {
+        sampleCount += 1
+        totalCPUPercent += snapshot.cpuPercent
+        totalRAMUsedMB += snapshot.ramUsedMB
+        peakRAMUsedMB = max(peakRAMUsedMB, snapshot.ramUsedMB)
+    }
+
+    mutating func reset() {
+        self = QueryResourceUsageAccumulator()
+    }
+
+    var usage: QueryResourceUsage? {
+        guard sampleCount > 0 else { return nil }
+        let count = Double(sampleCount)
+        return QueryResourceUsage(
+            sampleCount: sampleCount,
+            averageCPUPercent: totalCPUPercent / count,
+            averageRAMUsedMB: totalRAMUsedMB / count,
+            peakRAMUsedMB: peakRAMUsedMB
+        )
+    }
+}
+
 struct SystemResourceSnapshot: Codable, Hashable {
     var cpuPercent: Double
     var ramUsedMB: Double

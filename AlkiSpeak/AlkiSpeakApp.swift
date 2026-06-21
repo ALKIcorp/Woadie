@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private static func consoleTrace(_ message: String, function: StaticString = #function, line: UInt = #line) {
+        guard AppConfig.isVerboseConsoleTracingEnabled else { return }
         NSLog("[Woadie][AppDelegate][\(function):\(line)] \(message)")
     }
 }
@@ -63,13 +64,17 @@ struct AlkiSpeakApp: App {
     @StateObject private var model: AppModel
 
     init() {
-        NSLog("[Woadie][AlkiSpeakApp][init] Creating app store and live dependencies")
+        if AppConfig.isVerboseConsoleTracingEnabled {
+            NSLog("[Woadie][AlkiSpeakApp][init] Creating app store and live dependencies")
+        }
         let store = AppStore()
         let dependencies = AppDependencies.live()
         let m = AppModel(store: store, dependencies: dependencies)
         _model = StateObject(wrappedValue: m)
         appDelegate.model = m
-        NSLog("[Woadie][AlkiSpeakApp][init] AppModel attached to AppDelegate")
+        if AppConfig.isVerboseConsoleTracingEnabled {
+            NSLog("[Woadie][AlkiSpeakApp][init] AppModel attached to AppDelegate")
+        }
     }
 
     var body: some Scene {

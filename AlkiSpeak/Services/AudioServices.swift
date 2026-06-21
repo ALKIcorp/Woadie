@@ -35,6 +35,9 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
     private var scheduleGeneration: UInt64 = 0
     private var isPaused = false
     private var tuning: PlaybackTuning = .default
+    private let spectrumAnalyzer = PlaybackSpectrumAnalyzer(sampleCount: 2048, outputBinCount: 128)
+    private let analysisPublishInterval: TimeInterval = 1.0 / 15.0
+    private var lastAnalysisPublishTime: TimeInterval = 0
 
     /// URLs of every clip currently queued, in order. Used to assert that tuning
     /// changes never alter the underlying generated files.
@@ -151,6 +154,8 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         isPaused = false
         baseOffsetSeconds = 0
         fftMagnitudes = Array(repeating: 0, count: 128)
+        spectrumAnalyzer.reset()
+        lastAnalysisPublishTime = 0
     }
 
     func applyTuning(_ tuning: PlaybackTuning) {
@@ -248,43 +253,117 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
     private func installAnalysisTap() {
         engine.mainMixerNode.installTap(
             onBus: 0,
-            bufferSize: 1024,
+            bufferSize: AVAudioFrameCount(spectrumAnalyzer.sampleCount),
             format: nil
-        ) { [weak self] buffer, _ in
+        ) { [weak self] buffer, time in
             guard let self, let channel = buffer.floatChannelData?.pointee else { return }
-            let count = min(Int(buffer.frameLength), 1024)
-            guard count >= 256 else { return }
-            var samples = Array(UnsafeBufferPointer(start: channel, count: count))
-            var window = [Float](repeating: 0, count: count)
-            vDSP_hann_window(&window, vDSP_Length(count), Int32(vDSP_HANN_NORM))
-            vDSP.multiply(samples, window, result: &samples)
-            let log2n = vDSP_Length(log2(Float(count)))
-            guard let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else { return }
-            defer { vDSP_destroy_fftsetup(setup) }
-            var real = [Float](repeating: 0, count: count / 2)
-            var imag = [Float](repeating: 0, count: count / 2)
-            real.withUnsafeMutableBufferPointer { realPtr in
-                imag.withUnsafeMutableBufferPointer { imagPtr in
-                    var split = DSPSplitComplex(realp: realPtr.baseAddress!, imagp: imagPtr.baseAddress!)
-                    samples.withUnsafeBytes {
-                        $0.bindMemory(to: DSPComplex.self).baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: count / 2) {
-                            vDSP_ctoz($0, 2, &split, 1, vDSP_Length(count / 2))
-                        }
+            let now = time.hostTime == 0
+                ? Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000
+                : AVAudioTime.seconds(forHostTime: time.hostTime)
+            guard self.shouldPublishAnalysis(at: now) else { return }
+
+            let magnitudes = self.spectrumAnalyzer.analyze(
+                channel: channel,
+                frameLength: Int(buffer.frameLength)
+            )
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.fftMagnitudes = magnitudes
+                self.publish()
+            }
+        }
+    }
+
+    private func shouldPublishAnalysis(at time: TimeInterval) -> Bool {
+        guard lastAnalysisPublishTime > 0 else {
+            lastAnalysisPublishTime = time
+            return true
+        }
+        guard time - lastAnalysisPublishTime >= analysisPublishInterval else { return false }
+        lastAnalysisPublishTime = time
+        return true
+    }
+}
+
+final class PlaybackSpectrumAnalyzer {
+    let sampleCount: Int
+    let outputBinCount: Int
+
+    private let log2n: vDSP_Length
+    private let fftSetup: FFTSetup
+    private var window: [Float]
+    private var samples: [Float]
+    private var real: [Float]
+    private var imag: [Float]
+    private var powerMagnitudes: [Float]
+    private var smoothedMagnitudes: [Float]
+
+    init(sampleCount: Int, outputBinCount: Int) {
+        precondition(sampleCount > 0 && sampleCount.nonzeroBitCount == 1)
+        precondition(outputBinCount > 0 && outputBinCount <= sampleCount / 2)
+
+        self.sampleCount = sampleCount
+        self.outputBinCount = outputBinCount
+        log2n = vDSP_Length(log2(Double(sampleCount)))
+        window = Array(repeating: 0, count: sampleCount)
+        samples = Array(repeating: 0, count: sampleCount)
+        real = Array(repeating: 0, count: sampleCount / 2)
+        imag = Array(repeating: 0, count: sampleCount / 2)
+        powerMagnitudes = Array(repeating: 0, count: outputBinCount)
+        smoothedMagnitudes = Array(repeating: 0, count: outputBinCount)
+        guard let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
+            preconditionFailure("Unable to create FFT setup.")
+        }
+        fftSetup = setup
+        vDSP_hann_window(&window, vDSP_Length(sampleCount), Int32(vDSP_HANN_NORM))
+    }
+
+    deinit {
+        vDSP_destroy_fftsetup(fftSetup)
+    }
+
+    func reset() {
+        for index in smoothedMagnitudes.indices {
+            smoothedMagnitudes[index] = 0
+        }
+    }
+
+    func analyze(channel: UnsafePointer<Float>, frameLength: Int) -> [Float] {
+        let copyCount = min(max(frameLength, 0), sampleCount)
+        for index in samples.indices {
+            samples[index] = 0
+        }
+        if copyCount > 0 {
+            samples.withUnsafeMutableBufferPointer { pointer in
+                pointer.baseAddress!.update(from: channel, count: copyCount)
+            }
+        }
+        vDSP.multiply(samples, window, result: &samples)
+
+        real.withUnsafeMutableBufferPointer { realPtr in
+            imag.withUnsafeMutableBufferPointer { imagPtr in
+                var split = DSPSplitComplex(realp: realPtr.baseAddress!, imagp: imagPtr.baseAddress!)
+                samples.withUnsafeBufferPointer { samplePtr in
+                    samplePtr.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: sampleCount / 2) { complexPtr in
+                        vDSP_ctoz(complexPtr, 2, &split, 1, vDSP_Length(sampleCount / 2))
                     }
-                    vDSP_fft_zrip(setup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
-                    var magnitudes = [Float](repeating: 0, count: 128)
-                    vDSP_zvmags(&split, 1, &magnitudes, 1, 128)
-                    var scale = Float(1.0 / Float(count))
-                    vDSP_vsmul(magnitudes, 1, &scale, &magnitudes, 1, 128)
-                    DispatchQueue.main.async {
-                        self.fftMagnitudes = zip(self.fftMagnitudes, magnitudes).map {
-                            min(1, $0 * 0.72 + sqrt(max(0, $1)) * 5 * 0.28)
-                        }
-                        self.publish()
-                    }
+                }
+                vDSP_fft_zrip(fftSetup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
+                powerMagnitudes.withUnsafeMutableBufferPointer { magnitudePtr in
+                    vDSP_zvmags(&split, 1, magnitudePtr.baseAddress!, 1, vDSP_Length(outputBinCount))
                 }
             }
         }
+
+        var scale = Float(1.0 / Float(sampleCount))
+        vDSP_vsmul(powerMagnitudes, 1, &scale, &powerMagnitudes, 1, vDSP_Length(outputBinCount))
+        for index in smoothedMagnitudes.indices {
+            smoothedMagnitudes[index] = min(
+                1,
+                smoothedMagnitudes[index] * 0.72 + max(0, powerMagnitudes[index]).squareRoot() * 5 * 0.28
+            )
+        }
+        return smoothedMagnitudes
     }
 }
 
