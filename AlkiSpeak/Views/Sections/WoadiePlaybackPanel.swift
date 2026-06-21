@@ -54,6 +54,41 @@ struct WoadiePlaybackPanel: View {
                 .font(WoadieTheme.mono(size: 10, weight: .medium))
                 .foregroundStyle(WoadieTheme.foregroundSubtle)
 
+                HStack(alignment: .center, spacing: 18) {
+                    WoadieLiquidGlassKnob(
+                        value: Binding(
+                            get: { model.playbackTuning.speed },
+                            set: { model.setPlaybackSpeed($0) }
+                        ),
+                        range: PlaybackTuning.speedRange
+                    )
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("SPEED")
+                            .font(WoadieTheme.mono(size: 9, weight: .semibold))
+                            .tracking(1.4)
+                            .foregroundStyle(WoadieTheme.foregroundSubtle)
+
+                        Text(String(format: "%.2fx", model.playbackTuning.speed))
+                            .font(WoadieTheme.mono(size: 18, weight: .bold))
+                            .foregroundStyle(WoadieTheme.foreground)
+
+                        if !model.playbackTuning.isDefault {
+                            Button("Reset") {
+                                withAnimation(.spring(response: 0.22, dampingFraction: 0.75)) {
+                                    model.resetPlaybackTuning()
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .font(WoadieTheme.mono(size: 10, weight: .semibold))
+                            .foregroundStyle(WoadieTheme.primary.opacity(0.85))
+                            .transition(.opacity.combined(with: .scale))
+                        }
+                    }
+                    Spacer()
+                }
+                .padding(.vertical, 2)
+
                 HStack(spacing: 8) {
                     metric("CPU USED AVG", value: model.lastQueryResourceUsage.map { String(format: "%.0f%%", $0.averageCPUPercent) } ?? "-")
                     metric("RAM USED AVG", value: model.lastQueryResourceUsage.map { String(format: "%.0f MB", $0.averageRAMUsedMB) } ?? "-")

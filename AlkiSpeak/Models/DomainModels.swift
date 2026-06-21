@@ -575,7 +575,7 @@ struct PlaybackTuning: Codable, Hashable {
     static let pitchRange: ClosedRange<Double> = -6...6
     static let `default` = PlaybackTuning(speed: 1.0, pitch: 0)
 
-    static let speedDefaultsKey = "AlkiSpeak.playback.speed"
+    static let speedDefaultsKey = "AlkiSpeak.playback.speed_v2"
     static let pitchDefaultsKey = "AlkiSpeak.playback.pitch"
 
     let speed: Double

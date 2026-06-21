@@ -11,56 +11,54 @@ struct ContentView: View {
             let windowHeight = proxy.size.height
 
             AlkiGlassSurface(cornerRadius: 16) {
-                VStack(spacing: 12) {
-                    WoadieHeaderView(
-                        model: model,
-                        onOpenSettings: { activeOverlay = .settings },
-                        onOpenStorage: { activeOverlay = .storage }
-                    )
-                    topControls
-
-                    HStack(alignment: .top, spacing: 12) {
-                        waveformPanel
-                        WoadiePlaybackPanel(model: model, onTogglePlayback: model.togglePlayback)
-                            .frame(width: 330)
-                    }
-
-                    WoadieInputRow(model: model)
-
-                    messageArea
-
-                    if model.isProMode {
-                        SpeechLogView(
-                            entries: model.chatItems,
-                            playingId: model.playingId,
-                            selectedId: model.store.selectedLogEntryID,
-                            logMode: model.logMode,
-                            onLogModeChanged: model.setLogMode,
-                            onSelect: model.selectLogEntry,
-                            onOpen: model.open,
-                            onDelete: model.delete
+                ScrollView(.vertical) {
+                    VStack(spacing: 12) {
+                        WoadieHeaderView(
+                            model: model,
+                            onOpenSettings: { activeOverlay = .settings },
+                            onOpenStorage: { activeOverlay = .storage }
                         )
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        topControls
+
+                        HStack(alignment: .top, spacing: 12) {
+                            waveformPanel
+                            WoadiePlaybackPanel(model: model, onTogglePlayback: model.togglePlayback)
+                                .frame(width: 330)
+                        }
+
+                        WoadieInputRow(model: model)
+
+                        messageArea
+
+                        if model.isProMode {
+                            SpeechLogView(
+                                entries: model.chatItems,
+                                playingId: model.playingId,
+                                selectedId: model.store.selectedLogEntryID,
+                                logMode: model.logMode,
+                                onLogModeChanged: model.setLogMode,
+                                onSelect: model.selectLogEntry,
+                                onOpen: model.open,
+                                onDelete: model.delete
+                            )
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        }
+                    }
+                    .padding(16)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background {
+                        GeometryReader { contentProxy in
+                            Color.clear.preference(
+                                key: MinimumContentHeightKey.self,
+                                value: contentProxy.size.height
+                            )
+                        }
                     }
                 }
-                .padding(16)
-                .fixedSize(horizontal: false, vertical: true)
-                .background {
-                    GeometryReader { contentProxy in
-                        Color.clear.preference(
-                            key: MinimumContentHeightKey.self,
-                            value: contentProxy.size.height
-                        )
-                    }
-                }
-                .frame(
-                    maxWidth: .infinity,
-                    minHeight: max(windowHeight, minimumContentHeight),
-                    alignment: .top
-                )
+                .clipShape(RoundedRectangle(cornerRadius: 16))
             }
             .frame(maxWidth: .infinity)
-            .frame(minHeight: max(windowHeight, minimumContentHeight))
+            .frame(height: windowHeight)
         }
         .ignoresSafeArea(.container, edges: .top)
         .toolbarBackground(.hidden, for: .windowToolbar)
@@ -69,12 +67,12 @@ struct ContentView: View {
         .onPreferenceChange(MinimumContentHeightKey.self) { height in
             guard height > 0, abs(height - minimumContentHeight) > 0.5 else { return }
             minimumContentHeight = height
-            guard let window = NSApp.keyWindow else { return }
+            let mainWindow = NSApp.windows.first { $0.styleMask.contains(.titled) }
+            guard let window = mainWindow ?? NSApp.keyWindow else { return }
+
             window.contentMinSize = NSSize(width: 900, height: height)
 
             let currentContentSize = window.contentLayoutRect.size
-            guard currentContentSize.height > height else { return }
-
             let topEdge = window.frame.maxY
             let contentRect = NSRect(
                 origin: .zero,
@@ -83,7 +81,7 @@ struct ContentView: View {
             var fittedFrame = window.frameRect(forContentRect: contentRect)
             fittedFrame.origin.x = window.frame.origin.x
             fittedFrame.origin.y = topEdge - fittedFrame.height
-            window.setFrame(fittedFrame, display: true, animate: false)
+            window.setFrame(fittedFrame, display: true, animate: true)
         }
         .tint(WoadieTheme.primary)
         .task {

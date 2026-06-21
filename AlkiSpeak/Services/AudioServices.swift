@@ -35,9 +35,10 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
     private var baseOffsetSeconds: TimeInterval = 0
     private var scheduleGeneration: UInt64 = 0
     private var isPaused = false
+    private var pausedTime: TimeInterval? = nil
     private var tuning: PlaybackTuning = .default
     private let spectrumAnalyzer = PlaybackSpectrumAnalyzer(sampleCount: 2048, outputBinCount: 128)
-    private let analysisPublishInterval: TimeInterval = 1.0 / 15.0
+    private let analysisPublishInterval: TimeInterval = 1.0 / 60.0
     private var lastAnalysisPublishTime: TimeInterval = 0
 
     /// URLs of every clip currently queued, in order. Used to assert that tuning
@@ -82,6 +83,7 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         if wasEmpty {
             baseOffsetSeconds = 0
             isPaused = false
+            pausedTime = nil
             startEngineIfNeeded()
             player.play()
         }
@@ -105,6 +107,7 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         baseOffsetSeconds = timeline.globalTime(segmentIndex: location.segmentIndex, localTime: location.localTime)
         completedSegmentIDs = Set(entries.prefix(location.segmentIndex).map(\.id))
         isPaused = !wasPlaying
+        pausedTime = isPaused ? baseOffsetSeconds : nil
 
         startEngineIfNeeded()
         if wasPlaying { player.play() }
@@ -122,6 +125,7 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
 
     func togglePlayback() {
         if player.isPlaying && !isPaused {
+            pausedTime = currentElapsed()
             player.pause()
             isPaused = true
             publish(state: .paused)
@@ -133,6 +137,7 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
             startEngineIfNeeded()
             player.play()
             isPaused = false
+            pausedTime = nil
             publish(state: .playing)
             return
         }
@@ -141,6 +146,7 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         startEngineIfNeeded()
         player.play()
         isPaused = false
+        pausedTime = nil
         publish(state: .playing)
     }
 
@@ -153,6 +159,7 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         expectedFormat = nil
         allSegmentsEnqueued = false
         isPaused = false
+        pausedTime = nil
         baseOffsetSeconds = 0
         fftMagnitudes = Array(repeating: 0, count: 128)
         spectrumAnalyzer.reset()
@@ -203,11 +210,15 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         scheduleGeneration &+= 1
         player.stop()
         isPaused = false
+        pausedTime = nil
         publish(state: .stopped)
         onFinished?()
     }
 
     private func currentElapsed() -> TimeInterval {
+        if let pausedTime {
+            return pausedTime
+        }
         guard player.isPlaying || isPaused,
               let nodeTime = player.lastRenderTime,
               let playerTime = player.playerTime(forNodeTime: nodeTime),
@@ -359,10 +370,9 @@ final class PlaybackSpectrumAnalyzer {
         var scale = Float(1.0 / Float(sampleCount))
         vDSP_vsmul(powerMagnitudes, 1, &scale, &powerMagnitudes, 1, vDSP_Length(outputBinCount))
         for index in smoothedMagnitudes.indices {
-            smoothedMagnitudes[index] = min(
-                1,
-                smoothedMagnitudes[index] * 0.72 + max(0, powerMagnitudes[index]).squareRoot() * 5 * 0.28
-            )
+            let target = min(1, max(0, powerMagnitudes[index]).squareRoot() * 5)
+            let attack: Float = target > smoothedMagnitudes[index] ? 0.55 : 0.35
+            smoothedMagnitudes[index] = smoothedMagnitudes[index] * (1 - attack) + target * attack
         }
         return smoothedMagnitudes
     }

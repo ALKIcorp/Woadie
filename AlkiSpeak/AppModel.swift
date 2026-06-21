@@ -18,7 +18,7 @@ final class AppModel: ObservableObject {
     private var resourceUsageAccumulator = QueryResourceUsageAccumulator()
     private var resourceSamplingGeneration: UInt64 = 0
     private var resourceSamplingTask: Task<Void, Never>?
-    private let playbackSnapshotMinimumInterval: TimeInterval = 1.0 / 15.0
+    private let playbackSnapshotMinimumInterval: TimeInterval = 1.0 / 60.0
     private var lastPlaybackSnapshotAppliedAt: TimeInterval = 0
     private var performanceDiagnosticsTask: Task<Void, Never>?
     private var performanceDiagnosticPhase: PerformanceDiagnosticPhase = .idle
@@ -948,9 +948,6 @@ final class AppModel: ObservableObject {
         store.playback.elapsedTime = 0
         store.playback.currentSegmentID = nil
         store.dashboardTelemetry.generatedJobCount += 1
-        if appMode == .quick {
-            deleteActiveQuickClips()
-        }
     }
 
     private func failPlayback(jobID: UUID, logEntryID: UUID, error: AlkiSpeakError) {
