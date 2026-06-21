@@ -4,62 +4,107 @@ struct WoadieWaveformView: View {
     let isActive: Bool
     let magnitudes: [Float]
 
-    /// Per-bar interpolated heights for smooth animation between data updates.
-    @State private var displayBars: [CGFloat] = Array(repeating: 0, count: 128)
+    private static let barCount = 128
+
+    /// Interpolated bar heights, updated every display frame for buttery animation.
+    @State private var displayBars: [CGFloat] = Array(repeating: 0, count: barCount)
+    /// Snapshot of the target magnitudes, kept separate so we can interpolate
+    /// toward them across multiple render frames (not just on data updates).
+    @State private var targetBars: [CGFloat] = Array(repeating: 0, count: barCount)
+    /// Timestamp of the last render frame for delta-time based interpolation.
+    @State private var lastFrameTime: CFTimeInterval = 0
 
     var body: some View {
-        TimelineView(.animation) { timeline in
-            Canvas { context, size in
-                let midY = size.height * 0.5
-                let width = size.width
-                let height = size.height
-
-                let count = min(128, max(magnitudes.count, 1))
-                let spacing = width / CGFloat(count)
-                for index in 0..<count {
-                    let barValue = index < displayBars.count ? displayBars[index] : 0
-                    let barHeight = min(height * 0.6, max(3, barValue * height * 0.75))
-                    let barWidth = max(1.2, spacing * (0.46 + CGFloat(index % 5) * 0.035))
-                    let x = CGFloat(index) * spacing + spacing * 0.5
-                    let asymmetry = isActive ? CGFloat((index % 7) - 3) * 0.45 : 0
-                    let rect = CGRect(x: x - barWidth / 2, y: midY - barHeight * 0.5 + asymmetry, width: barWidth, height: barHeight)
-                    context.fill(
-                        Path(roundedRect: rect, cornerRadius: barWidth / 2),
-                        with: .color(Color.accentColor.opacity(0.42 + Double(index % 6) * 0.08))
-                    )
-                }
+        TimelineView(.animation) { context in
+            Canvas(rendersAsynchronously: true) { ctx, size in
+                drawBars(context: ctx, size: size)
+            }
+            .onChange(of: context.date) {
+                advanceInterpolation(date: context.date)
             }
         }
         .padding(12)
         .onChange(of: magnitudes) {
-            interpolateBars()
+            updateTargets()
         }
         .onChange(of: isActive) {
             if !isActive {
-                withAnimation(.easeOut(duration: 0.35)) {
-                    for i in displayBars.indices {
-                        displayBars[i] = 0
-                    }
+                for i in targetBars.indices {
+                    targetBars[i] = 0
                 }
             }
         }
     }
 
-    private func interpolateBars() {
-        let count = min(128, max(magnitudes.count, 1))
-        // Ensure displayBars has the right count
-        if displayBars.count != count {
-            displayBars = Array(repeating: 0, count: count)
-        }
+    // MARK: - Target Update (runs when FFT data arrives)
+
+    private func updateTargets() {
+        let count = Self.barCount
         for index in 0..<count {
-            let taper = sin(Double.pi * Double(index) / Double(max(count - 1, 1)))
-            let target: CGFloat = isActive
-                ? max(0.025, CGFloat(index < magnitudes.count ? magnitudes[index] : 0) * CGFloat(taper))
-                : 0
-            let current = displayBars[index]
-            // Fast attack, gentler release for organic feel
-            let lerp: CGFloat = target > current ? 0.45 : 0.25
-            displayBars[index] = current + (target - current) * lerp
+            let raw = index < magnitudes.count ? CGFloat(magnitudes[index]) : 0
+            let taper = sin(.pi * CGFloat(index) / CGFloat(max(count - 1, 1)))
+            targetBars[index] = isActive ? max(0.025, raw * taper) : 0
+        }
+    }
+
+    // MARK: - Frame-Driven Interpolation
+
+    /// Called every display frame by the TimelineView, producing smooth
+    /// movement even between FFT data updates.
+    private func advanceInterpolation(date: Date) {
+        let now = CACurrentMediaTime()
+        let dt: CGFloat
+        if lastFrameTime == 0 {
+            dt = 1.0 / 120.0
+        } else {
+            // Clamp dt to avoid huge jumps after app suspension
+            dt = min(CGFloat(now - lastFrameTime), 0.05)
+        }
+        lastFrameTime = now
+
+        // Exponential decay interpolation using dt so speed is frame-rate
+        // independent. Higher `speed` = snappier bars.
+        //  factor = 1 - exp(-speed * dt)
+        let attackSpeed: CGFloat = 28.0   // fast rise — bars snap up quickly
+        let releaseSpeed: CGFloat = 12.0  // slightly gentler fall for organic feel
+        let attackFactor = 1 - exp(-attackSpeed * dt)
+        let releaseFactor = 1 - exp(-releaseSpeed * dt)
+
+        let count = Self.barCount
+        for i in 0..<count {
+            let target = targetBars[i]
+            let current = displayBars[i]
+            let diff = target - current
+            let factor = diff > 0 ? attackFactor : releaseFactor
+            displayBars[i] = current + diff * factor
+        }
+    }
+
+    // MARK: - Drawing
+
+    private func drawBars(context: GraphicsContext, size: CGSize) {
+        let midY = size.height * 0.5
+        let width = size.width
+        let height = size.height
+        let count = Self.barCount
+        let spacing = width / CGFloat(count)
+
+        for index in 0..<count {
+            let barValue = displayBars[index]
+            let barHeight = min(height * 0.6, max(2.5, barValue * height * 0.75))
+            let barWidth = max(1.2, spacing * (0.46 + CGFloat(index % 5) * 0.035))
+            let x = CGFloat(index) * spacing + spacing * 0.5
+            let asymmetry = isActive ? CGFloat((index % 7) - 3) * 0.45 : 0
+            let rect = CGRect(
+                x: x - barWidth / 2,
+                y: midY - barHeight * 0.5 + asymmetry,
+                width: barWidth,
+                height: barHeight
+            )
+            context.fill(
+                Path(roundedRect: rect, cornerRadius: barWidth / 2),
+                with: .color(Color.accentColor.opacity(0.42 + Double(index % 6) * 0.08))
+            )
         }
     }
 }

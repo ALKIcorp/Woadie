@@ -8,9 +8,56 @@ enum SelectedTextReader {
     /// stack duplicate dialogs on the hot path.
     static var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
 
-    static func readFocusedSelection() -> String? {
+    @MainActor
+    static func readFocusedSelection() async -> String? {
         if let text = readAccessibilitySelection() {
             return text
+        }
+
+        if AXIsProcessTrusted(), let previousApp = FrontmostAppTracker.shared.previousApp {
+            let pasteboard = NSPasteboard.general
+            
+            let savedItems = pasteboard.pasteboardItems?.map { item -> NSPasteboardItem in
+                let newItem = NSPasteboardItem()
+                for type in item.types {
+                    if let data = item.data(forType: type) {
+                        newItem.setData(data, forType: type)
+                    }
+                }
+                return newItem
+            }
+            
+            let changeCount = pasteboard.changeCount
+            
+            previousApp.activate(options: [])
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            
+            let source = CGEventSource(stateID: .hidSystemState)
+            let cmdDown = CGEvent(keyboardEventSource: source, virtualKey: 0x08, keyDown: true)
+            cmdDown?.flags = .maskCommand
+            let cmdUp = CGEvent(keyboardEventSource: source, virtualKey: 0x08, keyDown: false)
+            cmdUp?.flags = .maskCommand
+            
+            cmdDown?.post(tap: .cghidEventTap)
+            cmdUp?.post(tap: .cghidEventTap)
+            
+            var copiedText: String?
+            for _ in 0..<10 {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                if pasteboard.changeCount != changeCount {
+                    copiedText = pasteboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+                    break
+                }
+            }
+            
+            if let savedItems {
+                pasteboard.clearContents()
+                pasteboard.writeObjects(savedItems)
+            }
+            
+            if let copiedText {
+                return copiedText
+            }
         }
 
         return NSPasteboard.general.string(forType: .string)?
@@ -18,11 +65,12 @@ enum SelectedTextReader {
             .nilIfEmpty
     }
 
+    @MainActor
     private static func readAccessibilitySelection() -> String? {
         guard AXIsProcessTrusted() else { return nil }
 
-        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else { return nil }
-        let appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier)
+        guard let targetApp = FrontmostAppTracker.shared.previousApp ?? NSWorkspace.shared.frontmostApplication else { return nil }
+        let appElement = AXUIElementCreateApplication(targetApp.processIdentifier)
         var focusedValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
             appElement,

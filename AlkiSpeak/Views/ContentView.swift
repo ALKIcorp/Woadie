@@ -39,6 +39,7 @@ struct ContentView: View {
                                 onLogModeChanged: model.setLogMode,
                                 onSelect: model.selectLogEntry,
                                 onOpen: model.open,
+                                onReinsert: model.reinsert,
                                 onDelete: model.delete
                             )
                             .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -55,6 +56,7 @@ struct ContentView: View {
                         }
                     }
                 }
+                .scrollIndicators(.hidden)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
             }
             .frame(maxWidth: .infinity)
@@ -81,13 +83,13 @@ struct ContentView: View {
             var fittedFrame = window.frameRect(forContentRect: contentRect)
             fittedFrame.origin.x = window.frame.origin.x
             fittedFrame.origin.y = topEdge - fittedFrame.height
-            window.setFrame(fittedFrame, display: true, animate: true)
+            window.setFrame(fittedFrame, display: true, animate: false)
         }
         .tint(WoadieTheme.primary)
         .task {
             while !Task.isCancelled {
                 model.refreshResourceStats()
-                try? await Task.sleep(for: .seconds(5))
+                try? await Task.sleep(for: .seconds(10))
             }
         }
         .alert("Port In Use", isPresented: Binding(

@@ -408,19 +408,21 @@ final class AppModel: ObservableObject {
     }
 
     func speakSelectedTextFromMenuBar() {
-        if let selectedText = SelectedTextReader.readFocusedSelection() {
-            speakExternalText(selectedText)
-            return
-        }
+        Task {
+            if let selectedText = await SelectedTextReader.readFocusedSelection() {
+                speakExternalText(selectedText)
+                return
+            }
 
-        // Only request Accessibility after the pasteboard fallback also fails.
-        // Repeated invocations remain guarded so rapid clicks cannot stack prompts.
-        guard SelectedTextReader.isAccessibilityTrusted else {
-            requestAccessibilityAccessOnce()
-            store.userMessage = "Allow AlkiSpeak under System Settings → Privacy & Security → Accessibility, then try again."
-            return
+            // Only request Accessibility after the pasteboard fallback also fails.
+            // Repeated invocations remain guarded so rapid clicks cannot stack prompts.
+            guard SelectedTextReader.isAccessibilityTrusted else {
+                requestAccessibilityAccessOnce()
+                store.userMessage = "Allow AlkiSpeak under System Settings → Privacy & Security → Accessibility, then try again."
+                return
+            }
+            store.userMessage = "Select text in another app first."
         }
-        store.userMessage = "Select text in another app first."
     }
 
     /// Fires the macOS Accessibility prompt at most once per app launch and opens
@@ -540,6 +542,137 @@ final class AppModel: ObservableObject {
         store.playback.activeLogEntryID = entry.id
         store.playback.duration = entry.totalDurationSeconds
         store.playback.bufferedDuration = entry.totalDurationSeconds
+    }
+
+    func reinsert(_ entry: SpeechEntry) {
+        stopPlayback()
+        let urls = entry.segmentRelativePaths.compactMap { try? dependencies.speechEntryStore.absoluteURL(for: $0) }
+        let segments = urls.enumerated().map { index, url in
+            SpeechSegment(index: index, text: "", status: .ready, audioURL: url)
+        }
+        let job = SpeechJob(text: entry.textContent, voiceID: entry.voice, segments: segments, status: .completed, logEntryID: entry.id)
+        store.speechJobs.insert(job, at: 0)
+        dependencies.playbackCoordinator.prepare(characterCounts: Array(repeating: 1, count: urls.count))
+        for (index, url) in urls.enumerated() {
+            try? dependencies.playbackCoordinator.append(audioURL: url, segmentID: segments[index].id, index: index)
+        }
+        dependencies.playbackCoordinator.finishEnqueuing()
+        store.playback.activeJobID = job.id
+        store.playback.activeLogEntryID = entry.id
+        store.playback.duration = entry.totalDurationSeconds
+        store.playback.bufferedDuration = entry.totalDurationSeconds
+    }
+
+    func savePlaybackToDefaultFolder() {
+        guard let jobID = store.playback.activeJobID,
+              let job = store.speechJobs.first(where: { $0.id == jobID }),
+              job.status != .failed,
+              !job.segments.isEmpty,
+              job.segments.allSatisfy({ $0.audioURL != nil })
+        else { return }
+
+        let urls = job.segments.compactMap(\.audioURL)
+        guard !urls.isEmpty else { return }
+
+        guard let downloads = try? FileManager.default.url(
+            for: .downloadsDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+        ) else { return }
+        let destination = downloads.appendingPathComponent(defaultClipFilename())
+
+        Task {
+            do {
+                let savedURL = try await exportPlaybackAudio(urls: urls, to: destination)
+                saveEntry(for: job)
+                store.userMessage = "Saved \(savedURL.lastPathComponent) to Downloads."
+            } catch {
+                record(AlkiSpeakError(code: "playback.savedefault", title: "Save Failed", message: error.localizedDescription, recoverySuggestion: "Try Save As instead."))
+            }
+        }
+    }
+
+    func savePlaybackAs() {
+        guard let jobID = store.playback.activeJobID,
+              let job = store.speechJobs.first(where: { $0.id == jobID })
+        else { return }
+
+        let urls = job.segments.compactMap(\.audioURL)
+        guard !urls.isEmpty else { return }
+
+        DispatchQueue.main.async {
+            let panel = NSSavePanel()
+            panel.title = "Save Audio As..."
+            panel.prompt = "Save"
+            panel.allowedContentTypes = [.wav]
+            panel.nameFieldStringValue = self.defaultClipFilename()
+
+            guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+            Task {
+                do {
+                    let savedURL = try await self.exportPlaybackAudio(urls: urls, to: destination)
+                    self.store.userMessage = "Saved \(savedURL.lastPathComponent)"
+                } catch {
+                    self.record(AlkiSpeakError(code: "playback.saveas", title: "Save Failed", message: error.localizedDescription, recoverySuggestion: "Try a different location."))
+                }
+            }
+        }
+    }
+
+    func sharePlaybackAudio() {
+        guard let jobID = store.playback.activeJobID,
+              let job = store.speechJobs.first(where: { $0.id == jobID })
+        else { return }
+
+        let urls = job.segments.compactMap { $0.audioURL }
+        guard !urls.isEmpty else { return }
+
+        DispatchQueue.main.async {
+            guard let mainWindow = NSApp.windows.first(where: { $0.isKeyWindow }),
+                  let contentView = mainWindow.contentView
+            else { return }
+            let picker = NSSharingServicePicker(items: urls)
+            picker.show(relativeTo: contentView.bounds, of: contentView, preferredEdge: .minY)
+        }
+    }
+
+    private func defaultClipFilename() -> String {
+        "AlkiSpeak_Clip_\(Int(Date().timeIntervalSince1970)).wav"
+    }
+
+    private func exportPlaybackAudio(urls: [URL], to destination: URL) async throws -> URL {
+        if urls.count == 1 {
+            try FileManager.default.copyItem(at: urls[0], to: destination)
+            return destination
+        }
+
+        let composition = AVMutableComposition()
+        let compositionAudioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+
+        var insertTime = CMTime.zero
+        for url in urls {
+            let asset = AVURLAsset(url: url)
+            if let track = try? await asset.loadTracks(withMediaType: .audio).first {
+                let timeRange = CMTimeRange(start: .zero, duration: try await asset.load(.duration))
+                try compositionAudioTrack?.insertTimeRange(timeRange, of: track, at: insertTime)
+                insertTime = CMTimeAdd(insertTime, timeRange.duration)
+            }
+        }
+
+        guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else {
+            try FileManager.default.copyItem(at: urls[0], to: destination)
+            return destination
+        }
+        let outputURL = destination.deletingPathExtension().appendingPathExtension("m4a")
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            try FileManager.default.removeItem(at: outputURL)
+        }
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .m4a
+        await exportSession.export()
+        if let error = exportSession.error {
+            throw error
+        }
+        return outputURL
     }
 
     func delete(_ entry: SpeechEntry) {

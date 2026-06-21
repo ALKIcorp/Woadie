@@ -44,9 +44,9 @@
 		A1000025 /* SelectedTextServiceProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000025 /* SelectedTextServiceProvider.swift */; };
 		A1000026 /* AlkiComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000026 /* AlkiComponents.swift */; };
 		A1000027 /* SettingsOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000027 /* SettingsOverlayView.swift */; };
-		B1000001 /* EngineSupervisorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001 /* EngineSupervisorTests.swift */; };
 		A1000028 /* EdgeSpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000028 /* EdgeSpeechService.swift */; };
 		A1000029 /* WoadieLiquidGlassKnob.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000029 /* WoadieLiquidGlassKnob.swift */; };
+		B1000001 /* EngineSupervisorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001 /* EngineSupervisorTests.swift */; };
 		B1000002 /* EdgeSpeechServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000003 /* EdgeSpeechServiceTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -100,10 +100,10 @@
 		A2000025 /* SelectedTextServiceProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectedTextServiceProvider.swift; sourceTree = "<group>"; };
 		A2000026 /* AlkiComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlkiComponents.swift; sourceTree = "<group>"; };
 		A2000027 /* SettingsOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsOverlayView.swift; sourceTree = "<group>"; };
-		B2000001 /* EngineSupervisorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineSupervisorTests.swift; sourceTree = "<group>"; };
-		B2000002 /* WoadieTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WoadieTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000028 /* EdgeSpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSpeechService.swift; sourceTree = "<group>"; };
 		A2000029 /* WoadieLiquidGlassKnob.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieLiquidGlassKnob.swift; sourceTree = "<group>"; };
+		B2000001 /* EngineSupervisorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineSupervisorTests.swift; sourceTree = "<group>"; };
+		B2000002 /* WoadieTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WoadieTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B2000003 /* EdgeSpeechServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSpeechServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 

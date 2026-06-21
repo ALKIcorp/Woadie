@@ -541,6 +541,22 @@ final class EngineManager: EngineSupervising {
             }
             return
         }
+
+        // While a synthesis job is in flight the single-worker Python server is CPU/GIL
+        // bound and routinely can't answer /health within the timeout. Probing it anyway
+        // produced false "listener missing" teardowns that killed the engine mid-request
+        // (the engine "ran once" then died). The owning Process / adopted PID liveness
+        // checked by `isRunning` above is sufficient health while busy; resume HTTP probes
+        // once the job finishes and the server is responsive again.
+        if queue.sync(execute: { state.activeJobID != nil }) {
+            consoleTrace("performHealthCheck deferring HTTP probe while job active")
+            publish { summary in
+                summary.lastHealthCheckAt = Date()
+                summary.consecutiveHealthFailures = 0
+            }
+            return
+        }
+
         var request = URLRequest(url: AppConfig.serverBaseURL.appendingPathComponent("health"))
         request.httpMethod = "GET"
         request.timeoutInterval = timeoutPolicy.healthCheckTimeout
@@ -589,9 +605,17 @@ final class EngineManager: EngineSupervising {
 
         let portUsers = findListeningPidsOnEnginePort()
         let adoptedPID = queue.sync { adoptedProcessIdentifier }
+        let ownedProcessAlive = queue.sync { process?.isRunning == true }
         let adoptedProcessDisappeared = adoptedPID.map { !processExists(pid: $0) } ?? false
-        consoleTrace("handleHealthFailure portUsers=\(portUsers.map(String.init).joined(separator: ",")) adoptedPID=\(adoptedPID.map(String.init) ?? "nil") adoptedDisappeared=\(adoptedProcessDisappeared)")
-        if portUsers.isEmpty || adoptedProcessDisappeared {
+        // `lsof` shares the CPU pressure that just timed out the health probe and can
+        // return an empty list while the engine is still bound. Only believe "no
+        // listener" when a direct TCP probe also fails and we hold no live process —
+        // otherwise we'd tear down a healthy-but-busy engine.
+        let listenerMissing = portUsers.isEmpty
+            && !ownedProcessAlive
+            && !tcpProbe(port: Int32(AppConfig.enginePort))
+        consoleTrace("handleHealthFailure portUsers=\(portUsers.map(String.init).joined(separator: ",")) adoptedPID=\(adoptedPID.map(String.init) ?? "nil") ownedAlive=\(ownedProcessAlive) adoptedDisappeared=\(adoptedProcessDisappeared) listenerMissing=\(listenerMissing)")
+        if listenerMissing || adoptedProcessDisappeared {
             let issue = EngineIssue(
                 code: "engine.listener-missing",
                 title: "Engine Listener Missing",

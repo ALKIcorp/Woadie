@@ -1,5 +1,31 @@
 import SwiftUI
 
+private struct LogScrollMetrics: Equatable {
+    var offsetX: CGFloat = 0
+    var contentWidth: CGFloat = 0
+    var containerWidth: CGFloat = 0
+}
+
+private struct ScrollGeometryTrackingModifier: ViewModifier {
+    @Binding var scrollMetrics: LogScrollMetrics
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.onScrollGeometryChange(for: LogScrollMetrics.self) { geometry in
+                LogScrollMetrics(
+                    offsetX: geometry.contentOffset.x,
+                    contentWidth: geometry.contentSize.width,
+                    containerWidth: geometry.containerSize.width
+                )
+            } action: { _, newValue in
+                scrollMetrics = newValue
+            }
+        } else {
+            content
+        }
+    }
+}
+
 struct SpeechLogView: View {
     let entries: [SpeechEntry]
     let playingId: UUID?
@@ -8,7 +34,14 @@ struct SpeechLogView: View {
     let onLogModeChanged: (LogMode) -> Void
     let onSelect: (SpeechEntry) -> Void
     let onOpen: (SpeechEntry) -> Void
+    let onReinsert: (SpeechEntry) -> Void
     let onDelete: (SpeechEntry) -> Void
+
+    @State private var scrollMetrics = LogScrollMetrics()
+
+    private var canScroll: Bool {
+        scrollMetrics.contentWidth > scrollMetrics.containerWidth + 1
+    }
 
     var body: some View {
         AlkiGlassSurface {
@@ -35,7 +68,11 @@ struct SpeechLogView: View {
 
                 Text("\(entries.count) \(entries.count == 1 ? "entry" : "entries")")
                     .font(WoadieTheme.mono(size: 10, weight: .medium))
-                    .foregroundStyle(WoadieTheme.foregroundSubtle.opacity(0.6))
+                    .foregroundStyle(WoadieTheme.foregroundSubtle)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(WoadieTheme.surface, in: Capsule())
+                    .overlay(Capsule().strokeBorder(WoadieTheme.borderSubtle))
             }
 
             if entries.isEmpty {
@@ -57,7 +94,7 @@ struct SpeechLogView: View {
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 14))
             } else {
-                ZStack(alignment: .bottom) {
+                VStack(spacing: 8) {
                     ScrollView(.horizontal) {
                         LazyHStack(spacing: 10) {
                             ForEach(entries) { entry in
@@ -67,29 +104,69 @@ struct SpeechLogView: View {
                                     isSelected: selectedId == entry.id,
                                     onSelect: { onSelect(entry) },
                                     onOpen: { onOpen(entry) },
+                                    onReinsert: { onReinsert(entry) },
                                     onDelete: { onDelete(entry) }
                                 )
                             }
                         }
-                        .padding(.bottom, 16)
+                        .padding(.vertical, 2)
                     }
+                    .scrollIndicators(.hidden)
+                    .modifier(ScrollGeometryTrackingModifier(scrollMetrics: $scrollMetrics))
                     .frame(maxHeight: 360)
+                    .mask(
+                        HStack(spacing: 0) {
+                            LinearGradient(
+                                colors: [.black.opacity(0), .black],
+                                startPoint: .leading, endPoint: .trailing
+                            )
+                            .frame(width: canScroll ? 18 : 0)
+                            Rectangle().fill(.black)
+                            LinearGradient(
+                                colors: [.black, .black.opacity(0)],
+                                startPoint: .leading, endPoint: .trailing
+                            )
+                            .frame(width: canScroll ? 18 : 0)
+                        }
+                    )
 
-                    if entries.count > 3 {
-                        LinearGradient(
-                            colors: [
-                                WoadieTheme.background.opacity(0),
-                                WoadieTheme.background
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .frame(height: 40)
+                    if canScroll {
+                        LogScrollScrubber(metrics: scrollMetrics)
                     }
                 }
             }
         }
         .padding(18)
         }
+    }
+}
+
+/// Thin capsule scrubber that mirrors the horizontal scroll position of the log carousel.
+private struct LogScrollScrubber: View {
+    let metrics: LogScrollMetrics
+
+    var body: some View {
+        GeometryReader { proxy in
+            let trackWidth = proxy.size.width
+            let maxOffset = max(metrics.contentWidth - metrics.containerWidth, 1)
+            let progress = min(max(metrics.offsetX / maxOffset, 0), 1)
+            let thumbRatio = metrics.contentWidth > 0
+                ? min(max(metrics.containerWidth / metrics.contentWidth, 0.12), 1)
+                : 1
+            let thumbWidth = trackWidth * thumbRatio
+            let thumbX = progress * (trackWidth - thumbWidth)
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(WoadieTheme.borderSubtle)
+                Capsule()
+                    .fill(WoadieTheme.foregroundSubtle.opacity(0.6))
+                    .frame(width: thumbWidth)
+                    .offset(x: thumbX)
+            }
+        }
+        .frame(height: 3)
+        .padding(.horizontal, 4)
+        .animation(.easeOut(duration: 0.15), value: metrics.offsetX)
     }
 }

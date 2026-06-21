@@ -371,7 +371,8 @@ final class PlaybackSpectrumAnalyzer {
         vDSP_vsmul(powerMagnitudes, 1, &scale, &powerMagnitudes, 1, vDSP_Length(outputBinCount))
         for index in smoothedMagnitudes.indices {
             let target = min(1, max(0, powerMagnitudes[index]).squareRoot() * 5)
-            let attack: Float = target > smoothedMagnitudes[index] ? 0.55 : 0.35
+            // Light smoothing only — the view handles its own time-based interpolation.
+            let attack: Float = target > smoothedMagnitudes[index] ? 0.82 : 0.55
             smoothedMagnitudes[index] = smoothedMagnitudes[index] * (1 - attack) + target * attack
         }
         return smoothedMagnitudes

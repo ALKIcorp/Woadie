@@ -86,6 +86,31 @@ struct WoadiePlaybackPanel: View {
                         }
                     }
                     Spacer()
+                    
+                    Menu {
+                        Button("Save to Default Folder", systemImage: "folder") {
+                            model.savePlaybackToDefaultFolder()
+                        }
+                        Button("Save As...", systemImage: "folder.badge.plus") {
+                            model.savePlaybackAs()
+                        }
+                        Divider()
+                        Button("Share via...", systemImage: "square.and.arrow.up") {
+                            model.sharePlaybackAudio()
+                        }
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(WoadieTheme.foregroundSubtle)
+                            .frame(width: 32, height: 32)
+                            .background(Color.primary.opacity(0.035), in: Circle())
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Save or Share Audio")
+                    .disabled(!hasPlayableClip)
+                    .opacity(hasPlayableClip ? 1 : 0.4)
                 }
                 .padding(.vertical, 2)
 

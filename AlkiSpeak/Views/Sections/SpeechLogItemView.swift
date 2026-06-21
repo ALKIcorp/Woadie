@@ -7,6 +7,7 @@ struct SpeechLogItemView: View {
     let isSelected: Bool
     let onSelect: () -> Void
     let onOpen: () -> Void
+    let onReinsert: () -> Void
     let onDelete: () -> Void
     @State private var isHovered = false
     @State private var copied = false
@@ -59,6 +60,9 @@ struct SpeechLogItemView: View {
                 IconActionButton(systemImage: copied ? "checkmark" : "doc.on.doc") {
                     copyToClipboard()
                 }
+                IconActionButton(systemImage: "arrow.uturn.left") {
+                    onReinsert()
+                }
                 IconActionButton(systemImage: "chart.bar.doc.horizontal") {
                     showStats = true
                 }
@@ -74,6 +78,7 @@ struct SpeechLogItemView: View {
         }
         .onTapGesture { onSelect() }
         .contextMenu {
+            Button("Load into Playback") { onReinsert() }
             Button("Open") { confirmOpen = true }
             Button("Stats") { showStats = true }
             Button("Delete", role: .destructive) { confirmDelete = true }

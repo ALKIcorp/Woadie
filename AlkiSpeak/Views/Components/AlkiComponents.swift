@@ -74,6 +74,8 @@ struct AlkiDropdown: View {
                 HStack(spacing: 8) {
                     Text((title.isEmpty ? placeholder : title).uppercased())
                         .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(width: 220, alignment: .leading)
                         .contentTransition(.opacity)
                         .animation(.easeInOut(duration: 0.18), value: title)
                     Image(systemName: "chevron.down")
@@ -110,7 +112,7 @@ struct AlkiDropdown: View {
 
     private var optionList: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
+            LazyVStack(alignment: .leading, spacing: 10) {
                 ForEach(sections) { section in
                     sectionDisclosure(section)
                 }
@@ -149,7 +151,7 @@ struct AlkiDropdown: View {
             .buttonStyle(.plain)
 
             if isExpanded {
-                VStack(alignment: .leading, spacing: 6) {
+                LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(section.options) { option in
                         optionRow(option)
                     }
