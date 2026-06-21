@@ -680,6 +680,64 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertNil(QueryResourceUsage(samples: []))
     }
 
+    func testPerformanceDiagnosticRecorderWritesSamplesSpikesAndSummary() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        var tick: TimeInterval = 0
+        let recorder = FilePerformanceDiagnosticRecorder(
+            directory: directory,
+            thresholds: PerformanceDiagnosticThresholds(
+                cpuPercent: 80,
+                ramAvailableMB: 500,
+                processMemoryMB: 512
+            ),
+            dateProvider: {
+                tick += 1
+                return Date(timeIntervalSince1970: tick)
+            }
+        )
+
+        recorder.startSession(context: ["test": "true"])
+        recorder.recordSample(
+            phase: .remoteGeneration,
+            jobID: nil,
+            system: SystemResourceSnapshot(cpuPercent: 20, ramUsedMB: 1000, ramAvailableMB: 2000),
+            process: ResourceSnapshot(capturedAt: Date(), cpuPercent: nil, memoryBytes: 128 * 1_048_576, engineProcessID: 99, port: 7777),
+            context: ["segment": "0"]
+        )
+        recorder.recordSample(
+            phase: .playback,
+            jobID: nil,
+            system: SystemResourceSnapshot(cpuPercent: 95, ramUsedMB: 3000, ramAvailableMB: 250),
+            process: ResourceSnapshot(capturedAt: Date(), cpuPercent: nil, memoryBytes: 900 * 1_048_576, engineProcessID: 99, port: 7777),
+            context: ["segment": "0"]
+        )
+        recorder.finishSession(context: ["result": "done"])
+
+        let log = try String(contentsOf: recorder.logURL, encoding: .utf8)
+        XCTAssertTrue(log.contains("\"kind\":\"sample\""))
+        XCTAssertTrue(log.contains("\"kind\":\"spike\""))
+        XCTAssertTrue(log.contains("\"phase\":\"playback\""))
+
+        let summary = try JSONDecoder().decode(
+            PerformanceDiagnosticSummary.self,
+            from: Data(contentsOf: recorder.summaryURL)
+        )
+        XCTAssertEqual(summary.sampleCount, 2)
+        XCTAssertEqual(summary.spikeCount, 1)
+        XCTAssertEqual(summary.topCPUPhase?.phase, .playback)
+        XCTAssertEqual(summary.topProcessMemoryPhase?.phase, .playback)
+    }
+
+    func testProcessTelemetryCaptureIncludesCurrentProcessMemory() {
+        let snapshot = ProcessTelemetryService().capture(engineProcessID: 123)
+
+        XCTAssertEqual(snapshot.engineProcessID, 123)
+        XCTAssertGreaterThan(snapshot.memoryBytes ?? 0, 0)
+    }
+
     func testLegacyQueryStatsDecodesWithoutResourceUsage() throws {
         let json = """
         {
@@ -1011,6 +1069,7 @@ private extension AppDependencies {
             playbackCoordinator: playbackCoordinator,
             localSpeechService: localSpeechService,
             telemetryService: FakeTelemetryCapturing(),
+            performanceDiagnostics: NullPerformanceDiagnosticRecorder(),
             workspaceStore: FakeWorkspaceStore(),
             logStore: FakeLogStore(),
             clipStore: FakeClipStore(),

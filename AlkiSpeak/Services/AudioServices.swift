@@ -1,5 +1,6 @@
 import AVFoundation
 import Accelerate
+import Darwin
 import Foundation
 
 /// Audio playback built on `AVAudioEngine` so listen-only speed/pitch tuning can
@@ -429,9 +430,26 @@ final class ProcessTelemetryService: TelemetryCapturing {
         ResourceSnapshot(
             capturedAt: Date(),
             cpuPercent: nil,
-            memoryBytes: nil,
+            memoryBytes: currentResidentMemoryBytes(),
             engineProcessID: engineProcessID,
             port: AppConfig.enginePort
         )
+    }
+
+    private func currentResidentMemoryBytes() -> UInt64? {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(
+                    mach_task_self_,
+                    task_flavor_t(MACH_TASK_BASIC_INFO),
+                    $0,
+                    &count
+                )
+            }
+        }
+        guard result == KERN_SUCCESS else { return nil }
+        return UInt64(info.resident_size)
     }
 }

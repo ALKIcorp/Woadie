@@ -67,3 +67,18 @@ protocol LocalSpeechSynthesizing: AnyObject {
 protocol TelemetryCapturing: AnyObject {
     func capture(engineProcessID: Int32?) -> ResourceSnapshot
 }
+
+protocol PerformanceDiagnosticRecording: AnyObject {
+    var logURL: URL { get }
+    var summaryURL: URL { get }
+    func startSession(context: [String: String])
+    func recordMarker(phase: PerformanceDiagnosticPhase, message: String, jobID: UUID?, context: [String: String])
+    func recordSample(
+        phase: PerformanceDiagnosticPhase,
+        jobID: UUID?,
+        system: SystemResourceSnapshot,
+        process: ResourceSnapshot,
+        context: [String: String]
+    )
+    func finishSession(context: [String: String])
+}

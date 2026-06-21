@@ -8,6 +8,7 @@ struct AppDependencies {
     let playbackCoordinator: PlaybackCoordinating
     let localSpeechService: LocalSpeechSynthesizing
     let telemetryService: TelemetryCapturing
+    let performanceDiagnostics: PerformanceDiagnosticRecording
     let workspaceStore: ActiveWorkspacePersisting
     let logStore: SavedLogPersisting
     let clipStore: SegmentedClipStoring
@@ -23,6 +24,7 @@ struct AppDependencies {
             playbackCoordinator: AVAudioPlaybackCoordinator(),
             localSpeechService: AppleSpeechService(),
             telemetryService: ProcessTelemetryService(),
+            performanceDiagnostics: FilePerformanceDiagnosticRecorder.live(),
             workspaceStore: UserDefaultsWorkspaceStore(),
             logStore: UserDefaultsSavedLogStore(),
             clipStore: FileSegmentedClipStore(),

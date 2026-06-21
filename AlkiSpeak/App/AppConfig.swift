@@ -29,6 +29,10 @@ enum AppConfig {
     static let maxDirectRequestCharacters = 300
     static let maxSegmentCharacters = 300
     static let maxBufferedDiagnostics = 80
+    static let performanceDiagnosticIdleSampleIntervalSeconds: TimeInterval = 5
+    static let performanceDiagnosticCPUWarningPercent = 80.0
+    static let performanceDiagnosticRAMAvailableWarningMB = 500.0
+    static let performanceDiagnosticProcessMemoryWarningMB = 1_024.0
     static var isVerboseConsoleTracingEnabled: Bool {
         let environmentValue = ProcessInfo.processInfo.environment["ALKISPEAK_VERBOSE_LOGS"]?.lowercased()
         return environmentValue == "1" || environmentValue == "true" || UserDefaults.standard.bool(forKey: "AlkiSpeak.verboseConsoleTracing")

@@ -20,6 +20,9 @@ final class AppModel: ObservableObject {
     private var resourceSamplingTask: Task<Void, Never>?
     private let playbackSnapshotMinimumInterval: TimeInterval = 1.0 / 15.0
     private var lastPlaybackSnapshotAppliedAt: TimeInterval = 0
+    private var performanceDiagnosticsTask: Task<Void, Never>?
+    private var performanceDiagnosticPhase: PerformanceDiagnosticPhase = .idle
+    private var activePerformanceDiagnosticJobID: UUID?
     private var hasRequestedAccessibilityPrompt = false
 
     private func consoleTrace(_ message: String, function: StaticString = #function, line: UInt = #line) {
@@ -203,6 +206,9 @@ final class AppModel: ObservableObject {
         self.store = store
         self.dependencies = dependencies
         consoleTrace("init isRunningUnitTests=\(AppConfig.isRunningUnitTests) kokoroPath=\(AppConfig.kokoroPath) baseURL=\(AppConfig.serverBaseURL.absoluteString)")
+        if !AppConfig.isRunningUnitTests {
+            startPerformanceDiagnosticSession()
+        }
 
         store.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -217,6 +223,7 @@ final class AppModel: ObservableObject {
         consoleTrace("refreshing local voices")
         refreshLocalVoices()
         if !AppConfig.isRunningUnitTests {
+            startPerformanceDiagnosticSampling()
             consoleTrace("auto-starting engine from AppModel.init")
             startEngine()
             // Edge voices don't depend on the Kokoro engine, so fetch them right
@@ -227,12 +234,22 @@ final class AppModel: ObservableObject {
         }
     }
 
+    deinit {
+        performanceDiagnosticsTask?.cancel()
+    }
+
     func startEngine() {
         consoleTrace("startEngine requested currentStatus=\(status.rawValue) supervisorRunning=\(dependencies.engineSupervisor.isRunning) pid=\(dependencies.engineSupervisor.processIdentifier.map(String.init) ?? "nil")")
         guard !status.isProcessExpectedAlive && !dependencies.engineSupervisor.isRunning else {
             consoleTrace("startEngine ignored because engine is already expected alive or supervisor reports running")
             return
         }
+        dependencies.performanceDiagnostics.recordMarker(
+            phase: .engineStart,
+            message: "Engine start requested.",
+            jobID: nil,
+            context: performanceDiagnosticContext()
+        )
         engineStartTask?.cancel()
         engineStartGeneration &+= 1
         let startGeneration = engineStartGeneration
@@ -304,6 +321,12 @@ final class AppModel: ObservableObject {
 
     func stopEngine() {
         consoleTrace("stopEngine requested currentStatus=\(status.rawValue) supervisorRunning=\(dependencies.engineSupervisor.isRunning) pid=\(dependencies.engineSupervisor.processIdentifier.map(String.init) ?? "nil")")
+        dependencies.performanceDiagnostics.recordMarker(
+            phase: .engineStop,
+            message: "Engine stop requested.",
+            jobID: activePerformanceDiagnosticJobID,
+            context: performanceDiagnosticContext()
+        )
         engineStartGeneration &+= 1
         engineStartTask?.cancel()
         engineStartTask = nil
@@ -537,6 +560,7 @@ final class AppModel: ObservableObject {
 
     func stopPlayback() {
         finishResourceSampling()
+        finishPerformanceDiagnosticJob(message: "Playback stopped.")
         dependencies.playbackCoordinator.stop()
         dependencies.localSpeechService.stop()
         Task { await ttsQueue.cancel() }
@@ -584,6 +608,16 @@ final class AppModel: ObservableObject {
         )
         store.speechJobs.insert(job, at: 0)
         queryStartedAt = ContinuousClock.now
+        setPerformanceDiagnosticPhase(
+            isSelectedVoiceLocal ? .localSpeech : .remoteGeneration,
+            jobID: jobID,
+            message: "Speech job started.",
+            context: [
+                "characterCount": "\(trimmed.count)",
+                "segmentCount": "\(segments.count)",
+                "voiceSource": diagnosticVoiceSource(for: selectedVoice)
+            ]
+        )
         Task { queryResourceBefore = await SystemResourceMonitor.shared.snapshot() }
         startResourceSampling()
         store.playback = PlaybackSnapshot(
@@ -624,8 +658,27 @@ final class AppModel: ObservableObject {
             }, onWaiting: { waiting in
                 await MainActor.run {
                     self.store.playback.statusMessage = waiting ? "Waiting for resources…" : nil
+                    if waiting {
+                        self.setPerformanceDiagnosticPhase(
+                            .resourceWait,
+                            jobID: jobID,
+                            message: "Generation paused while waiting for system resources.",
+                            context: ["segmentCount": "\(segments.count)"]
+                        )
+                    }
                 }
             }) { [generationService = remoteService(for: voice), clipStore = dependencies.clipStore, workspaceID = store.activeWorkspace.id] segment in
+                await MainActor.run {
+                    self.setPerformanceDiagnosticPhase(
+                        .remoteGeneration,
+                        jobID: jobID,
+                        message: "Generating segment.",
+                        context: [
+                            "segmentIndex": "\(segment.index)",
+                            "segmentCharacterCount": "\(segment.text.count)"
+                        ]
+                    )
+                }
                 let result = try await generationService.synthesize(
                     text: segment.text,
                     voice: voice,
@@ -640,6 +693,12 @@ final class AppModel: ObservableObject {
                 return GeneratedSegment(audioURL: url, durationSeconds: duration)
             } onReady: { [playbackCoordinator = dependencies.playbackCoordinator] segment in
                 await MainActor.run {
+                    self.setPerformanceDiagnosticPhase(
+                        .playback,
+                        jobID: jobID,
+                        message: "Segment ready for playback.",
+                        context: ["segmentIndex": "\(segment.index)"]
+                    )
                     self.store.playback.currentSegmentID = segment.id
                     self.updateJobSegment(jobID, segmentID: segment.id, status: .ready, audioURL: segment.audioURL, error: nil)
                     self.updateSavedLogSegment(logEntryID, segmentID: segment.id, status: .ready, audioURL: segment.audioURL, error: nil)
@@ -665,6 +724,7 @@ final class AppModel: ObservableObject {
             }
         } catch is CancellationError {
             finishResourceSampling()
+            finishPerformanceDiagnosticJob(message: "Speech request cancelled.")
             updateJob(jobID, status: .cancelled, error: nil)
             store.playback = .idle
         } catch {
@@ -675,6 +735,12 @@ final class AppModel: ObservableObject {
 
     private func speakLocal(text: String, jobID: UUID, logEntryID: UUID) {
         do {
+            setPerformanceDiagnosticPhase(
+                .localSpeech,
+                jobID: jobID,
+                message: "Local speech playback started.",
+                context: ["characterCount": "\(text.count)"]
+            )
             updateJob(jobID, status: .playing, error: nil)
             store.playback.state = .playing
             try dependencies.localSpeechService.speak(text: text, voiceID: selectedVoice)
@@ -876,6 +942,7 @@ final class AppModel: ObservableObject {
 
     private func finishPlayback() {
         finishResourceSampling()
+        finishPerformanceDiagnosticJob(message: "Playback finished.")
         markActiveJobsCompleted()
         store.playback.state = .stopped
         store.playback.elapsedTime = 0
@@ -888,6 +955,16 @@ final class AppModel: ObservableObject {
 
     private func failPlayback(jobID: UUID, logEntryID: UUID, error: AlkiSpeakError) {
         finishResourceSampling()
+        dependencies.performanceDiagnostics.recordMarker(
+            phase: .failure,
+            message: "Playback failed.",
+            jobID: jobID,
+            context: performanceDiagnosticContext([
+                "errorCode": error.code,
+                "errorTitle": error.title
+            ])
+        )
+        finishPerformanceDiagnosticJob(message: "Playback failed.")
         updateJob(jobID, status: .failed, error: error)
         store.playback = PlaybackSnapshot(
             state: .failed,
@@ -978,6 +1055,101 @@ final class AppModel: ObservableObject {
         )
     }
 
+    // MARK: Performance diagnostics
+
+    private func startPerformanceDiagnosticSession() {
+        dependencies.performanceDiagnostics.startSession(
+            context: [
+                "pid": "\(ProcessInfo.processInfo.processIdentifier)",
+                "bundleID": Bundle.main.bundleIdentifier ?? "unknown",
+                "diagnosticLog": dependencies.performanceDiagnostics.logURL.path,
+                "diagnosticSummary": dependencies.performanceDiagnostics.summaryURL.path
+            ]
+        )
+        dependencies.performanceDiagnostics.recordMarker(
+            phase: .idle,
+            message: "AppModel initialized.",
+            jobID: nil,
+            context: performanceDiagnosticContext()
+        )
+    }
+
+    private func startPerformanceDiagnosticSampling() {
+        performanceDiagnosticsTask?.cancel()
+        let interval = UInt64(AppConfig.performanceDiagnosticIdleSampleIntervalSeconds * 1_000_000_000)
+        performanceDiagnosticsTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let system = await SystemResourceMonitor.shared.snapshot()
+                await MainActor.run {
+                    self?.recordPerformanceDiagnosticSample(
+                        system: system,
+                        context: ["source": "app-sampler"]
+                    )
+                }
+                try? await Task.sleep(nanoseconds: interval)
+            }
+        }
+    }
+
+    private func setPerformanceDiagnosticPhase(
+        _ phase: PerformanceDiagnosticPhase,
+        jobID: UUID?,
+        message: String,
+        context: [String: String] = [:]
+    ) {
+        performanceDiagnosticPhase = phase
+        activePerformanceDiagnosticJobID = jobID
+        dependencies.performanceDiagnostics.recordMarker(
+            phase: phase,
+            message: message,
+            jobID: jobID,
+            context: performanceDiagnosticContext(context)
+        )
+    }
+
+    private func finishPerformanceDiagnosticJob(message: String) {
+        guard activePerformanceDiagnosticJobID != nil || performanceDiagnosticPhase != .idle else { return }
+        dependencies.performanceDiagnostics.recordMarker(
+            phase: .idle,
+            message: message,
+            jobID: activePerformanceDiagnosticJobID,
+            context: performanceDiagnosticContext()
+        )
+        performanceDiagnosticPhase = .idle
+        activePerformanceDiagnosticJobID = nil
+    }
+
+    private func recordPerformanceDiagnosticSample(system: SystemResourceSnapshot, context: [String: String]) {
+        let process = dependencies.telemetryService.capture(
+            engineProcessID: dependencies.engineSupervisor.processIdentifier
+        )
+        dependencies.performanceDiagnostics.recordSample(
+            phase: performanceDiagnosticPhase,
+            jobID: activePerformanceDiagnosticJobID,
+            system: system,
+            process: process,
+            context: performanceDiagnosticContext(context)
+        )
+    }
+
+    private func performanceDiagnosticContext(_ extra: [String: String] = [:]) -> [String: String] {
+        var context = [
+            "engineStatus": status.rawValue,
+            "enginePID": dependencies.engineSupervisor.processIdentifier.map(String.init) ?? "nil",
+            "playbackState": store.playback.state.rawValue,
+            "appMode": appMode.rawValue,
+            "voiceSource": diagnosticVoiceSource(for: selectedVoice)
+        ]
+        extra.forEach { context[$0.key] = $0.value }
+        return context
+    }
+
+    private func diagnosticVoiceSource(for voiceID: String) -> String {
+        if voiceID.hasPrefix("apple:") { return "apple" }
+        if voiceID.hasPrefix(EdgeSpeechGenerationService.idPrefix) { return "edge" }
+        return "kokoro"
+    }
+
     // MARK: Query resource sampling
 
     private func startResourceSampling() {
@@ -992,6 +1164,10 @@ final class AppModel: ObservableObject {
                 await MainActor.run {
                     guard let self, self.resourceSamplingGeneration == generation else { return }
                     self.resourceUsageAccumulator.record(snapshot)
+                    self.recordPerformanceDiagnosticSample(
+                        system: snapshot,
+                        context: ["source": "query-sampler"]
+                    )
                 }
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
@@ -1006,6 +1182,17 @@ final class AppModel: ObservableObject {
         guard let usage = resourceUsageAccumulator.usage else { return nil }
         resourceUsageAccumulator.reset()
         store.lastQueryResourceUsage = usage
+        dependencies.performanceDiagnostics.recordMarker(
+            phase: performanceDiagnosticPhase,
+            message: "Query resource sampling finished.",
+            jobID: activePerformanceDiagnosticJobID,
+            context: performanceDiagnosticContext([
+                "sampleCount": "\(usage.sampleCount)",
+                "averageCPUPercent": String(format: "%.1f", usage.averageCPUPercent),
+                "averageRAMUsedMB": String(format: "%.0f", usage.averageRAMUsedMB),
+                "peakRAMUsedMB": String(format: "%.0f", usage.peakRAMUsedMB)
+            ])
+        )
         return usage
     }
 
