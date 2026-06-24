@@ -30,7 +30,7 @@ struct SpeechLogItemView: View {
                     .foregroundStyle(WoadieTheme.foreground)
                     .lineSpacing(3)
                     .lineLimit(2)
-                    .padding(.trailing, 60)
+                    .padding(.trailing, 140)
 
                 HStack(spacing: 8) {
                     Text(entry.voice)

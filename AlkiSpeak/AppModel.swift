@@ -18,7 +18,13 @@ final class AppModel: ObservableObject {
     private var resourceUsageAccumulator = QueryResourceUsageAccumulator()
     private var resourceSamplingGeneration: UInt64 = 0
     private var resourceSamplingTask: Task<Void, Never>?
-    private let playbackSnapshotMinimumInterval: TimeInterval = 1.0 / 60.0
+    // The transport snapshot republishes the whole observable store, which
+    // re-renders the entire view tree (glass surfaces, waveform, voice picker).
+    // 30 Hz keeps the scrubber/timecode smooth while leaving the main thread
+    // free enough that taps on controls and the voice picker stay responsive
+    // during playback. The waveform interpolates per display frame on its own
+    // `TimelineView`, so it stays fluid regardless of this rate.
+    private let playbackSnapshotMinimumInterval: TimeInterval = 1.0 / 30.0
     private var lastPlaybackSnapshotAppliedAt: TimeInterval = 0
     private var performanceDiagnosticsTask: Task<Void, Never>?
     private var performanceDiagnosticPhase: PerformanceDiagnosticPhase = .idle
@@ -385,12 +391,30 @@ final class AppModel: ObservableObject {
     func speak() {
         if appMode == .quick {
             deleteActiveQuickClips()
-            stopPlayback()
         }
+        // A new request always takes over: stop whatever is playing or generating
+        // so the user never has to pause/stop first. The in-flight job (if any) is
+        // superseded by this job's `activeJobID`, and the TTS queue is reset
+        // atomically at the start of the new request.
+        interruptForOverride()
         speak(text: inputText, addToHistory: isProMode && logMode == .auto, targetLogEntryID: nil)
         if appMode == .quick {
             inputText = ""
         }
+    }
+
+    /// Stops the current utterance so a freshly requested one can take over
+    /// immediately. Safe to call when nothing is active. Unlike `stopPlayback()`
+    /// this does not push the transport to `.idle` (the new request overwrites it
+    /// a moment later, so we avoid a visible flash) and it does not fire a
+    /// detached queue cancel — the new request cancels and re-seeds the queue in
+    /// the same task, which keeps the override race-free.
+    private func interruptForOverride() {
+        finishResourceSampling()
+        finishPerformanceDiagnosticJob(message: "Superseded by a new request.")
+        dependencies.playbackCoordinator.stop()
+        dependencies.localSpeechService.stop()
+        markActiveJobsCompleted()
     }
 
     func speakExternalText(_ text: String) {
@@ -399,7 +423,7 @@ final class AppModel: ObservableObject {
         if appMode == .quick {
             deleteActiveQuickClips()
         }
-        stopPlayback()
+        interruptForOverride()
         inputText = trimmed
         if !status.isProcessExpectedAlive && !dependencies.engineSupervisor.isRunning && !isSelectedVoiceLocal && !isSelectedVoiceEdge {
             startEngine()
@@ -618,7 +642,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func sharePlaybackAudio() {
+    func sharePlaybackAudio(from anchorRect: CGRect = .zero) {
         guard let jobID = store.playback.activeJobID,
               let job = store.speechJobs.first(where: { $0.id == jobID })
         else { return }
@@ -631,7 +655,15 @@ final class AppModel: ObservableObject {
                   let contentView = mainWindow.contentView
             else { return }
             let picker = NSSharingServicePicker(items: urls)
-            picker.show(relativeTo: contentView.bounds, of: contentView, preferredEdge: .minY)
+            let rect: NSRect = anchorRect == .zero
+                ? contentView.bounds
+                : NSRect(
+                    x: anchorRect.minX,
+                    y: contentView.bounds.height - anchorRect.maxY,
+                    width: anchorRect.width,
+                    height: anchorRect.height
+                )
+            picker.show(relativeTo: rect, of: contentView, preferredEdge: .minY)
         }
     }
 
@@ -765,6 +797,11 @@ final class AppModel: ObservableObject {
         )
 
         Task {
+            // Supersede any older in-flight generation before this request does
+            // anything. Done here (in the same task, before branching) so it
+            // covers both the remote queue and a remote→local switch, with
+            // deterministic ordering relative to this request's own enqueue.
+            await ttsQueue.cancel()
             if isSelectedVoiceLocal {
                 speakLocal(text: trimmed, jobID: job.id, logEntryID: logEntryID)
                 return
@@ -848,6 +885,14 @@ final class AppModel: ObservableObject {
                 return false
             }), case .failed(let error) = failed.status {
                 throw error
+            }
+
+            // If a newer request superseded this job while we were generating,
+            // do not finalize the transport or persist — the new job now owns
+            // playback and finishing here would prematurely cut it off.
+            guard store.playback.activeJobID == jobID else {
+                finishResourceSampling()
+                return
             }
 
             dependencies.playbackCoordinator.finishEnqueuing()
@@ -1502,9 +1547,12 @@ final class AppModel: ObservableObject {
     }
 
     private func canSpeak(text: String) -> Bool {
+        // Intentionally does not gate on the current playback state: a new
+        // request is allowed to override whatever is playing or generating
+        // (`speak()` interrupts it first), so the user never has to pause or
+        // stop before generating again.
         let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return hasText
-            && !store.playback.state.blocksNewSpeech
             && (status.isAvailableForRemoteSpeech || isSelectedVoiceLocal || isSelectedVoiceEdge)
     }
 }

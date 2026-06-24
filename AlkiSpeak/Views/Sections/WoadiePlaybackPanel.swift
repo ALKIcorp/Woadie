@@ -13,6 +13,7 @@ struct WoadiePlaybackPanel: View {
         default: return "Idle"
         }
     }
+    @State private var shareButtonFrame: CGRect = .zero
 
     var body: some View {
         AlkiGlassSurface {
@@ -96,7 +97,7 @@ struct WoadiePlaybackPanel: View {
                         }
                         Divider()
                         Button("Share via...", systemImage: "square.and.arrow.up") {
-                            model.sharePlaybackAudio()
+                            model.sharePlaybackAudio(from: shareButtonFrame)
                         }
                     } label: {
                         Image(systemName: "square.and.arrow.up")
@@ -111,6 +112,13 @@ struct WoadiePlaybackPanel: View {
                     .help("Save or Share Audio")
                     .disabled(!hasPlayableClip)
                     .opacity(hasPlayableClip ? 1 : 0.4)
+                    .background(
+                        GeometryReader { proxy in
+                            Color.clear
+                                .preference(key: ShareButtonFramePreferenceKey.self, value: proxy.frame(in: .global))
+                        }
+                    )
+                    .onPreferenceChange(ShareButtonFramePreferenceKey.self) { shareButtonFrame = $0 }
                 }
                 .padding(.vertical, 2)
 
@@ -146,6 +154,13 @@ struct WoadiePlaybackPanel: View {
 
     private func format(_ seconds: TimeInterval) -> String {
         String(format: "%02d:%02d", Int(seconds) / 60, Int(seconds) % 60)
+    }
+}
+
+private struct ShareButtonFramePreferenceKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
     }
 }
 

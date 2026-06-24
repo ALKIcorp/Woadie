@@ -38,7 +38,11 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
     private var pausedTime: TimeInterval? = nil
     private var tuning: PlaybackTuning = .default
     private let spectrumAnalyzer = PlaybackSpectrumAnalyzer(sampleCount: 2048, outputBinCount: 128)
-    private let analysisPublishInterval: TimeInterval = 1.0 / 60.0
+    // Each analysis publish hops to the main thread to update the waveform and
+    // transport snapshot. 30 Hz keeps the visuals fluid (the waveform smooths
+    // between frames itself) while halving main-thread wake-ups during playback,
+    // which keeps controls and the voice picker snappy.
+    private let analysisPublishInterval: TimeInterval = 1.0 / 30.0
     private var lastAnalysisPublishTime: TimeInterval = 0
 
     /// URLs of every clip currently queued, in order. Used to assert that tuning

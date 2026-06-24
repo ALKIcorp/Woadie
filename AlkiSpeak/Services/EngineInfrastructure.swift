@@ -162,6 +162,13 @@ actor TTSQueue {
     var segments: [TTSSegment] = []
     var isProcessing = false
 
+    /// Monotonic token identifying the current run. Bumped whenever the queue is
+    /// cancelled or a new `process` claims ownership. A suspended `process` loop
+    /// compares its captured token against this to detect that a newer request
+    /// has superseded it — this is what makes "override the current speech"
+    /// safe even while an old generation is mid-flight on a network `await`.
+    private var generation: UInt64 = 0
+
     var processing: Bool { isProcessing }
 
     func enqueue(_ texts: [String]) {
@@ -184,7 +191,9 @@ actor TTSQueue {
 
     func cancel() {
         isProcessing = false
-        logger.debug("Queue cancellation requested")
+        generation &+= 1
+        segments = []
+        logger.debug("Queue cancellation requested generation=\(self.generation)")
     }
 
     func process(
@@ -193,31 +202,38 @@ actor TTSQueue {
         generate: @escaping (TTSSegment) async throws -> GeneratedSegment,
         onReady: @escaping (TTSSegment) async throws -> Void
     ) async {
-        guard !isProcessing else { return }
+        // Claim ownership of the queue. Any previously running `process` loop now
+        // holds a stale `generation` and will bail at its next checkpoint, so we
+        // never need the old early-return guard that could silently drop a
+        // superseding request while the previous one was suspended.
+        generation &+= 1
+        let myGeneration = generation
         isProcessing = true
-        defer { isProcessing = false }
-        logger.info("Queue processing started segments=\(self.segments.count)")
+        defer { if myGeneration == generation { isProcessing = false } }
+        logger.info("Queue processing started segments=\(self.segments.count) generation=\(myGeneration)")
 
         for index in segments.indices {
-            guard isProcessing, !Task.isCancelled else { return }
+            guard myGeneration == generation, !Task.isCancelled else { return }
             while !(await canGenerate()) {
-                guard isProcessing, !Task.isCancelled else { return }
+                guard myGeneration == generation, !Task.isCancelled else { return }
                 await onWaiting(true)
                 try? await Task.sleep(for: .seconds(2))
             }
             await onWaiting(false)
+            guard myGeneration == generation, segments.indices.contains(index) else { return }
             segments[index].status = .generating
             let segment = segments[index]
             logger.debug("Generating segment index=\(segment.index) chars=\(segment.text.count)")
 
             do {
                 let generated = try await generate(segment)
-                guard isProcessing, !Task.isCancelled, segments.indices.contains(index) else { return }
+                guard myGeneration == generation, !Task.isCancelled, segments.indices.contains(index) else { return }
                 segments[index].audioURL = generated.audioURL
                 segments[index].durationSeconds = generated.durationSeconds
                 segments[index].status = .ready(generated.audioURL)
                 try await onReady(segments[index])
             } catch {
+                guard myGeneration == generation, segments.indices.contains(index) else { return }
                 segments[index].status = .failed(error)
                 logger.error("Segment failed index=\(segment.index) error=\(error.localizedDescription, privacy: .public)")
                 return
