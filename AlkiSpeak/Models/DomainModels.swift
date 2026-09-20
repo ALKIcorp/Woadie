@@ -497,25 +497,33 @@ enum VoiceSource: String, Codable, Hashable, CaseIterable {
     }
 }
 
+enum AppleVoiceQuality: String, Codable, Hashable {
+    case highest
+    case medium
+    case low
+}
+
 struct VoiceOption: Identifiable, Codable, Hashable {
     let id: String
     let label: String
     let source: VoiceSource
     let isAvailable: Bool
+    let appleQuality: AppleVoiceQuality?
 
     /// Apple voices synthesize locally; everything else routes through a server.
     var isLocal: Bool { source == .apple }
 
-    init(id: String, label: String, source: VoiceSource, isAvailable: Bool = true) {
+    init(id: String, label: String, source: VoiceSource, isAvailable: Bool = true, appleQuality: AppleVoiceQuality? = nil) {
         self.id = id
         self.label = label
         self.source = source
         self.isAvailable = isAvailable
+        self.appleQuality = appleQuality
     }
 
     /// Convenience initializer preserving the original `isLocal` call sites.
     init(id: String, label: String, isLocal: Bool) {
-        self.init(id: id, label: label, source: isLocal ? .apple : .kokoro, isAvailable: true)
+        self.init(id: id, label: label, source: isLocal ? .apple : .kokoro, isAvailable: true, appleQuality: nil)
     }
 }
 
@@ -543,9 +551,28 @@ enum VoiceGrouping {
             result.append(Section(id: favoritesSectionID, title: "Favorites", voices: favoriteVoices))
         }
         for source in sourceOrder {
-            let group = voices.filter { $0.source == source }
-            if !group.isEmpty {
-                result.append(Section(id: source.rawValue, title: source.title, voices: group))
+            if source == .apple {
+                let appleVoices = voices.filter { $0.source == .apple }
+                if !appleVoices.isEmpty {
+                    let highest = appleVoices.filter { $0.appleQuality == .highest }
+                    let medium = appleVoices.filter { $0.appleQuality == .medium }
+                    let low = appleVoices.filter { $0.appleQuality == .low }
+
+                    if !highest.isEmpty {
+                        result.append(Section(id: "apple_highest", title: "Apple - Highest Quality", voices: highest))
+                    }
+                    if !medium.isEmpty {
+                        result.append(Section(id: "apple_medium", title: "Apple - Medium Quality", voices: medium))
+                    }
+                    if !low.isEmpty {
+                        result.append(Section(id: "apple_low", title: "Apple - Low Quality", voices: low))
+                    }
+                }
+            } else {
+                let group = voices.filter { $0.source == source }
+                if !group.isEmpty {
+                    result.append(Section(id: source.rawValue, title: source.title, voices: group))
+                }
             }
         }
         return result

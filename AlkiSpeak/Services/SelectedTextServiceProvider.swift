@@ -1,75 +1,87 @@
 import AppKit
 
-enum SelectedTextReader {
-    /// Whether the app currently holds Accessibility (AX) permission. This is a
-    /// pure check that never shows a system dialog, so it is safe to call on every
-    /// invocation. Triggering the permission prompt is handled separately and
-    /// deliberately (see `AppModel.requestAccessibilityAccessOnce`) so we never
-    /// stack duplicate dialogs on the hot path.
-    static var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
+enum SelectedTextReadResult: Equatable {
+    case selected(String)
+    case permissionRequired
+    case noSelection
+}
 
-    @MainActor
-    static func readFocusedSelection() async -> String? {
-        if let text = readAccessibilitySelection() {
-            return text
-        }
+@MainActor
+protocol SelectedTextReading: AnyObject {
+    func readFocusedSelection() async -> SelectedTextReadResult
+    func requestAccessibilityPrompt()
+    func openAccessibilitySettings()
+}
 
-        if AXIsProcessTrusted(), let previousApp = FrontmostAppTracker.shared.previousApp {
-            let pasteboard = NSPasteboard.general
-            
-            let savedItems = pasteboard.pasteboardItems?.map { item -> NSPasteboardItem in
-                let newItem = NSPasteboardItem()
+@MainActor
+final class SelectedTextReader: SelectedTextReading {
+    struct PasteboardSnapshot {
+        private let items: [NSPasteboardItem]
+
+        init(pasteboard: NSPasteboard) {
+            items = pasteboard.pasteboardItems?.map { item in
+                let copy = NSPasteboardItem()
                 for type in item.types {
                     if let data = item.data(forType: type) {
-                        newItem.setData(data, forType: type)
+                        copy.setData(data, forType: type)
                     }
                 }
-                return newItem
-            }
-            
-            let changeCount = pasteboard.changeCount
-            
-            previousApp.activate(options: [])
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            
-            let source = CGEventSource(stateID: .hidSystemState)
-            let cmdDown = CGEvent(keyboardEventSource: source, virtualKey: 0x08, keyDown: true)
-            cmdDown?.flags = .maskCommand
-            let cmdUp = CGEvent(keyboardEventSource: source, virtualKey: 0x08, keyDown: false)
-            cmdUp?.flags = .maskCommand
-            
-            cmdDown?.post(tap: .cghidEventTap)
-            cmdUp?.post(tap: .cghidEventTap)
-            
-            var copiedText: String?
-            for _ in 0..<10 {
-                try? await Task.sleep(nanoseconds: 50_000_000)
-                if pasteboard.changeCount != changeCount {
-                    copiedText = pasteboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-                    break
-                }
-            }
-            
-            if let savedItems {
-                pasteboard.clearContents()
-                pasteboard.writeObjects(savedItems)
-            }
-            
-            if let copiedText {
-                return copiedText
-            }
+                return copy
+            } ?? []
         }
 
-        return NSPasteboard.general.string(forType: .string)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .nilIfEmpty
+        /// Restores only while the pasteboard still contains the copy made by
+        /// this invocation. A later user/app copy must always win.
+        @discardableResult
+        func restore(to pasteboard: NSPasteboard, ifUnchangedSince expectedChangeCount: Int) -> Bool {
+            guard pasteboard.changeCount == expectedChangeCount else { return false }
+            pasteboard.clearContents()
+            if !items.isEmpty {
+                pasteboard.writeObjects(items)
+            }
+            return true
+        }
     }
 
-    @MainActor
-    private static func readAccessibilitySelection() -> String? {
-        guard AXIsProcessTrusted() else { return nil }
+    struct FreshPasteboardRead {
+        let text: String?
+        let changeCount: Int
+    }
 
-        guard let targetApp = FrontmostAppTracker.shared.previousApp ?? NSWorkspace.shared.frontmostApplication else { return nil }
+    /// Whether the app currently holds Accessibility (AX) permission. This is a
+    /// pure check that never shows a system dialog, so it is safe to call on every
+    /// invocation.
+    private var isAccessibilityTrusted: Bool { AXIsProcessTrusted() }
+
+    func readFocusedSelection() async -> SelectedTextReadResult {
+        guard isAccessibilityTrusted else { return .permissionRequired }
+        guard let targetApp = FrontmostAppTracker.shared.previousApp,
+              targetApp.bundleIdentifier != Bundle.main.bundleIdentifier
+        else { return .noSelection }
+
+        if let text = readAccessibilitySelection(from: targetApp) {
+            return .selected(text)
+        }
+
+        if let text = await copySelection(from: targetApp) {
+            return .selected(text)
+        }
+        return .noSelection
+    }
+
+    func requestAccessibilityPrompt() {
+        let options = [
+            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+        ] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+    }
+
+    func openAccessibilitySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func readAccessibilitySelection(from targetApp: NSRunningApplication) -> String? {
         let appElement = AXUIElementCreateApplication(targetApp.processIdentifier)
         var focusedValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
@@ -90,6 +102,53 @@ enum SelectedTextReader {
         else { return nil }
 
         return selectedText.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+
+    private func copySelection(from targetApp: NSRunningApplication) async -> String? {
+        let pasteboard = NSPasteboard.general
+        let snapshot = PasteboardSnapshot(pasteboard: pasteboard)
+        let baselineChangeCount = pasteboard.changeCount
+
+        targetApp.activate(options: [])
+        for _ in 0..<12 {
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == targetApp.processIdentifier {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == targetApp.processIdentifier else {
+            return nil
+        }
+
+        let source = CGEventSource(stateID: .hidSystemState)
+        let commandDown = CGEvent(keyboardEventSource: source, virtualKey: 0x08, keyDown: true)
+        commandDown?.flags = .maskCommand
+        let commandUp = CGEvent(keyboardEventSource: source, virtualKey: 0x08, keyDown: false)
+        commandUp?.flags = .maskCommand
+        commandDown?.post(tap: .cghidEventTap)
+        commandUp?.post(tap: .cghidEventTap)
+
+        for _ in 0..<10 {
+            try? await Task.sleep(for: .milliseconds(50))
+            guard let freshRead = Self.freshRead(from: pasteboard, after: baselineChangeCount) else {
+                continue
+            }
+            snapshot.restore(to: pasteboard, ifUnchangedSince: freshRead.changeCount)
+            return freshRead.text
+        }
+        return nil
+    }
+
+    /// Returns content only after ownership changed during this invocation. It
+    /// deliberately never treats the pre-existing general pasteboard as selected text.
+    static func freshRead(from pasteboard: NSPasteboard, after baselineChangeCount: Int) -> FreshPasteboardRead? {
+        let observedChangeCount = pasteboard.changeCount
+        guard observedChangeCount != baselineChangeCount else { return nil }
+        let text = pasteboard.string(forType: .string)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+        guard pasteboard.changeCount == observedChangeCount else { return nil }
+        return FreshPasteboardRead(text: text, changeCount: observedChangeCount)
     }
 }
 

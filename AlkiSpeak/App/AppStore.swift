@@ -24,6 +24,7 @@ final class AppStore: ObservableObject {
     @Published var lastQueryResourceUsage: QueryResourceUsage?
     @Published var composerText: String = ""
     @Published var userMessage: String = ""
+    @Published var selectedTextPermissionRequired: Bool = false
     @Published var lastError: AlkiSpeakError?
     @Published var showPortInUseAlert: Bool = false
     @Published var portInUsePids: [Int32] = []

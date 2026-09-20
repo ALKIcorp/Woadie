@@ -12,6 +12,12 @@ final class AppModel: ObservableObject {
     private let favoritesStore = VoiceFavoritesStore()
     private var cancellables: Set<AnyCancellable> = []
     private var engineStartTask: Task<Void, Never>?
+    /// The task running the current generation/playback request. Cancelled by
+    /// `interruptForOverride()` so a superseding request actually tears down the
+    /// in-flight network call (cooperative cancellation propagates through
+    /// `URLSession.data(for:)`) instead of letting it finish uselessly in the
+    /// background while only its result gets discarded.
+    private var activeSpeechTask: Task<Void, Never>?
     private var engineStartGeneration: UInt64 = 0
     private var queryStartedAt: ContinuousClock.Instant?
     private var queryResourceBefore: SystemResourceSnapshot = .empty
@@ -44,9 +50,13 @@ final class AppModel: ObservableObject {
     }
     var selectedVoice: String {
         get { store.selectedVoiceID }
-        set { store.selectedVoiceID = newValue }
+        set {
+            store.selectedVoiceID = newValue
+            saveWorkspace()
+        }
     }
     var message: String { store.userMessage }
+    var selectedTextPermissionRequired: Bool { store.selectedTextPermissionRequired }
     var engineCheckMessage: String? {
         guard let issue = store.engineHealth.latestIssue else { return nil }
         return "\(issue.title): \(issue.description) Probable cause: \(issue.probableCause)"
@@ -218,6 +228,14 @@ final class AppModel: ObservableObject {
 
         store.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: AVSpeechSynthesizer.availableVoicesDidChangeNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.consoleTrace("availableVoicesDidChangeNotification received")
+                self?.refreshLocalVoices()
+            }
             .store(in: &cancellables)
 
         consoleTrace("wiring service callbacks")
@@ -410,6 +428,8 @@ final class AppModel: ObservableObject {
     /// detached queue cancel — the new request cancels and re-seeds the queue in
     /// the same task, which keeps the override race-free.
     private func interruptForOverride() {
+        activeSpeechTask?.cancel()
+        activeSpeechTask = nil
         finishResourceSampling()
         finishPerformanceDiagnosticJob(message: "Superseded by a new request.")
         dependencies.playbackCoordinator.stop()
@@ -433,37 +453,32 @@ final class AppModel: ObservableObject {
 
     func speakSelectedTextFromMenuBar() {
         Task {
-            if let selectedText = await SelectedTextReader.readFocusedSelection() {
+            switch await dependencies.selectedTextReader.readFocusedSelection() {
+            case .selected(let selectedText):
+                store.selectedTextPermissionRequired = false
+                store.userMessage = ""
                 speakExternalText(selectedText)
-                return
-            }
-
-            // Only request Accessibility after the pasteboard fallback also fails.
-            // Repeated invocations remain guarded so rapid clicks cannot stack prompts.
-            guard SelectedTextReader.isAccessibilityTrusted else {
+            case .permissionRequired:
+                store.selectedTextPermissionRequired = true
+                store.userMessage = "Accessibility access is required to read selected text."
                 requestAccessibilityAccessOnce()
-                store.userMessage = "Allow AlkiSpeak under System Settings → Privacy & Security → Accessibility, then try again."
-                return
+            case .noSelection:
+                store.selectedTextPermissionRequired = false
+                store.userMessage = "No text is selected in another app. Select text and try again."
             }
-            store.userMessage = "Select text in another app first."
         }
     }
 
-    /// Fires the macOS Accessibility prompt at most once per app launch and opens
-    /// the relevant Settings pane. Repeated invocations are no-ops while still
-    /// untrusted, so rapid clicks can never stack multiple system dialogs.
+    /// Fires the asynchronous macOS Accessibility prompt at most once per app
+    /// launch. Opening System Settings remains an explicit, repeatable user action.
     private func requestAccessibilityAccessOnce() {
         guard !hasRequestedAccessibilityPrompt else { return }
         hasRequestedAccessibilityPrompt = true
+        dependencies.selectedTextReader.requestAccessibilityPrompt()
+    }
 
-        let options = [
-            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
-        ] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
-        }
+    func openAccessibilitySettings() {
+        dependencies.selectedTextReader.openAccessibilitySettings()
     }
 
     func setAppMode(_ mode: AppMode) {
@@ -724,6 +739,8 @@ final class AppModel: ObservableObject {
     }
 
     func stopPlayback() {
+        activeSpeechTask?.cancel()
+        activeSpeechTask = nil
         finishResourceSampling()
         finishPerformanceDiagnosticJob(message: "Playback stopped.")
         dependencies.playbackCoordinator.stop()
@@ -796,7 +813,7 @@ final class AppModel: ObservableObject {
             statusMessage: nil
         )
 
-        Task {
+        activeSpeechTask = Task {
             // Supersede any older in-flight generation before this request does
             // anything. Done here (in the same task, before branching) so it
             // covers both the remote queue and a remote→local switch, with
@@ -1027,9 +1044,6 @@ final class AppModel: ObservableObject {
             return VoiceOption(id: id, label: "Kokoro - \(id)", source: .kokoro)
         }
         store.voiceOptions = dependencies.localSpeechService.voiceOptions + remoteOptions
-        if isSelectedVoiceLocal, let remoteDefault = remoteOptions.first(where: { $0.id == AppConfig.defaultVoice }) ?? remoteOptions.first {
-            selectedVoice = remoteDefault.id
-        }
         selectedVoice = VoiceSelection.resolved(
             current: selectedVoice,
             in: store.voiceOptions,

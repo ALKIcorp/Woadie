@@ -279,25 +279,129 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     @MainActor
-    func testMenuBarSpeakSelectedTextUsesGeneralPasteboardFallback() async {
+    func testMenuBarSpeakSelectedTextDoesNotSpeakWhenPermissionIsRequired() async {
         let localSpeech = FakeLocalSpeechSynthesizing()
+        let selectedTextReader = FakeSelectedTextReader(result: .permissionRequired)
+        let store = AppStore()
+        store.composerText = "Keep this text"
+        store.activeWorkspace.selectedVoiceID = "apple:test"
+        let model = AppModel(
+            store: store,
+            dependencies: .test(
+                engineSupervisor: FakeEngineSupervisor(),
+                localSpeechService: localSpeech,
+                selectedTextReader: selectedTextReader
+            )
+        )
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("Stale clipboard text.", forType: .string)
+
+        model.speakSelectedTextFromMenuBar()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertTrue(localSpeech.spokenTexts.isEmpty)
+        XCTAssertEqual(store.composerText, "Keep this text")
+        XCTAssertTrue(store.selectedTextPermissionRequired)
+        XCTAssertEqual(selectedTextReader.promptRequestCount, 1)
+        XCTAssertEqual(store.userMessage, "Accessibility access is required to read selected text.")
+    }
+
+    @MainActor
+    func testMenuBarSpeakSelectedTextDoesNotSpeakWhenNothingIsSelected() async {
+        let localSpeech = FakeLocalSpeechSynthesizing()
+        let selectedTextReader = FakeSelectedTextReader(result: .noSelection)
+        let store = AppStore()
+        store.composerText = "Keep this text"
+        store.activeWorkspace.selectedVoiceID = "apple:test"
+        let model = AppModel(
+            store: store,
+            dependencies: .test(
+                engineSupervisor: FakeEngineSupervisor(),
+                localSpeechService: localSpeech,
+                selectedTextReader: selectedTextReader
+            )
+        )
+
+        model.speakSelectedTextFromMenuBar()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertTrue(localSpeech.spokenTexts.isEmpty)
+        XCTAssertEqual(store.composerText, "Keep this text")
+        XCTAssertFalse(store.selectedTextPermissionRequired)
+        XCTAssertEqual(store.userMessage, "No text is selected in another app. Select text and try again.")
+    }
+
+    @MainActor
+    func testMenuBarSpeakSelectedTextSpeaksCurrentSelection() async {
+        let localSpeech = FakeLocalSpeechSynthesizing()
+        let selectedTextReader = FakeSelectedTextReader(result: .selected("Fresh selected text."))
         let store = AppStore()
         store.activeWorkspace.selectedVoiceID = "apple:test"
         let model = AppModel(
             store: store,
             dependencies: .test(
                 engineSupervisor: FakeEngineSupervisor(),
-                localSpeechService: localSpeech
+                localSpeechService: localSpeech,
+                selectedTextReader: selectedTextReader
             )
         )
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString("Fallback selected text.", forType: .string)
 
         model.speakSelectedTextFromMenuBar()
         try? await Task.sleep(nanoseconds: 50_000_000)
 
-        XCTAssertEqual(localSpeech.spokenTexts, ["Fallback selected text."])
-        XCTAssertEqual(store.composerText, "Fallback selected text.")
+        XCTAssertEqual(localSpeech.spokenTexts, ["Fresh selected text."])
+        XCTAssertEqual(store.composerText, "Fresh selected text.")
+        XCTAssertFalse(store.selectedTextPermissionRequired)
+    }
+
+    @MainActor
+    func testFreshPasteboardReadRequiresChangeDuringCurrentAction() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Stale clipboard text.", forType: .string)
+        let baseline = pasteboard.changeCount
+
+        XCTAssertNil(SelectedTextReader.freshRead(from: pasteboard, after: baseline))
+
+        pasteboard.clearContents()
+        pasteboard.setString("Fresh selected text.", forType: .string)
+        let read = SelectedTextReader.freshRead(from: pasteboard, after: baseline)
+
+        XCTAssertEqual(read?.text, "Fresh selected text.")
+        XCTAssertEqual(read?.changeCount, pasteboard.changeCount)
+    }
+
+    @MainActor
+    func testPasteboardRestoreDoesNotOverwriteConcurrentCopy() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Original clipboard text.", forType: .string)
+        let snapshot = SelectedTextReader.PasteboardSnapshot(pasteboard: pasteboard)
+
+        pasteboard.clearContents()
+        pasteboard.setString("Fresh selected text.", forType: .string)
+        let selectionChangeCount = pasteboard.changeCount
+
+        pasteboard.clearContents()
+        pasteboard.setString("Concurrent clipboard text.", forType: .string)
+
+        XCTAssertFalse(snapshot.restore(to: pasteboard, ifUnchangedSince: selectionChangeCount))
+        XCTAssertEqual(pasteboard.string(forType: .string), "Concurrent clipboard text.")
+    }
+
+    @MainActor
+    func testPasteboardRestoreReinstatesOriginalWhenCopyIsStillCurrent() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Original clipboard text.", forType: .string)
+        let snapshot = SelectedTextReader.PasteboardSnapshot(pasteboard: pasteboard)
+
+        pasteboard.clearContents()
+        pasteboard.setString("Fresh selected text.", forType: .string)
+        let selectionChangeCount = pasteboard.changeCount
+
+        XCTAssertTrue(snapshot.restore(to: pasteboard, ifUnchangedSince: selectionChangeCount))
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original clipboard text.")
     }
 
     @MainActor
@@ -1026,6 +1130,29 @@ private final class FakeTelemetryCapturing: TelemetryCapturing {
     func capture(engineProcessID: Int32?) -> ResourceSnapshot { .empty }
 }
 
+@MainActor
+private final class FakeSelectedTextReader: SelectedTextReading {
+    var result: SelectedTextReadResult
+    private(set) var promptRequestCount = 0
+    private(set) var settingsOpenCount = 0
+
+    init(result: SelectedTextReadResult) {
+        self.result = result
+    }
+
+    func readFocusedSelection() async -> SelectedTextReadResult {
+        result
+    }
+
+    func requestAccessibilityPrompt() {
+        promptRequestCount += 1
+    }
+
+    func openAccessibilitySettings() {
+        settingsOpenCount += 1
+    }
+}
+
 private final class FakeWorkspaceStore: ActiveWorkspacePersisting {
     func loadActiveWorkspace() throws -> WorkspaceSession? { nil }
     func saveActiveWorkspace(_ workspace: WorkspaceSession) throws {}
@@ -1060,7 +1187,8 @@ private extension AppDependencies {
     static func test(
         engineSupervisor: EngineSupervising,
         playbackCoordinator: PlaybackCoordinating = FakePlaybackCoordinating(),
-        localSpeechService: LocalSpeechSynthesizing = FakeLocalSpeechSynthesizing()
+        localSpeechService: LocalSpeechSynthesizing = FakeLocalSpeechSynthesizing(),
+        selectedTextReader: SelectedTextReading? = nil
     ) -> AppDependencies {
         AppDependencies(
             engineSupervisor: engineSupervisor,
@@ -1068,6 +1196,7 @@ private extension AppDependencies {
             edgeSpeechService: FakeSpeechGenerating(),
             playbackCoordinator: playbackCoordinator,
             localSpeechService: localSpeechService,
+            selectedTextReader: selectedTextReader ?? FakeSelectedTextReader(result: .noSelection),
             telemetryService: FakeTelemetryCapturing(),
             performanceDiagnostics: NullPerformanceDiagnosticRecorder(),
             workspaceStore: FakeWorkspaceStore(),

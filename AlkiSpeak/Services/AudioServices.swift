@@ -398,10 +398,21 @@ final class AppleSpeechService: NSObject, LocalSpeechSynthesizing, AVSpeechSynth
         voiceLookup.values
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             .map { voice in
-                VoiceOption(
+                let quality: AppleVoiceQuality
+                switch voice.quality {
+                case .premium:
+                    quality = .highest
+                case .enhanced:
+                    quality = .medium
+                default:
+                    quality = .low
+                }
+                return VoiceOption(
                     id: "apple:\(voice.identifier)",
                     label: "Apple - \(voice.name) [\(voice.language)]",
-                    isLocal: true
+                    source: .apple,
+                    isAvailable: true,
+                    appleQuality: quality
                 )
             }
     }

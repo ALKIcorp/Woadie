@@ -200,7 +200,24 @@ private struct MenuBarQuickSpeakView: View {
                 .disabled(quickText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
-            if !model.message.isEmpty {
+            if model.selectedTextPermissionRequired {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Accessibility access is required to read selected text.")
+                        .font(WoadieTheme.mono(size: 10, weight: .medium))
+                        .foregroundStyle(WoadieTheme.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack {
+                        Button("Open Settings") {
+                            model.openAccessibilitySettings()
+                        }
+                        Button("Try Again") {
+                            model.speakSelectedTextFromMenuBar()
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                }
+            } else if !model.message.isEmpty {
                 Text(model.message)
                     .font(WoadieTheme.mono(size: 10, weight: .medium))
                     .foregroundStyle(WoadieTheme.warning)

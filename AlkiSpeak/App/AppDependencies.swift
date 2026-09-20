@@ -7,6 +7,7 @@ struct AppDependencies {
     let edgeSpeechService: SpeechGenerating
     let playbackCoordinator: PlaybackCoordinating
     let localSpeechService: LocalSpeechSynthesizing
+    let selectedTextReader: SelectedTextReading
     let telemetryService: TelemetryCapturing
     let performanceDiagnostics: PerformanceDiagnosticRecording
     let workspaceStore: ActiveWorkspacePersisting
@@ -23,6 +24,7 @@ struct AppDependencies {
             edgeSpeechService: EdgeSpeechGenerationService(),
             playbackCoordinator: AVAudioPlaybackCoordinator(),
             localSpeechService: AppleSpeechService(),
+            selectedTextReader: SelectedTextReader(),
             telemetryService: ProcessTelemetryService(),
             performanceDiagnostics: FilePerformanceDiagnosticRecorder.live(),
             workspaceStore: UserDefaultsWorkspaceStore(),
