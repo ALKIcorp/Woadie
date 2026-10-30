@@ -676,6 +676,19 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertEqual(sections.last?.voices.map(\.id), ["af_heart", "af_sky"])
     }
 
+    func testVoiceGroupingKeepsUngradedAppleVoicesAfterQualityTiers() {
+        let voices = [
+            VoiceOption(id: "apple:p", label: "Premium", source: .apple, appleQuality: .highest),
+            VoiceOption(id: "apple:c", label: "Compact", source: .apple, appleQuality: .low),
+            VoiceOption(id: "apple:u", label: "Ungraded", source: .apple),
+        ]
+
+        let sections = VoiceGrouping.sections(voices: voices, favorites: [])
+
+        XCTAssertEqual(sections.map(\.title), ["Apple - Highest Quality", "Apple - Low Quality", "Apple"])
+        XCTAssertEqual(sections.flatMap(\.voices).map(\.id).sorted(), ["apple:c", "apple:p", "apple:u"])
+    }
+
     func testVoiceGroupingOmitsFavoritesSectionWhenEmpty() {
         let voices = [VoiceOption(id: "af_heart", label: "Heart", source: .kokoro)]
 

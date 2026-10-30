@@ -567,6 +567,13 @@ enum VoiceGrouping {
                     if !low.isEmpty {
                         result.append(Section(id: "apple_low", title: "Apple - Low Quality", voices: low))
                     }
+                    // Voices built without a quality grade (e.g. via the
+                    // `isLocal:` initializer) would otherwise match no tier
+                    // and silently vanish from the picker.
+                    let ungraded = appleVoices.filter { $0.appleQuality == nil }
+                    if !ungraded.isEmpty {
+                        result.append(Section(id: VoiceSource.apple.rawValue, title: VoiceSource.apple.title, voices: ungraded))
+                    }
                 }
             } else {
                 let group = voices.filter { $0.source == source }
