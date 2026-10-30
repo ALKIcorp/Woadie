@@ -90,6 +90,16 @@ struct SettingsOverlayView: View {
                     }
 
                     DisclosureSettingRow(
+                        title: "Cloud Voices",
+                        systemImage: "cloud",
+                        subtitle: model.cloudSettings.voices.isEmpty
+                            ? "OpenRouter, OpenAI, Mistral, local mlx-audio, or any OpenAI-compatible endpoint"
+                            : "\(model.cloudSettings.voices.count) configured"
+                    ) {
+                        CloudVoicesSettings(model: model)
+                    }
+
+                    DisclosureSettingRow(
                         title: "Storage",
                         systemImage: "internaldrive",
                         subtitle: ByteCountFormatter.string(fromByteCount: model.totalStorageBytes, countStyle: .file) + " across \(model.clipInventory.count) clips"
@@ -167,6 +177,118 @@ private struct PlaybackTuningControls: View {
                 step: step
             )
         }
+    }
+}
+
+/// Add/remove cloud voices and manage each provider's Keychain-stored key.
+/// Keys are write-only here: once saved they are never read back into the UI.
+private struct CloudVoicesSettings: View {
+    @ObservedObject var model: AppModel
+    @State private var providerID = CloudProvider.openRouter.id
+    @State private var apiKey = ""
+    @State private var customBaseURL = ""
+    @State private var modelID = ""
+    @State private var voiceID = ""
+    @State private var label = ""
+
+    private var provider: CloudProvider {
+        CloudProvider.provider(withID: providerID) ?? .openRouter
+    }
+
+    private var hasKey: Bool { model.hasCloudAPIKey(for: provider) }
+
+    private var canAdd: Bool {
+        !modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !voiceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (!provider.requiresAPIKey || hasKey)
+            && (provider.defaultBaseURL != nil || !model.cloudSettings.customBaseURL.isEmpty)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Picker("Provider", selection: $providerID) {
+                ForEach(CloudProvider.all) { provider in
+                    Text(provider.name).tag(provider.id)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+
+            if provider.defaultBaseURL == nil {
+                HStack {
+                    TextField("Base URL, e.g. https://host/v1", text: $customBaseURL)
+                        .textFieldStyle(.roundedBorder)
+                    WoadieButton(title: "Save", variant: .default) {
+                        model.setCloudCustomBaseURL(customBaseURL)
+                    }
+                }
+            } else if let base = provider.defaultBaseURL {
+                caption(base)
+            }
+
+            if provider.acceptsAPIKey {
+                HStack {
+                    SecureField(hasKey ? "Key saved in Keychain — paste to replace" : "API key", text: $apiKey)
+                        .textFieldStyle(.roundedBorder)
+                    WoadieButton(title: "Save Key", systemImage: "key", variant: .default) {
+                        model.setCloudAPIKey(apiKey, for: provider)
+                        apiKey = ""
+                    }
+                    .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if hasKey {
+                        IconActionButton(systemImage: "trash") {
+                            model.setCloudAPIKey("", for: provider)
+                        }
+                        .help("Remove the saved \(provider.name) key")
+                    }
+                }
+            }
+
+            HStack {
+                TextField("Model", text: $modelID, prompt: Text(provider.modelPrompt))
+                    .textFieldStyle(.roundedBorder)
+                TextField("Voice", text: $voiceID, prompt: Text(provider.voicePrompt))
+                    .textFieldStyle(.roundedBorder)
+            }
+            HStack {
+                TextField("Label (optional)", text: $label)
+                    .textFieldStyle(.roundedBorder)
+                WoadieButton(title: "Add Voice", systemImage: "plus", variant: .primary) {
+                    model.addCloudVoice(provider: provider, model: modelID, voice: voiceID, label: label)
+                    voiceID = ""
+                    label = ""
+                }
+                .disabled(!canAdd)
+            }
+            if provider.requiresAPIKey && !hasKey {
+                caption("Save a \(provider.name) API key before adding voices.")
+            }
+
+            if !model.cloudSettings.voices.isEmpty {
+                Divider().opacity(0.4)
+                ForEach(model.cloudSettings.voices) { voice in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(voice.label)
+                                .font(WoadieTheme.rounded(size: 12, weight: .semibold))
+                            caption("\(voice.provider?.name ?? voice.providerID) · \(voice.model) · \(voice.voice)")
+                        }
+                        Spacer()
+                        IconActionButton(systemImage: "trash") {
+                            model.removeCloudVoice(voice)
+                        }
+                        .help("Remove this voice")
+                    }
+                }
+            }
+        }
+        .onAppear { customBaseURL = model.cloudSettings.customBaseURL }
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text)
+            .font(WoadieTheme.mono(size: 10, weight: .medium))
+            .foregroundStyle(WoadieTheme.foregroundSubtle)
     }
 }
 

@@ -5,6 +5,9 @@ struct AppDependencies {
     let engineSupervisor: EngineSupervising
     let generationService: SpeechGenerating
     let edgeSpeechService: SpeechGenerating
+    let cloudSpeechService: SpeechGenerating
+    let cloudSpeechSettings: CloudSpeechSettingsStoring
+    let secretStore: SecretStoring
     let playbackCoordinator: PlaybackCoordinating
     let localSpeechService: LocalSpeechSynthesizing
     let selectedTextReader: SelectedTextReading
@@ -18,10 +21,15 @@ struct AppDependencies {
     let speechEntryArchiveService: SpeechEntryArchiveService
 
     static func live() -> AppDependencies {
-        AppDependencies(
+        let cloudSettings = UserDefaultsCloudSpeechSettingsStore()
+        let secrets = KeychainSecretStore()
+        return AppDependencies(
             engineSupervisor: EngineManager.shared,
             generationService: KokoroSpeechGenerationService(),
             edgeSpeechService: EdgeSpeechGenerationService(),
+            cloudSpeechService: CloudSpeechGenerationService(settings: cloudSettings, secrets: secrets),
+            cloudSpeechSettings: cloudSettings,
+            secretStore: secrets,
             playbackCoordinator: AVAudioPlaybackCoordinator(),
             localSpeechService: AppleSpeechService(),
             selectedTextReader: SelectedTextReader(),

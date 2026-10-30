@@ -20,6 +20,7 @@ final class AppStore: ObservableObject {
     @Published var speechEntries: [SpeechEntry] = []
     @Published var voiceOptions: [VoiceOption] = []
     @Published var voiceFavorites: Set<String> = []
+    @Published var cloudSettings = CloudSpeechSettings()
     @Published var playbackTuning: PlaybackTuning = .default
     @Published var lastQueryResourceUsage: QueryResourceUsage?
     @Published var composerText: String = ""

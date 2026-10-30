@@ -485,14 +485,13 @@ enum VoiceSource: String, Codable, Hashable, CaseIterable {
         case .apple: return "Apple"
         case .kokoro: return "Kokoro"
         case .edge: return "Edge"
-        case .api: return "Cloud API"
+        case .api: return "Cloud"
         }
     }
 
     var isSynthesisSupported: Bool {
         switch self {
-        case .apple, .kokoro, .edge: return true
-        case .api: return false
+        case .apple, .kokoro, .edge, .api: return true
         }
     }
 }

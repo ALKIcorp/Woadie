@@ -90,7 +90,7 @@ final class AppModel: ObservableObject {
     }
 
     var canEditText: Bool {
-        status.isAvailableForRemoteSpeech || isSelectedVoiceLocal || isSelectedVoiceEdge
+        status.isAvailableForRemoteSpeech || isSelectedVoiceLocal || isSelectedVoiceEngineIndependent
     }
 
     var isEngineRunning: Bool {
@@ -199,6 +199,73 @@ final class AppModel: ObservableObject {
         dependencies.playbackCoordinator.applyTuning(tuning)
     }
 
+    // MARK: Cloud voices
+
+    var cloudSettings: CloudSpeechSettings { store.cloudSettings }
+
+    func hasCloudAPIKey(for provider: CloudProvider) -> Bool {
+        !(dependencies.secretStore.secret(for: provider.id) ?? "").isEmpty
+    }
+
+    /// Saves (or, with an empty string, removes) a provider's key in the Keychain.
+    func setCloudAPIKey(_ key: String, for provider: CloudProvider) {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try dependencies.secretStore.setSecret(trimmed.isEmpty ? nil : trimmed, for: provider.id)
+            store.userMessage = trimmed.isEmpty ? "\(provider.name) key removed." : "\(provider.name) key saved to Keychain."
+            objectWillChange.send()
+        } catch let error as AlkiSpeakError {
+            record(error)
+        } catch {
+            store.userMessage = error.localizedDescription
+        }
+    }
+
+    func setCloudCustomBaseURL(_ url: String) {
+        store.cloudSettings.customBaseURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        dependencies.cloudSpeechSettings.save(store.cloudSettings)
+    }
+
+    func addCloudVoice(provider: CloudProvider, model: String, voice: String, label: String) {
+        let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let voice = voice.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty, !voice.isEmpty else { return }
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cloudVoice = CloudVoice(
+            providerID: provider.id,
+            model: model,
+            voice: voice,
+            label: trimmedLabel.isEmpty ? "\(provider.name) · \(voice)" : trimmedLabel
+        )
+        store.cloudSettings.voices.append(cloudVoice)
+        dependencies.cloudSpeechSettings.save(store.cloudSettings)
+        refreshCloudVoices()
+        selectedVoice = cloudVoice.voiceID
+    }
+
+    func removeCloudVoice(_ cloudVoice: CloudVoice) {
+        store.cloudSettings.voices.removeAll { $0.id == cloudVoice.id }
+        dependencies.cloudSpeechSettings.save(store.cloudSettings)
+        if selectedVoice == cloudVoice.voiceID {
+            // `mergeVoiceOptions` keeps the selected ID alive on purpose, so
+            // move off the deleted voice before it re-adds it as a ghost.
+            selectedVoice = AppConfig.defaultVoice
+        }
+        if store.voiceFavorites.remove(cloudVoice.voiceID) != nil {
+            favoritesStore.save(store.voiceFavorites)
+        }
+        refreshCloudVoices()
+    }
+
+    /// Rebuilds the catalog's cloud entries from settings without re-fetching
+    /// the Kokoro and Edge lists over the network.
+    private func refreshCloudVoices() {
+        let others = store.voiceOptions
+            .filter { !$0.isLocal && !CloudSpeechGenerationService.isCloudVoice($0.id) }
+            .map(\.id)
+        mergeVoiceOptions(remote: others + store.cloudSettings.voices.map(\.voiceID))
+    }
+
     var lastQueryResourceUsage: QueryResourceUsage? { store.lastQueryResourceUsage }
 
     var isResourceSamplingActiveForTesting: Bool { resourceSamplingTask != nil }
@@ -207,15 +274,18 @@ final class AppModel: ObservableObject {
         selectedVoice.hasPrefix("apple:")
     }
 
-    /// Edge voices are reached over the network like Kokoro, but don't depend
-    /// on the local Kokoro engine being up — they should remain speakable even
-    /// while the engine is starting, stopped, or failed.
-    private var isSelectedVoiceEdge: Bool {
+    /// Edge and cloud voices are reached over the network like Kokoro, but
+    /// don't depend on the local Kokoro engine being up — they should remain
+    /// speakable even while the engine is starting, stopped, or failed.
+    private var isSelectedVoiceEngineIndependent: Bool {
         selectedVoice.hasPrefix(EdgeSpeechGenerationService.idPrefix)
+            || CloudSpeechGenerationService.isCloudVoice(selectedVoice)
     }
 
     private func remoteService(for voice: String) -> SpeechGenerating {
-        voice.hasPrefix(EdgeSpeechGenerationService.idPrefix) ? dependencies.edgeSpeechService : dependencies.generationService
+        if voice.hasPrefix(EdgeSpeechGenerationService.idPrefix) { return dependencies.edgeSpeechService }
+        if CloudSpeechGenerationService.isCloudVoice(voice) { return dependencies.cloudSpeechService }
+        return dependencies.generationService
     }
 
     init(store: AppStore, dependencies: AppDependencies) {
@@ -445,7 +515,7 @@ final class AppModel: ObservableObject {
         }
         interruptForOverride()
         inputText = trimmed
-        if !status.isProcessExpectedAlive && !dependencies.engineSupervisor.isRunning && !isSelectedVoiceLocal && !isSelectedVoiceEdge {
+        if !status.isProcessExpectedAlive && !dependencies.engineSupervisor.isRunning && !isSelectedVoiceLocal && !isSelectedVoiceEngineIndependent {
             startEngine()
         }
         speak(text: trimmed, addToHistory: false, targetLogEntryID: nil)
@@ -989,18 +1059,20 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Fetches the Kokoro and Edge voice lists independently — each is a
-    /// different network dependency (local engine vs. Microsoft's service),
-    /// so one being unreachable should not blank out the other's voices.
+    /// Fetches the Kokoro, Edge and cloud voice lists independently — each is
+    /// a different dependency (local engine, Microsoft's service, user config),
+    /// so one being unreachable should not blank out the others' voices.
     private func fetchVoices() async {
         consoleTrace("fetchVoices starting")
         async let kokoroResult = fetchVoicesResult(from: dependencies.generationService, label: "kokoro")
         async let edgeResult = fetchVoicesResult(from: dependencies.edgeSpeechService, label: "edge")
-        let (kokoro, edge) = await (kokoroResult, edgeResult)
+        async let cloudResult = fetchVoicesResult(from: dependencies.cloudSpeechService, label: "cloud")
+        let (kokoro, edge, cloud) = await (kokoroResult, edgeResult, cloudResult)
 
         var combined: [String] = []
         if let kokoro { combined += kokoro }
         if let edge { combined += edge }
+        if let cloud { combined += cloud }
 
         consoleTrace("fetchVoices completed count=\(combined.count) voices=\(combined.joined(separator: ","))")
         if combined.isEmpty {
@@ -1040,6 +1112,10 @@ final class AppModel: ObservableObject {
             if id.hasPrefix(EdgeSpeechGenerationService.idPrefix) {
                 let name = EdgeSpeechGenerationService.stripPrefix(id)
                 return VoiceOption(id: id, label: "Edge - \(name)", source: .edge)
+            }
+            if CloudSpeechGenerationService.isCloudVoice(id) {
+                let label = store.cloudSettings.voice(withID: id)?.label ?? "Removed voice"
+                return VoiceOption(id: id, label: "Cloud - \(label)", source: .api)
             }
             return VoiceOption(id: id, label: "Kokoro - \(id)", source: .kokoro)
         }
@@ -1336,6 +1412,7 @@ final class AppModel: ObservableObject {
     private func diagnosticVoiceSource(for voiceID: String) -> String {
         if voiceID.hasPrefix("apple:") { return "apple" }
         if voiceID.hasPrefix(EdgeSpeechGenerationService.idPrefix) { return "edge" }
+        if CloudSpeechGenerationService.isCloudVoice(voiceID) { return "cloud" }
         return "kokoro"
     }
 
@@ -1467,6 +1544,7 @@ final class AppModel: ObservableObject {
             store.logMode = mode
         }
         store.voiceFavorites = favoritesStore.load()
+        store.cloudSettings = dependencies.cloudSpeechSettings.load()
         store.playbackTuning = PlaybackTuning.load()
         dependencies.playbackCoordinator.applyTuning(store.playbackTuning)
     }
@@ -1567,6 +1645,6 @@ final class AppModel: ObservableObject {
         // stop before generating again.
         let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return hasText
-            && (status.isAvailableForRemoteSpeech || isSelectedVoiceLocal || isSelectedVoiceEdge)
+            && (status.isAvailableForRemoteSpeech || isSelectedVoiceLocal || isSelectedVoiceEngineIndependent)
     }
 }

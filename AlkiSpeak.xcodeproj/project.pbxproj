@@ -45,9 +45,11 @@
 		A1000026 /* AlkiComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000026 /* AlkiComponents.swift */; };
 		A1000027 /* SettingsOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000027 /* SettingsOverlayView.swift */; };
 		A1000028 /* EdgeSpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000028 /* EdgeSpeechService.swift */; };
+		A1000040 /* CloudSpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000040 /* CloudSpeechService.swift */; };
 		A1000029 /* WoadieLiquidGlassKnob.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000029 /* WoadieLiquidGlassKnob.swift */; };
 		B1000001 /* EngineSupervisorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001 /* EngineSupervisorTests.swift */; };
 		B1000002 /* EdgeSpeechServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000003 /* EdgeSpeechServiceTests.swift */; };
+		B1000010 /* CloudSpeechServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000010 /* CloudSpeechServiceTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -101,10 +103,12 @@
 		A2000026 /* AlkiComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlkiComponents.swift; sourceTree = "<group>"; };
 		A2000027 /* SettingsOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsOverlayView.swift; sourceTree = "<group>"; };
 		A2000028 /* EdgeSpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSpeechService.swift; sourceTree = "<group>"; };
+		A2000040 /* CloudSpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSpeechService.swift; sourceTree = "<group>"; };
 		A2000029 /* WoadieLiquidGlassKnob.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieLiquidGlassKnob.swift; sourceTree = "<group>"; };
 		B2000001 /* EngineSupervisorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineSupervisorTests.swift; sourceTree = "<group>"; };
 		B2000002 /* WoadieTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WoadieTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B2000003 /* EdgeSpeechServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSpeechServiceTests.swift; sourceTree = "<group>"; };
+		B2000010 /* CloudSpeechServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSpeechServiceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -240,6 +244,7 @@
 				A2000024 /* SystemResourceMonitor.swift */,
 				A2000025 /* SelectedTextServiceProvider.swift */,
 				A2000028 /* EdgeSpeechService.swift */,
+				A2000040 /* CloudSpeechService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -267,6 +272,7 @@
 			children = (
 				B2000001 /* EngineSupervisorTests.swift */,
 				B2000003 /* EdgeSpeechServiceTests.swift */,
+				B2000010 /* CloudSpeechServiceTests.swift */,
 			);
 			path = AlkiSpeakTests;
 			sourceTree = "<group>";
@@ -402,6 +408,7 @@
 				A1000026 /* AlkiComponents.swift in Sources */,
 				A1000027 /* SettingsOverlayView.swift in Sources */,
 				A1000028 /* EdgeSpeechService.swift in Sources */,
+				A1000040 /* CloudSpeechService.swift in Sources */,
 				A1000029 /* WoadieLiquidGlassKnob.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -412,6 +419,7 @@
 			files = (
 				B1000001 /* EngineSupervisorTests.swift in Sources */,
 				B1000002 /* EdgeSpeechServiceTests.swift in Sources */,
+				B1000010 /* CloudSpeechServiceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

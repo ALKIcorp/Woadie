@@ -695,11 +695,64 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertEqual(VoiceGrouping.sections(voices: voices, favorites: []).map(\.title), ["Kokoro"])
     }
 
-    func testUnsupportedVoiceSourcesAreModeledButNotSynthesisReady() {
-        XCTAssertFalse(VoiceSource.api.isSynthesisSupported)
+    func testEveryVoiceSourceIsSynthesisReady() {
+        XCTAssertTrue(VoiceSource.api.isSynthesisSupported)
         XCTAssertTrue(VoiceSource.apple.isSynthesisSupported)
         XCTAssertTrue(VoiceSource.kokoro.isSynthesisSupported)
         XCTAssertTrue(VoiceSource.edge.isSynthesisSupported)
+    }
+
+    // MARK: Cloud voices
+
+    @MainActor
+    func testAddingCloudVoiceListsAndSelectsItAndSpeaksWithoutKokoro() {
+        let settings = InMemoryCloudSpeechSettingsStore()
+        let store = AppStore()
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor(), cloudSpeechSettings: settings))
+
+        model.addCloudVoice(provider: .localMLX, model: "kokoro", voice: "af_heart", label: "")
+
+        let added = try! XCTUnwrap(settings.settings.voices.first)
+        XCTAssertEqual(added.label, "Local mlx-audio · af_heart")
+        XCTAssertEqual(model.selectedVoice, added.voiceID)
+        let option = model.voiceOptions.first { $0.id == added.voiceID }
+        XCTAssertEqual(option?.source, .api)
+        XCTAssertEqual(option?.label, "Cloud - Local mlx-audio · af_heart")
+        XCTAssertTrue(model.voiceSections.map(\.title).contains("Cloud"))
+
+        model.inputText = "Hello"
+        XCTAssertFalse(model.isEngineRunning)
+        XCTAssertTrue(model.canSpeak, "Cloud voices must not wait on the Kokoro engine")
+    }
+
+    @MainActor
+    func testRemovingSelectedCloudVoiceDropsItAndMovesSelection() {
+        let settings = InMemoryCloudSpeechSettingsStore()
+        let store = AppStore()
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor(), cloudSpeechSettings: settings))
+        model.addCloudVoice(provider: .openAI, model: "gpt-4o-mini-tts", voice: "marin", label: "Marin")
+        let voice = settings.settings.voices[0]
+        model.toggleFavorite(voice.voiceID)
+
+        model.removeCloudVoice(voice)
+
+        XCTAssertTrue(settings.settings.voices.isEmpty)
+        XCTAssertNotEqual(model.selectedVoice, voice.voiceID)
+        XCTAssertFalse(model.voiceOptions.contains { $0.id == voice.voiceID })
+        XCTAssertFalse(model.isFavorite(voice.voiceID))
+    }
+
+    @MainActor
+    func testCloudAPIKeyRoundTripsThroughSecretStore() {
+        let secrets = InMemorySecretStore()
+        let model = AppModel(store: AppStore(), dependencies: .test(engineSupervisor: FakeEngineSupervisor(), secretStore: secrets))
+
+        XCTAssertFalse(model.hasCloudAPIKey(for: .openRouter))
+        model.setCloudAPIKey("  sk-or-123  ", for: .openRouter)
+        XCTAssertEqual(secrets.secrets["openrouter"], "sk-or-123")
+        XCTAssertTrue(model.hasCloudAPIKey(for: .openRouter))
+        model.setCloudAPIKey("", for: .openRouter)
+        XCTAssertFalse(model.hasCloudAPIKey(for: .openRouter))
     }
 
     func testSelectionPreservedWhenStillPresentEvenIfUnavailable() {
@@ -1201,12 +1254,18 @@ private extension AppDependencies {
         engineSupervisor: EngineSupervising,
         playbackCoordinator: PlaybackCoordinating = FakePlaybackCoordinating(),
         localSpeechService: LocalSpeechSynthesizing = FakeLocalSpeechSynthesizing(),
-        selectedTextReader: SelectedTextReading? = nil
+        selectedTextReader: SelectedTextReading? = nil,
+        cloudSpeechService: SpeechGenerating? = nil,
+        cloudSpeechSettings: CloudSpeechSettingsStoring = InMemoryCloudSpeechSettingsStore(),
+        secretStore: SecretStoring = InMemorySecretStore()
     ) -> AppDependencies {
         AppDependencies(
             engineSupervisor: engineSupervisor,
             generationService: FakeSpeechGenerating(),
             edgeSpeechService: FakeSpeechGenerating(),
+            cloudSpeechService: cloudSpeechService ?? FakeSpeechGenerating(),
+            cloudSpeechSettings: cloudSpeechSettings,
+            secretStore: secretStore,
             playbackCoordinator: playbackCoordinator,
             localSpeechService: localSpeechService,
             selectedTextReader: selectedTextReader ?? FakeSelectedTextReader(result: .noSelection),
