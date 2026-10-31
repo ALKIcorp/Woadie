@@ -759,6 +759,27 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     @MainActor
+    func testLocalPresetAddsOnceWithItsLabelAndWarmsServer() async {
+        let settings = InMemoryCloudSpeechSettingsStore()
+        let server = FakeLocalVoiceServer()
+        let model = AppModel(store: AppStore(), dependencies: .test(engineSupervisor: FakeEngineSupervisor(), cloudSpeechSettings: settings, localVoiceServer: server))
+        let ming = LocalVoiceCatalog.models[0]
+        let charlotte = ming.voices.first { $0.name == "UK_Charlotte" }!
+
+        XCTAssertFalse(model.hasCloudVoice(provider: .localMLX, model: ming.id, voice: charlotte.name))
+        model.addLocalPreset(model: ming, voice: charlotte)
+        model.addLocalPreset(model: ming, voice: charlotte)
+
+        XCTAssertEqual(settings.settings.voices.count, 1, "A second tap must not duplicate the voice")
+        XCTAssertEqual(settings.settings.voices[0].label, "Ming UK Charlotte (local)")
+        XCTAssertEqual(settings.settings.voices[0].providerID, CloudProvider.localMLX.id)
+        XCTAssertTrue(model.hasCloudVoice(provider: .localMLX, model: ming.id, voice: charlotte.name))
+        XCTAssertEqual(model.selectedVoice, settings.settings.voices[0].voiceID)
+        for _ in 0..<50 where server.ensureCount == 0 { await Task.yield() }
+        XCTAssertEqual(server.ensureCount, 1)
+    }
+
+    @MainActor
     func testCloudAPIKeyRoundTripsThroughSecretStore() {
         let secrets = InMemorySecretStore()
         let model = AppModel(store: AppStore(), dependencies: .test(engineSupervisor: FakeEngineSupervisor(), secretStore: secrets))

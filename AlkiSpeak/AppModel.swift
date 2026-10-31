@@ -259,6 +259,16 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func hasCloudVoice(provider: CloudProvider, model: String, voice: String) -> Bool {
+        store.cloudSettings.voices.contains { $0.providerID == provider.id && $0.model == model && $0.voice == voice }
+    }
+
+    /// One-click add for a verified local preset; a no-op if it's already added.
+    func addLocalPreset(model: LocalVoiceCatalog.Model, voice: LocalVoiceCatalog.Voice) {
+        guard !hasCloudVoice(provider: .localMLX, model: model.id, voice: voice.name) else { return }
+        addCloudVoice(provider: .localMLX, model: model.id, voice: voice.name, label: voice.label)
+    }
+
     /// The account's ElevenLabs voices and TTS models, for the Settings pickers.
     func loadElevenLabsCatalog() async throws -> ElevenLabsCatalog {
         try await dependencies.elevenLabsCatalog.fetchCatalog()

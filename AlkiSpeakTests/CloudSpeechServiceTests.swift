@@ -386,4 +386,15 @@ final class CloudSpeechServiceTests: XCTestCase {
         XCTAssertEqual(Set(GeminiSpeechCatalog.voices.map(\.name)).count, 30)
         XCTAssertEqual(GeminiSpeechCatalog.models.map(\.id), ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"])
     }
+
+    // MARK: Local presets
+
+    func testLocalPresetCatalogIsConsistent() {
+        let models = LocalVoiceCatalog.models
+        XCTAssertEqual(Set(models.map(\.id)).count, models.count)
+        XCTAssertTrue(models.allSatisfy { !$0.voices.isEmpty && !$0.license.isEmpty && $0.downloadGB > 0 })
+        let labels = models.flatMap(\.voices).map(\.label)
+        XCTAssertEqual(Set(labels).count, labels.count, "Every preset needs its own label")
+        XCTAssertEqual(models.first?.id, "mlx-community/Ming-3.0-tts-0.5B-bf16", "Best-quality model listed first")
+    }
 }

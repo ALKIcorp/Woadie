@@ -253,6 +253,9 @@ private struct CloudVoicesSettings: View {
             if provider == .gemini {
                 geminiPickers
             }
+            if provider == .localMLX {
+                localPresets
+            }
 
             HStack {
                 TextField("Model", text: $modelID, prompt: Text(provider.modelPrompt))
@@ -331,6 +334,48 @@ private struct CloudVoicesSettings: View {
                 }
             }
         }
+    }
+
+    /// Verified local models with one-click Add per voice. The model downloads
+    /// on first use, so its size is shown up front.
+    private var localPresets: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(LocalVoiceCatalog.models) { localModel in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Text(localModel.name)
+                            .font(WoadieTheme.rounded(size: 12, weight: .semibold))
+                        badge(localModel.license)
+                        badge(String(format: "%.1f GB download", localModel.downloadGB))
+                    }
+                    caption(localModel.summary)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 6, alignment: .leading)], alignment: .leading, spacing: 6) {
+                        ForEach(localModel.voices) { voice in
+                            let added = model.hasCloudVoice(provider: .localMLX, model: localModel.id, voice: voice.name)
+                            WoadieButton(
+                                title: voice.name.replacingOccurrences(of: "_", with: " "),
+                                systemImage: added ? "checkmark" : "plus",
+                                variant: .default
+                            ) {
+                                model.addLocalPreset(model: localModel, voice: voice)
+                            }
+                            .disabled(added)
+                            .help(added ? "Already in your voices" : "Add \(voice.label)")
+                        }
+                    }
+                }
+            }
+            caption("Or enter any other mlx-audio model below.")
+        }
+    }
+
+    private func badge(_ text: String) -> some View {
+        Text(text)
+            .font(WoadieTheme.mono(size: 9, weight: .semibold))
+            .foregroundStyle(WoadieTheme.foregroundSubtle)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .overlay(Capsule().strokeBorder(WoadieTheme.borderSubtle))
     }
 
     /// Gemini's voices and models are fixed, so no request is needed to list them.

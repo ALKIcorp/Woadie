@@ -602,3 +602,54 @@ enum GeminiSpeechCatalog {
         ("Sadaltager", "Knowledgeable"), ("Sulafat", "Warm")
     ].map { Voice(name: $0.0, trait: $0.1) }
 }
+
+// MARK: - Local mlx-audio presets
+
+/// Local models offered as one-click voices in Settings. Each one was run on
+/// this Mac through `mlx_audio.server` before being listed; mlx-audio quietly
+/// falls back to a default voice for unknown names, so only exact built-in
+/// names belong here.
+enum LocalVoiceCatalog {
+    struct Model: Identifiable, Hashable {
+        let id: String
+        let name: String
+        let license: String
+        let downloadGB: Double
+        let summary: String
+        let voices: [Voice]
+    }
+
+    struct Voice: Identifiable, Hashable {
+        let name: String
+        let label: String
+        var id: String { name }
+    }
+
+    static let models: [Model] = [
+        Model(
+            id: "mlx-community/Ming-3.0-tts-0.5B-bf16",
+            name: "Ming-3.0-tts 0.5B",
+            license: "MIT",
+            downloadGB: 3.0,
+            summary: "Speech Arena Elo 1187 · 44.1 kHz · EN, ZH, DE, ES, FR, KO, JA",
+            voices: [
+                Voice(name: "US_James", label: "Ming US James (local)"),
+                Voice(name: "US_Emma", label: "Ming US Emma (local)"),
+                Voice(name: "US_Stella", label: "Ming US Stella (local)"),
+                Voice(name: "UK_George", label: "Ming UK George (local)"),
+                Voice(name: "UK_Charlotte", label: "Ming UK Charlotte (local)")
+            ]
+        ),
+        Model(
+            id: "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit",
+            name: "Qwen3-TTS 1.7B",
+            license: "Apache-2.0",
+            downloadGB: 2.7,
+            summary: "Faster than real time · 24 kHz · English voices",
+            voices: [
+                Voice(name: "Ryan", label: "Qwen3 Ryan (local)"),
+                Voice(name: "Aiden", label: "Qwen3 Aiden (local)")
+            ]
+        )
+    ]
+}
