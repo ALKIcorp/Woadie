@@ -56,7 +56,7 @@ struct StatusIndicatorView: View {
             if expanded {
                 AlkiGlassSurface(cornerRadius: 20) {
                     VStack(alignment: .leading, spacing: 12) {
-                        if let message = model.store.playback.statusMessage {
+                        if let message = model.store.playbackState.statusMessage {
                             Label(message, systemImage: "hourglass")
                                 .foregroundStyle(WoadieTheme.warning)
                         }

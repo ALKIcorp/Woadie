@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import SwiftUI
 
 enum WindowChromePolicy {
@@ -68,7 +67,6 @@ struct AlkiSpeakApp: App {
     // the model: every store change used to re-run it and redraw the
     // menu-bar icon. Views that need updates observe the model themselves.
     @State private var model: AppModel
-    @State private var menuBarIcon: MenuBarIconState
 
     init() {
         if AppConfig.isVerboseConsoleTracingEnabled {
@@ -78,7 +76,6 @@ struct AlkiSpeakApp: App {
         let dependencies = AppDependencies.live()
         let m = AppModel(store: store, dependencies: dependencies)
         _model = State(initialValue: m)
-        _menuBarIcon = State(initialValue: MenuBarIconState(store: store))
         appDelegate.model = m
         if AppConfig.isVerboseConsoleTracingEnabled {
             NSLog("[Woadie][AlkiSpeakApp][init] AppModel attached to AppDelegate")
@@ -125,7 +122,7 @@ struct AlkiSpeakApp: App {
                 MenuBarQuickSpeakView(model: model)
             }
         } label: {
-            MenuBarIconLabel(icon: menuBarIcon)
+            MenuBarIconLabel(playback: model.store.playbackState)
         }
         .menuBarExtraStyle(.window)
     }
@@ -154,21 +151,15 @@ private struct ExportCommandButton: View {
     }
 }
 
-/// The menu-bar icon's only input. It publishes when the icon actually
-/// changes, instead of on every store change, because each update redraws
-/// the status item on every display.
-@MainActor
-private final class MenuBarIconState: ObservableObject {
-    @Published private(set) var systemImage = MenuBarIconState.systemImage(for: .idle)
-    private var cancellable: AnyCancellable?
+/// The menu-bar icon. It reads only the playback state, so it redraws when
+/// that changes rather than on every store change or playback tick, because
+/// each update redraws the status item on every display.
+private struct MenuBarIconLabel: View {
+    let playback: PlaybackState
 
-    init(store: AppStore) {
-        cancellable = store.$playback
-            .map { Self.systemImage(for: $0.state) }
-            .removeDuplicates()
-            .sink { [weak self] image in
-                self?.systemImage = image
-            }
+    var body: some View {
+        Image(systemName: Self.systemImage(for: playback.state))
+            .accessibilityLabel("AlkiSpeak")
     }
 
     private static func systemImage(for state: PlaybackSnapshot.State) -> String {
@@ -180,15 +171,6 @@ private final class MenuBarIconState: ObservableObject {
         default:
             return "waveform.circle"
         }
-    }
-}
-
-private struct MenuBarIconLabel: View {
-    @ObservedObject var icon: MenuBarIconState
-
-    var body: some View {
-        Image(systemName: icon.systemImage)
-            .accessibilityLabel("AlkiSpeak")
     }
 }
 
@@ -211,12 +193,12 @@ private struct MenuBarQuickSpeakView: View {
                 Button {
                     model.togglePlayback()
                 } label: {
-                    Image(systemName: model.playback.state == .playing ? "pause.fill" : "play.fill")
+                    Image(systemName: model.store.playbackState.state == .playing ? "pause.fill" : "play.fill")
                         .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
-                .disabled(model.playback.bufferedDuration <= 0 && model.playback.state != .playing)
-                .help(model.playback.state == .playing ? "Pause playback" : "Play cached audio")
+                .disabled(model.store.playbackState.bufferedDuration <= 0 && model.store.playbackState.state != .playing)
+                .help(model.store.playbackState.state == .playing ? "Pause playback" : "Play cached audio")
             }
 
             Button {

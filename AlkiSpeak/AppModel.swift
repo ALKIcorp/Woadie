@@ -75,7 +75,7 @@ final class AppModel: ObservableObject {
         return dependencies.engineSupervisor.engineState.statusText
     }
     var chatItems: [SpeechEntry] { store.speechEntries }
-    var playingId: UUID? { store.playback.activeLogEntryID }
+    var playingId: UUID? { store.playbackState.activeLogEntryID }
     var showPortInUseAlert: Bool {
         get { store.showPortInUseAlert }
         set { store.showPortInUseAlert = newValue }

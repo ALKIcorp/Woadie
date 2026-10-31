@@ -21,7 +21,7 @@ struct ContentView: View {
                         topControls
 
                         HStack(alignment: .top, spacing: 12) {
-                            waveformPanel
+                            NowSpeakingPanel(model: model)
                             WoadiePlaybackPanel(model: model, onTogglePlayback: model.togglePlayback)
                                 .frame(width: 330)
                         }
@@ -153,7 +153,29 @@ struct ContentView: View {
         }
     }
 
-    private var waveformPanel: some View {
+    private var messageArea: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !model.message.isEmpty {
+                Label(model.message, systemImage: "info.circle")
+                    .foregroundStyle(WoadieTheme.warning)
+            }
+            if let engineCheckMessage = model.engineCheckMessage {
+                Label(engineCheckMessage, systemImage: "engine.combustion")
+                    .foregroundStyle(WoadieTheme.warning)
+            }
+        }
+        .font(WoadieTheme.mono(size: 11, weight: .medium))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .lineLimit(3)
+    }
+}
+
+/// Its own view so playback ticks, which it reads for the waveform, re-render
+/// this panel and not the whole window.
+private struct NowSpeakingPanel: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
         AlkiGlassSurface {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top) {
@@ -196,22 +218,6 @@ struct ContentView: View {
             }
             .padding(22)
         }
-    }
-
-    private var messageArea: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if !model.message.isEmpty {
-                Label(model.message, systemImage: "info.circle")
-                    .foregroundStyle(WoadieTheme.warning)
-            }
-            if let engineCheckMessage = model.engineCheckMessage {
-                Label(engineCheckMessage, systemImage: "engine.combustion")
-                    .foregroundStyle(WoadieTheme.warning)
-            }
-        }
-        .font(WoadieTheme.mono(size: 11, weight: .medium))
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .lineLimit(3)
     }
 
     private var bufferLabel: String {

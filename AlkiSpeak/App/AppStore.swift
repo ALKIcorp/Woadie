@@ -1,5 +1,49 @@
 import Combine
 import Foundation
+import Observation
+
+/// Playback progress, which changes up to 30 times a second while audio
+/// plays. It is observed field by field instead of through
+/// `AppStore.objectWillChange`, so a tick re-renders only the views that read
+/// the field that changed, not the whole window.
+@MainActor
+@Observable
+final class PlaybackState {
+    private(set) var state: PlaybackSnapshot.State = .idle
+    private(set) var activeJobID: UUID?
+    private(set) var activeLogEntryID: UUID?
+    private(set) var currentSegmentID: UUID?
+    private(set) var elapsedTime: TimeInterval = 0
+    private(set) var duration: TimeInterval?
+    private(set) var bufferedDuration: TimeInterval = 0
+    private(set) var statusMessage: String?
+
+    var snapshot: PlaybackSnapshot {
+        get {
+            PlaybackSnapshot(
+                state: state,
+                activeJobID: activeJobID,
+                activeLogEntryID: activeLogEntryID,
+                currentSegmentID: currentSegmentID,
+                elapsedTime: elapsedTime,
+                duration: duration,
+                bufferedDuration: bufferedDuration,
+                statusMessage: statusMessage
+            )
+        }
+        set {
+            // Assign only what changed, so readers of unchanged fields stay put.
+            if state != newValue.state { state = newValue.state }
+            if activeJobID != newValue.activeJobID { activeJobID = newValue.activeJobID }
+            if activeLogEntryID != newValue.activeLogEntryID { activeLogEntryID = newValue.activeLogEntryID }
+            if currentSegmentID != newValue.currentSegmentID { currentSegmentID = newValue.currentSegmentID }
+            if elapsedTime != newValue.elapsedTime { elapsedTime = newValue.elapsedTime }
+            if duration != newValue.duration { duration = newValue.duration }
+            if bufferedDuration != newValue.bufferedDuration { bufferedDuration = newValue.bufferedDuration }
+            if statusMessage != newValue.statusMessage { statusMessage = newValue.statusMessage }
+        }
+    }
+}
 
 @MainActor
 final class AppStore: ObservableObject {
@@ -12,7 +56,11 @@ final class AppStore: ObservableObject {
     @Published var engineDiagnostics: [EngineDiagnostic] = []
     @Published var activeWorkspace: WorkspaceSession = WorkspaceSession()
     @Published var speechJobs: [SpeechJob] = []
-    @Published var playback: PlaybackSnapshot = .idle
+    let playbackState = PlaybackState()
+    var playback: PlaybackSnapshot {
+        get { playbackState.snapshot }
+        set { playbackState.snapshot = newValue }
+    }
     @Published var dashboardTelemetry: DashboardTelemetry = .empty
     @Published var persistence: PersistenceSnapshot = .idle
     @Published var savedPackages: [SavedSpeechPackage] = []

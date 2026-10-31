@@ -1,4 +1,6 @@
 import AVFoundation
+import Observation
+import SwiftUI
 import XCTest
 import SwiftData
 @testable import Woadie
@@ -232,6 +234,48 @@ final class EngineSupervisorTests: XCTestCase {
         let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
 
         XCTAssertTrue(model.canSpeak)
+    }
+
+    @MainActor
+    func testPlaybackTickNotifiesOnlyReadersOfChangedFields() {
+        let store = AppStore()
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+        var elapsedChanged = false
+        var playingIdChanged = false
+        withObservationTracking { _ = model.playback.elapsedTime } onChange: { elapsedChanged = true }
+        withObservationTracking { _ = model.playingId } onChange: { playingIdChanged = true }
+
+        store.playback.elapsedTime = 1.5
+
+        XCTAssertTrue(elapsedChanged)
+        XCTAssertFalse(playingIdChanged, "A time tick must not re-render views that only show the playing entry")
+    }
+
+    @MainActor
+    func testPlaybackPanelRedrawsOnPlaybackTick() {
+        let store = AppStore()
+        store.playback.duration = 120
+        store.playback.bufferedDuration = 120
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+        let host = NSHostingView(rootView: WoadiePlaybackPanel(model: model, onTogglePlayback: {}).frame(width: 330, height: 320))
+        host.frame = NSRect(x: 0, y: 0, width: 330, height: 320)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+
+        func render() -> Data {
+            host.layoutSubtreeIfNeeded()
+            let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+            host.cacheDisplay(in: host.bounds, to: rep)
+            return rep.tiffRepresentation!
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        let before = render()
+
+        store.playback.elapsedTime = 65
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        let after = render()
+
+        XCTAssertNotEqual(before, after, "The elapsed time and scrubber must redraw when playback ticks")
     }
 
     @MainActor
