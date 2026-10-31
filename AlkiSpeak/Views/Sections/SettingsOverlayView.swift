@@ -191,7 +191,38 @@ struct SettingsOverlayView: View {
                     }
                 }
             }
+            AudioCacheSettings()
         }
+    }
+}
+
+/// Size of the replay cache, and a way to empty it.
+private struct AudioCacheSettings: View {
+    @State private var bytes: Int64?
+    @State private var isClearing = false
+
+    var body: some View {
+        SettingsSection(
+            "Audio Cache",
+            subtitle: "Speech you've already generated plays back instantly, with no network or engine work. Kept up to 1 GB; the oldest clips go first."
+        ) {
+            HStack {
+                Text(bytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "…")
+                    .font(WoadieTheme.mono(size: 11, weight: .medium))
+                Spacer()
+                WoadieButton(title: isClearing ? "Clearing…" : "Clear Cache", systemImage: "trash", variant: .default) {
+                    guard !isClearing else { return }
+                    isClearing = true
+                    Task {
+                        await AudioClipCache.shared.removeAll()
+                        bytes = await AudioClipCache.shared.totalBytes()
+                        isClearing = false
+                    }
+                }
+                .disabled(bytes == 0)
+            }
+        }
+        .task { bytes = await AudioClipCache.shared.totalBytes() }
     }
 }
 
