@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import Woadie
 
@@ -414,7 +415,9 @@ final class CloudSpeechServiceTests: XCTestCase {
     func testLocalPresetCatalogIsConsistent() {
         let models = LocalVoiceCatalog.models
         XCTAssertEqual(Set(models.map(\.id)).count, models.count)
-        XCTAssertTrue(models.allSatisfy { !$0.voices.isEmpty && !$0.license.isEmpty && $0.downloadGB > 0 })
+        // A cloning model has no presets: its voices come from recordings.
+        XCTAssertTrue(models.allSatisfy { ($0.supportsVoiceCloning || !$0.voices.isEmpty) && !$0.license.isEmpty && $0.downloadGB > 0 })
+        XCTAssertEqual(models.filter(\.supportsVoiceCloning).map(\.id), [LocalVoiceCatalog.cloningModelID])
         let labels = models.flatMap(\.voices).map(\.label)
         XCTAssertEqual(Set(labels).count, labels.count, "Every preset needs its own label")
         XCTAssertEqual(models.first?.id, "mlx-community/Ming-3.0-tts-0.5B-bf16", "Best-quality model listed first")
@@ -443,6 +446,84 @@ final class CloudSpeechServiceTests: XCTestCase {
         XCTAssertNil(decoded.voices.first?.instructions)
         XCTAssertNil(decoded.voices.first?.speakers)
         XCTAssertFalse(decoded.voices[0].isDesigned)
+        XCTAssertFalse(decoded.voices[0].isCloned)
+    }
+
+    // MARK: Voice cloning
+
+    func testClonedVoiceSendsReferenceInsteadOfVoice() throws {
+        let cloned = CloudVoice(
+            providerID: CloudProvider.localMLX.id,
+            model: LocalVoiceCatalog.cloningModelID,
+            voice: "",
+            label: "My voice (local)",
+            referenceAudioPath: "/tmp/ref.wav",
+            referenceText: "Hi, this is my voice."
+        )
+        settings.settings.voices = [cloned]
+
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(service.makeRequest(text: "Read this.", voiceID: cloned.voiceID).httpBody)) as? [String: String])
+
+        XCTAssertEqual(body["ref_audio"], "/tmp/ref.wav")
+        XCTAssertEqual(body["ref_text"], "Hi, this is my voice.")
+        XCTAssertEqual(body["model"], LocalVoiceCatalog.cloningModelID)
+        XCTAssertNil(body["voice"], "Qwen3 Base rejects a voice name alongside a reference")
+        XCTAssertNil(body["instruct"])
+    }
+
+    func testCloneReferenceIsConvertedTo24kMonoWAV() throws {
+        let dir = try temporaryDirectory()
+        let source = try writeTone(seconds: 5, sampleRate: 48_000, channels: 2, in: dir)
+        let id = UUID()
+
+        let stored = try VoiceCloneReference.store(from: source, id: id, in: dir)
+
+        XCTAssertEqual(stored.lastPathComponent, "\(id.uuidString).wav")
+        let file = try AVAudioFile(forReading: stored)
+        XCTAssertEqual(file.fileFormat.sampleRate, 24_000)
+        XCTAssertEqual(file.fileFormat.channelCount, 1)
+        XCTAssertEqual(Double(file.length) / file.fileFormat.sampleRate, 5, accuracy: 0.05)
+    }
+
+    func testCloneReferenceRejectsTooShortAndTooLongClips() throws {
+        let dir = try temporaryDirectory()
+        let short = try writeTone(seconds: 1, sampleRate: 24_000, channels: 1, in: dir)
+        let long = try writeTone(seconds: 31, sampleRate: 24_000, channels: 1, in: dir)
+
+        for clip in [short, long] {
+            XCTAssertThrowsError(try VoiceCloneReference.store(from: clip, id: UUID(), in: dir)) { error in
+                XCTAssertEqual((error as? AlkiSpeakError)?.code, "generation.clone.reference")
+            }
+        }
+    }
+
+    func testCloneReferenceRemovalStaysInsideItsFolder() throws {
+        let dir = try temporaryDirectory()
+        let outside = try temporaryDirectory().appendingPathComponent("keep.wav")
+        try Data([1]).write(to: outside)
+        let stored = try VoiceCloneReference.store(from: writeTone(seconds: 4, sampleRate: 24_000, channels: 1, in: dir), id: UUID(), in: dir)
+
+        VoiceCloneReference.remove(atPath: outside.path, in: dir)
+        VoiceCloneReference.remove(atPath: stored.path, in: dir)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path), "Never delete files outside the clone folder")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stored.path))
+    }
+
+    private func writeTone(seconds: Double, sampleRate: Double, channels: AVAudioChannelCount, in dir: URL) throws -> URL {
+        let url = dir.appendingPathComponent("tone-\(UUID().uuidString).wav")
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channels))
+        let frames = AVAudioFrameCount(seconds * sampleRate)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+        buffer.frameLength = frames
+        for channel in 0..<Int(channels) {
+            for i in 0..<Int(frames) {
+                buffer.floatChannelData![channel][i] = 0.2 * sin(2 * .pi * 220 * Float(i) / Float(sampleRate))
+            }
+        }
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        try file.write(from: buffer)
+        return url
     }
 
     func testOnlyMingAdvertisesTagsAndVoiceDesign() {

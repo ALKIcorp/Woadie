@@ -139,6 +139,12 @@ struct CloudVoice: Identifiable, Codable, Hashable {
     /// A Gemini two-speaker dialogue voice's cast. When set, the text is read
     /// as a `Name: line` script. Absent in older saved settings.
     let speakers: [DialogueSpeaker]?
+    /// A cloned voice's reference recording (a WAV the app keeps on disk) and
+    /// the exact words spoken in it (local mlx-audio only). When set, they are
+    /// sent as `ref_audio`/`ref_text` in place of `voice`. Absent in older
+    /// saved settings.
+    let referenceAudioPath: String?
+    let referenceText: String?
 
     init(
         id: UUID = UUID(),
@@ -147,7 +153,9 @@ struct CloudVoice: Identifiable, Codable, Hashable {
         voice: String,
         label: String,
         instructions: String? = nil,
-        speakers: [DialogueSpeaker]? = nil
+        speakers: [DialogueSpeaker]? = nil,
+        referenceAudioPath: String? = nil,
+        referenceText: String? = nil
     ) {
         self.id = id
         self.providerID = providerID
@@ -156,10 +164,13 @@ struct CloudVoice: Identifiable, Codable, Hashable {
         self.label = label
         self.instructions = instructions
         self.speakers = speakers
+        self.referenceAudioPath = referenceAudioPath
+        self.referenceText = referenceText
     }
 
     var isDesigned: Bool { !(instructions ?? "").isEmpty }
     var isDialogue: Bool { !(speakers ?? []).isEmpty }
+    var isCloned: Bool { !(referenceAudioPath ?? "").isEmpty }
 
     var voiceID: String { CloudSpeechGenerationService.idPrefix + id.uuidString }
     var provider: CloudProvider? { CloudProvider.provider(withID: providerID) }
@@ -407,7 +418,12 @@ final class CloudSpeechGenerationService: SpeechGenerating {
                 "input": text,
                 "response_format": "mp3"
             ]
-            if provider == .localMLX, let instructions = cloudVoice.instructions, !instructions.isEmpty {
+            if provider == .localMLX, cloudVoice.isCloned {
+                // Qwen3 Base clones from a reference clip plus its transcript;
+                // it rejects a `voice` name alongside them.
+                body["ref_audio"] = cloudVoice.referenceAudioPath
+                body["ref_text"] = cloudVoice.referenceText ?? ""
+            } else if provider == .localMLX, let instructions = cloudVoice.instructions, !instructions.isEmpty {
                 // Ming rejects `voice` and `instruct` together (the server then
                 // answers 200 with an empty body), so a designed voice sends
                 // only its description.
@@ -730,6 +746,8 @@ enum LocalVoiceCatalog {
         var expressionTags: [String] = []
         /// Accepts a free-text voice description (`instruct`) instead of a voice.
         var supportsVoiceDesign = false
+        /// Clones a voice from a reference recording (`ref_audio`/`ref_text`).
+        var supportsVoiceCloning = false
     }
 
     struct Voice: Identifiable, Hashable {
@@ -769,8 +787,20 @@ enum LocalVoiceCatalog {
                 Voice(name: "Ryan", label: "Qwen3 Ryan (local)"),
                 Voice(name: "Aiden", label: "Qwen3 Aiden (local)")
             ]
+        ),
+        Model(
+            id: cloningModelID,
+            name: "Qwen3-TTS 1.7B Base",
+            license: "Apache-2.0",
+            downloadGB: 2.5,
+            summary: "Clones a voice from a short recording · 24 kHz · runs on this Mac",
+            voices: [],
+            supportsVoiceCloning: true
         )
     ]
+
+    /// The Base build of the same Qwen3 model; only Base models clone voices.
+    static let cloningModelID = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-6bit"
 }
 
 extension LocalVoiceCatalog {

@@ -396,6 +396,182 @@ final class PlaybackSpectrumAnalyzer {
     }
 }
 
+// MARK: - Voice cloning
+
+/// Reference recordings for cloned local voices. Each is converted to a 24 kHz
+/// mono 16-bit WAV (what Qwen3 reads) and kept in Application Support, so the
+/// original file can move or be deleted.
+enum VoiceCloneReference {
+    /// Qwen3 needs a few seconds to pick up a voice; long clips make every
+    /// request slower because the reference is processed each time.
+    static let minimumSeconds: Double = 3
+    static let maximumSeconds: Double = 30
+    static let sampleRate: Double = 24_000
+
+    static var directory: URL? {
+        guard let base = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else {
+            return nil
+        }
+        let directory = base.appendingPathComponent("Woadie/VoiceClones", isDirectory: true)
+        guard (try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)) != nil else {
+            return nil
+        }
+        return directory
+    }
+
+    /// Converts `source` (any format AVFoundation reads) and stores it as
+    /// `<id>.wav`. Throws a readable error for clips that are too short, too
+    /// long or unreadable.
+    static func store(from source: URL, id: UUID, in directory: URL? = VoiceCloneReference.directory) throws -> URL {
+        guard let directory else {
+            throw failure("Couldn't create the folder for voice recordings.")
+        }
+        let input: AVAudioFile
+        do {
+            input = try AVAudioFile(forReading: source)
+        } catch {
+            throw failure("Couldn't read that audio file. Use a WAV, M4A, MP3 or AIFF recording.")
+        }
+        let inputFormat = input.processingFormat
+        let seconds = Double(input.length) / inputFormat.sampleRate
+        guard seconds >= minimumSeconds else {
+            throw failure(String(format: "The recording is %.1f s long. Record at least %.0f seconds.", seconds, minimumSeconds))
+        }
+        guard seconds <= maximumSeconds else {
+            throw failure(String(format: "The recording is %.0f s long. Use a clip under %.0f seconds.", seconds, maximumSeconds))
+        }
+
+        guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false),
+              let converter = AVAudioConverter(from: inputFormat, to: outputFormat),
+              let inputBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(input.length)),
+              let outputBuffer = AVAudioPCMBuffer(
+                  pcmFormat: outputFormat,
+                  frameCapacity: AVAudioFrameCount(seconds * sampleRate) + 4_096
+              )
+        else {
+            throw failure("Couldn't convert that recording.")
+        }
+        try input.read(into: inputBuffer)
+
+        var supplied = false
+        var conversionError: NSError?
+        converter.convert(to: outputBuffer, error: &conversionError) { _, status in
+            if supplied {
+                status.pointee = .endOfStream
+                return nil
+            }
+            supplied = true
+            status.pointee = .haveData
+            return inputBuffer
+        }
+        if let conversionError {
+            throw failure("Couldn't convert that recording: \(conversionError.localizedDescription)")
+        }
+
+        let destination = directory.appendingPathComponent("\(id.uuidString).wav")
+        try? FileManager.default.removeItem(at: destination)
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false
+        ]
+        let output = try AVAudioFile(forWriting: destination, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        try output.write(from: outputBuffer)
+        return destination
+    }
+
+    /// Deletes a stored reference, but only inside the voice-clone folder.
+    static func remove(atPath path: String, in directory: URL? = VoiceCloneReference.directory) {
+        guard let directory else { return }
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard url.deletingLastPathComponent().path == directory.standardizedFileURL.path else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    private static func failure(_ message: String) -> AlkiSpeakError {
+        .generation(
+            code: "clone.reference",
+            title: "Voice Recording Problem",
+            message: message,
+            recoverySuggestion: "Record or choose a clear 5–20 second clip of one person speaking."
+        )
+    }
+}
+
+/// Records a short microphone clip for voice cloning to a temporary WAV.
+@MainActor
+final class VoiceCloneRecorder: ObservableObject {
+    @Published private(set) var isRecording = false
+    @Published private(set) var elapsed: TimeInterval = 0
+
+    private var recorder: AVAudioRecorder?
+    private var timer: Timer?
+
+    /// Asks for microphone access (once) and starts recording.
+    func start() async throws {
+        guard !isRecording else { return }
+        let granted: Bool
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            granted = true
+        case .notDetermined:
+            granted = await AVCaptureDevice.requestAccess(for: .audio)
+        default:
+            granted = false
+        }
+        guard granted else {
+            throw AlkiSpeakError.generation(
+                code: "clone.microphone",
+                title: "Microphone Access Needed",
+                message: "Woadie isn't allowed to use the microphone.",
+                recoverySuggestion: "Allow it in System Settings → Privacy & Security → Microphone, or choose an existing recording instead."
+            )
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("woadie-clone-\(UUID().uuidString).wav")
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 48_000,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false
+        ]
+        let recorder = try AVAudioRecorder(url: url, settings: settings)
+        guard recorder.record(forDuration: VoiceCloneReference.maximumSeconds) else {
+            throw AlkiSpeakError.generation(
+                code: "clone.record",
+                title: "Recording Failed",
+                message: "The microphone recording couldn't start.",
+                recoverySuggestion: "Check the input device in System Settings → Sound, then try again."
+            )
+        }
+        self.recorder = recorder
+        elapsed = 0
+        isRecording = true
+        // A ticking label only while recording; nothing runs otherwise.
+        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let recorder = self.recorder else { return }
+                self.elapsed = recorder.currentTime
+                if !recorder.isRecording { _ = self.stop() }
+            }
+        }
+    }
+
+    /// Stops recording and returns the clip.
+    func stop() -> URL? {
+        timer?.invalidate()
+        timer = nil
+        guard let recorder else { return nil }
+        if recorder.isRecording { recorder.stop() }
+        self.recorder = nil
+        isRecording = false
+        return recorder.url
+    }
+}
+
 final class AppleSpeechService: NSObject, LocalSpeechSynthesizing, AVSpeechSynthesizerDelegate {
     var onFinished: (() -> Void)?
     private let synthesizer = AVSpeechSynthesizer()

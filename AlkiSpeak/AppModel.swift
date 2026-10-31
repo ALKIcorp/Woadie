@@ -262,6 +262,33 @@ final class AppModel: ObservableObject {
         ))
     }
 
+    /// Adds a local voice cloned from a recording. `transcript` must be the
+    /// exact words spoken in it; Qwen3 lines the two up to learn the voice.
+    /// The clip is converted and kept by the app, so the original can go.
+    func addClonedLocalVoice(recording: URL, transcript: String, label: String) throws {
+        let transcript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else {
+            throw AlkiSpeakError.generation(
+                code: "clone.transcript",
+                title: "Transcript Needed",
+                message: "Type the exact words spoken in the recording.",
+                recoverySuggestion: "The cloned voice copies how those words were said, so they must match the clip."
+            )
+        }
+        let id = UUID()
+        let stored = try VoiceCloneReference.store(from: recording, id: id)
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        appendCloudVoice(CloudVoice(
+            id: id,
+            providerID: CloudProvider.localMLX.id,
+            model: LocalVoiceCatalog.cloningModelID,
+            voice: "",
+            label: trimmedLabel.isEmpty ? "My voice (local)" : trimmedLabel,
+            referenceAudioPath: stored.path,
+            referenceText: transcript
+        ))
+    }
+
     private func appendCloudVoice(_ cloudVoice: CloudVoice) {
         store.cloudSettings.voices.append(cloudVoice)
         dependencies.cloudSpeechSettings.save(store.cloudSettings)
@@ -453,6 +480,9 @@ final class AppModel: ObservableObject {
     func removeCloudVoice(_ cloudVoice: CloudVoice) {
         store.cloudSettings.voices.removeAll { $0.id == cloudVoice.id }
         dependencies.cloudSpeechSettings.save(store.cloudSettings)
+        if let referencePath = cloudVoice.referenceAudioPath {
+            VoiceCloneReference.remove(atPath: referencePath)
+        }
         if selectedVoice == cloudVoice.voiceID {
             // `mergeVoiceOptions` keeps the selected ID alive on purpose, so
             // move off the deleted voice before it re-adds it as a ghost.

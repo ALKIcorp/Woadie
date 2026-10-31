@@ -16,6 +16,8 @@
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Woadie records a short clip of your voice, only when you press Record, to create a cloned voice that stays on this Mac.</string>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>
