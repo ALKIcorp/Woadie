@@ -113,8 +113,12 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         isPaused = !wasPlaying
         pausedTime = isPaused ? baseOffsetSeconds : nil
 
-        startEngineIfNeeded()
-        if wasPlaying { player.play() }
+        // Scheduling works on a paused engine; only run it when audio will
+        // actually play, so a seek while paused doesn't restart the tap.
+        if wasPlaying {
+            startEngineIfNeeded()
+            player.play()
+        }
         for offset in location.segmentIndex..<entries.count {
             let entry = entries[offset]
             guard let file = try? AVAudioFile(forReading: entry.url) else { continue }
@@ -131,6 +135,7 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         if player.isPlaying && !isPaused {
             pausedTime = currentElapsed()
             player.pause()
+            pauseEngine()
             isPaused = true
             publish(state: .paused)
             return
@@ -157,7 +162,7 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
     func stop() {
         scheduleGeneration &+= 1
         player.stop()
-        if engine.isRunning { engine.pause() }
+        pauseEngine()
         entries.removeAll()
         completedSegmentIDs.removeAll()
         expectedFormat = nil
@@ -213,6 +218,7 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
     private func complete() {
         scheduleGeneration &+= 1
         player.stop()
+        pauseEngine()
         isPaused = false
         pausedTime = nil
         publish(state: .stopped)
@@ -252,6 +258,13 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         guard graphReady, !engine.isRunning else { return }
         engine.prepare()
         try? engine.start()
+    }
+
+    /// A running engine renders silence and keeps the analysis tap firing,
+    /// which republishes the transport 30 times a second, so it only runs
+    /// while audio is actually playing.
+    private func pauseEngine() {
+        if engine.isRunning { engine.pause() }
     }
 
     private func setupGraphIfNeeded(format: AVAudioFormat) {

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 enum WindowChromePolicy {
@@ -62,7 +63,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct AlkiSpeakApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var model: AppModel
+    // Held in `@State`, not `@StateObject`, so the scene body doesn't observe
+    // the model: every store change used to re-run it and redraw the
+    // menu-bar icon. Views that need updates observe the model themselves.
+    @State private var model: AppModel
+    @State private var menuBarIcon: MenuBarIconState
 
     init() {
         if AppConfig.isVerboseConsoleTracingEnabled {
@@ -71,7 +76,8 @@ struct AlkiSpeakApp: App {
         let store = AppStore()
         let dependencies = AppDependencies.live()
         let m = AppModel(store: store, dependencies: dependencies)
-        _model = StateObject(wrappedValue: m)
+        _model = State(initialValue: m)
+        _menuBarIcon = State(initialValue: MenuBarIconState(store: store))
         appDelegate.model = m
         if AppConfig.isVerboseConsoleTracingEnabled {
             NSLog("[Woadie][AlkiSpeakApp][init] AppModel attached to AppDelegate")
@@ -80,28 +86,25 @@ struct AlkiSpeakApp: App {
 
     var body: some Scene {
         WindowGroup("AlkiSpeak", id: "main") {
-            ContentView()
-                .environmentObject(model)
-                .preferredColorScheme(model.appearance.preferredColorScheme)
-                .onChange(of: scenePhase) { _, phase in
-                    guard !AppConfig.isRunningUnitTests else { return }
-                    switch phase {
-                    case .active:
-                        model.startEngine()
-                    case .inactive, .background:
-                        break
-                    @unknown default:
-                        break
-                    }
+            AppearanceRoot(model: model) {
+                ContentView()
+                    .environmentObject(model)
+            }
+            .onChange(of: scenePhase) { _, phase in
+                guard !AppConfig.isRunningUnitTests else { return }
+                switch phase {
+                case .active:
+                    model.startEngine()
+                case .inactive, .background:
+                    break
+                @unknown default:
+                    break
                 }
+            }
         }
         .commands {
             CommandGroup(after: .saveItem) {
-                Button("Export") {
-                    model.exportSelectedEntry()
-                }
-                .keyboardShortcut("e", modifiers: [.command, .shift])
-                .disabled(model.selectedLogEntry == nil)
+                ExportCommandButton(model: model)
 
                 Button("Import") {
                     model.importSpeechEntry()
@@ -111,19 +114,64 @@ struct AlkiSpeakApp: App {
         }
 
         Settings {
-            SettingsView(model: model)
-                .preferredColorScheme(model.appearance.preferredColorScheme)
+            AppearanceRoot(model: model) {
+                SettingsView(model: model)
+            }
         }
 
-        MenuBarExtra("AlkiSpeak", systemImage: menuBarSystemImage) {
-            MenuBarQuickSpeakView(model: model)
-                .preferredColorScheme(model.appearance.preferredColorScheme)
+        MenuBarExtra {
+            AppearanceRoot(model: model) {
+                MenuBarQuickSpeakView(model: model)
+            }
+        } label: {
+            MenuBarIconLabel(icon: menuBarIcon)
         }
         .menuBarExtraStyle(.window)
     }
+}
 
-    private var menuBarSystemImage: String {
-        switch model.playback.state {
+/// Applies the chosen appearance from its own view, so only this view (not
+/// the whole scene) re-evaluates when the model changes.
+private struct AppearanceRoot<Content: View>: View {
+    @ObservedObject var model: AppModel
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        content.preferredColorScheme(model.appearance.preferredColorScheme)
+    }
+}
+
+private struct ExportCommandButton: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        Button("Export") {
+            model.exportSelectedEntry()
+        }
+        .keyboardShortcut("e", modifiers: [.command, .shift])
+        .disabled(model.selectedLogEntry == nil)
+    }
+}
+
+/// The menu-bar icon's only input. It publishes when the icon actually
+/// changes, instead of on every store change, because each update redraws
+/// the status item on every display.
+@MainActor
+private final class MenuBarIconState: ObservableObject {
+    @Published private(set) var systemImage = MenuBarIconState.systemImage(for: .idle)
+    private var cancellable: AnyCancellable?
+
+    init(store: AppStore) {
+        cancellable = store.$playback
+            .map { Self.systemImage(for: $0.state) }
+            .removeDuplicates()
+            .sink { [weak self] image in
+                self?.systemImage = image
+            }
+    }
+
+    private static func systemImage(for state: PlaybackSnapshot.State) -> String {
+        switch state {
         case .playing, .preparing:
             return "waveform.circle.fill"
         case .paused:
@@ -131,6 +179,15 @@ struct AlkiSpeakApp: App {
         default:
             return "waveform.circle"
         }
+    }
+}
+
+private struct MenuBarIconLabel: View {
+    @ObservedObject var icon: MenuBarIconState
+
+    var body: some View {
+        Image(systemName: icon.systemImage)
+            .accessibilityLabel("AlkiSpeak")
     }
 }
 

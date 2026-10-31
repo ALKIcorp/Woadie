@@ -13,9 +13,16 @@ struct WoadieWaveformView: View {
     @State private var targetBars: [CGFloat] = Array(repeating: 0, count: barCount)
     /// Timestamp of the last render frame for delta-time based interpolation.
     @State private var lastFrameTime: CFTimeInterval = 0
+    /// True once every bar has reached its target. The per-frame timeline
+    /// pauses then, since each frame would draw the same picture, and resumes
+    /// as soon as new targets arrive.
+    @State private var isSettled = false
+
+    /// Gap below which a bar counts as having reached its target.
+    private static let settleThreshold: CGFloat = 0.0005
 
     var body: some View {
-        TimelineView(.animation) { context in
+        TimelineView(.animation(paused: isSettled)) { context in
             Canvas(rendersAsynchronously: true) { ctx, size in
                 drawBars(context: ctx, size: size)
             }
@@ -26,6 +33,7 @@ struct WoadieWaveformView: View {
         .padding(12)
         .onChange(of: magnitudes) {
             updateTargets()
+            resumeIfNeeded()
         }
         .onChange(of: isActive) {
             if !isActive {
@@ -33,7 +41,15 @@ struct WoadieWaveformView: View {
                     targetBars[i] = 0
                 }
             }
+            resumeIfNeeded()
         }
+    }
+
+    private func resumeIfNeeded() {
+        guard isSettled, zip(displayBars, targetBars).contains(where: { abs($0 - $1) > Self.settleThreshold }) else { return }
+        // Restart dt from a single frame instead of the whole paused interval.
+        lastFrameTime = 0
+        isSettled = false
     }
 
     // MARK: - Target Update (runs when FFT data arrives)
@@ -71,12 +87,25 @@ struct WoadieWaveformView: View {
         let releaseFactor = 1 - exp(-releaseSpeed * dt)
 
         let count = Self.barCount
+        var next = displayBars
+        var settled = true
         for i in 0..<count {
             let target = targetBars[i]
-            let current = displayBars[i]
+            let current = next[i]
             let diff = target - current
+            if abs(diff) <= Self.settleThreshold {
+                next[i] = target
+                continue
+            }
+            settled = false
             let factor = diff > 0 ? attackFactor : releaseFactor
-            displayBars[i] = current + diff * factor
+            next[i] = current + diff * factor
+        }
+        if next != displayBars {
+            displayBars = next
+        }
+        if settled {
+            isSettled = true
         }
     }
 

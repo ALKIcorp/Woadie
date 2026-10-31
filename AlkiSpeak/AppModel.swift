@@ -1342,13 +1342,19 @@ final class AppModel: ObservableObject {
             }
             return VoiceOption(id: id, label: "Kokoro - \(id)", source: .kokoro)
         }
-        store.voiceOptions = dependencies.localSpeechService.voiceOptions + remoteOptions
-        selectedVoice = VoiceSelection.resolved(
+        let options = dependencies.localSpeechService.voiceOptions + remoteOptions
+        if options != store.voiceOptions {
+            store.voiceOptions = options
+        }
+        let resolved = VoiceSelection.resolved(
             current: selectedVoice,
             in: store.voiceOptions,
             fallback: AppConfig.defaultVoice
         )
-        saveWorkspace()
+        if resolved != selectedVoice {
+            // The setter persists the workspace.
+            selectedVoice = resolved
+        }
     }
 
     private func wireServiceCallbacks() {
@@ -1360,6 +1366,7 @@ final class AppModel: ObservableObject {
                     self.consoleTrace("ignored stale engine health status=\(summary.status.rawValue) currentStatus=\(self.store.engineStatus.rawValue)")
                     return
                 }
+                let wasReady = self.store.engineStatus == .idle || self.store.engineStatus == .running
                 self.store.engineHealth = summary
                 self.store.engineStatus = summary.status
                 self.refreshTelemetry()
@@ -1367,7 +1374,12 @@ final class AppModel: ObservableObject {
                     if self.store.lastError?.code.hasPrefix("engine.") == true {
                         self.store.clearErrorMessage()
                     }
-                    await self.fetchVoices()
+                    // Health checks repeat every few seconds; the voice lists
+                    // (Edge's comes over the internet) only need fetching when
+                    // the engine becomes ready, not on every check.
+                    if !wasReady {
+                        await self.fetchVoices()
+                    }
                 }
             }
         }
@@ -1417,12 +1429,16 @@ final class AppModel: ObservableObject {
     private func shouldApplyPlaybackSnapshot(_ snapshot: PlaybackTransportSnapshot) -> Bool {
         let playback = store.playback
         let now = Date.timeIntervalSinceReferenceDate
-        let shouldApplyImmediately =
+        let structureChanged =
             snapshot.state != playback.state ||
-            snapshot.state != .playing ||
             snapshot.currentSegmentID != playback.currentSegmentID ||
             abs(snapshot.bufferedDuration - playback.bufferedDuration) > 0.001 ||
             abs(snapshot.totalDuration - (playback.duration ?? 0)) > 0.001
+        let elapsedChanged = abs(snapshot.elapsedTime - playback.elapsedTime) > 0.001
+
+        // An identical snapshot would still republish the whole store, so drop it.
+        guard structureChanged || elapsedChanged else { return false }
+        let shouldApplyImmediately = structureChanged || snapshot.state != .playing
 
         guard shouldApplyImmediately || now - lastPlaybackSnapshotAppliedAt >= playbackSnapshotMinimumInterval else {
             return false
