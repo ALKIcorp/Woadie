@@ -135,7 +135,7 @@ struct SettingsOverlayView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(maxWidth: 320)
+                .fixedSize()
             }
             SettingsSection("Keyboard Shortcuts", subtitle: "Speak selected text from any app") {
                 HotKeySettings()

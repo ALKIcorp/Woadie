@@ -150,7 +150,9 @@ struct ContentView: View {
                 Text("Pro").tag(AppMode.pro)
             }
             .pickerStyle(.segmented)
-            .frame(width: 150)
+            // Natural width, so the "Mode" label never wraps when the
+            // segments size themselves evenly.
+            .fixedSize()
 
             Spacer()
 
