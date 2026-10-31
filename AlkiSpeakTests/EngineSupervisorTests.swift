@@ -235,6 +235,56 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     @MainActor
+    func testIdleStoppedKokoroEngineKeepsGenerateAvailable() {
+        let store = AppStore()
+        store.composerText = "Wake up"
+        store.activeWorkspace.selectedVoiceID = "af_heart"
+        store.engineStatus = .running
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+
+        model.stopPythonKokoroEngineIfIdle()
+
+        XCTAssertEqual(store.engineStatus, .stopped)
+        XCTAssertTrue(model.isEngineOnStandby)
+        XCTAssertEqual(model.engineStatusLabel, "Kokoro Standby")
+        XCTAssertTrue(model.canSpeak)
+        XCTAssertTrue(model.canEditText)
+    }
+
+    @MainActor
+    func testManuallyStoppedKokoroEngineStillDisablesGenerate() {
+        let store = AppStore()
+        store.composerText = "Stay off"
+        store.activeWorkspace.selectedVoiceID = "af_heart"
+        store.engineStatus = .running
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+
+        model.stopPythonKokoroEngineIfIdle()
+        model.stopEngine()
+
+        XCTAssertFalse(model.isEngineOnStandby)
+        XCTAssertFalse(model.canSpeak)
+    }
+
+    @MainActor
+    func testGenerateWakesIdleStoppedKokoroEngine() async {
+        let supervisor = FakeEngineSupervisor()
+        let store = AppStore()
+        store.composerText = "Wake up"
+        store.activeWorkspace.selectedVoiceID = "af_heart"
+        store.engineStatus = .running
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: supervisor))
+        model.stopPythonKokoroEngineIfIdle()
+
+        model.speak()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(supervisor.startCallCount, 1)
+        XCTAssertEqual(store.playback.statusMessage, "Starting Kokoro…")
+        model.stopEngine()
+    }
+
+    @MainActor
     func testPlaybackControlTogglesCachedAudioWithoutGeneratingAgain() {
         let playback = FakePlaybackCoordinating()
         let store = AppStore()

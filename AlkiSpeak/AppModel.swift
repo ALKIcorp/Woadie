@@ -19,6 +19,11 @@ final class AppModel: ObservableObject {
     /// background while only its result gets discarded.
     private var activeSpeechTask: Task<Void, Never>?
     private var engineStartGeneration: UInt64 = 0
+    /// Stops the Python Kokoro engine once it has sat unused for a while.
+    private var pythonEngineIdleTask: Task<Void, Never>?
+    /// The Python engine was stopped to save memory rather than by the user,
+    /// so Generate wakes it instead of being disabled.
+    private var pythonEngineSleeping = false
     private var queryStartedAt: ContinuousClock.Instant?
     private var queryResourceBefore: SystemResourceSnapshot = .empty
     private var resourceUsageAccumulator = QueryResourceUsageAccumulator()
@@ -94,7 +99,7 @@ final class AppModel: ObservableObject {
     }
 
     var canEditText: Bool {
-        status.isAvailableForRemoteSpeech || isSelectedVoiceLocal || isSelectedVoiceEngineIndependent
+        status.isAvailableForRemoteSpeech || isSelectedVoiceLocal || isSelectedVoiceEngineIndependent || isEngineOnStandby
     }
 
     var isEngineRunning: Bool {
@@ -527,10 +532,47 @@ final class AppModel: ObservableObject {
         store.cloudSettings.voice(withID: selectedVoice)?.provider == .localMLX
     }
 
-    /// The engine is off because the selected voice doesn't use it; it starts
-    /// as soon as a Kokoro voice is picked.
+    /// The engine is off because the selected voice doesn't use it, or it
+    /// went unused long enough to be stopped. It starts again when a Kokoro
+    /// voice is picked or Generate is pressed.
     var isEngineOnStandby: Bool {
-        status == .stopped && engineStartTask == nil && !isSelectedVoicePythonKokoro
+        status == .stopped && engineStartTask == nil && (!isSelectedVoicePythonKokoro || pythonEngineSleeping)
+    }
+
+    /// How long the Python Kokoro engine may sit unused before it stops,
+    /// freeing PyTorch and the model. Shorter when no Kokoro voice is selected.
+    static let pythonEngineIdleTimeout: TimeInterval = 3 * 60
+    static let pythonEngineUnselectedTimeout: TimeInterval = 30
+
+    private func schedulePythonEngineIdleStop() {
+        pythonEngineIdleTask?.cancel()
+        guard !AppConfig.isRunningUnitTests else { return }
+        let timeout = isSelectedVoicePythonKokoro ? Self.pythonEngineIdleTimeout : Self.pythonEngineUnselectedTimeout
+        pythonEngineIdleTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.stopPythonKokoroEngineIfIdle()
+        }
+    }
+
+    /// Starts the engine after an idle stop and waits until it answers.
+    private func wakePythonKokoroEngine() async throws {
+        guard !status.isAvailableForRemoteSpeech else { return }
+        store.playback.statusMessage = "Starting Kokoro…"
+        defer { store.playback.statusMessage = nil }
+        if engineStartTask == nil {
+            startEngine()
+        }
+        await engineStartTask?.value
+        try Task.checkCancellation()
+        guard status.isAvailableForRemoteSpeech else {
+            throw AlkiSpeakError.engine(
+                code: "wake-failed",
+                title: "Kokoro Didn't Start",
+                message: "The Kokoro engine didn't come back up for this request.",
+                recoverySuggestion: "Press Generate again, or restart the engine."
+            )
+        }
     }
 
     /// Starts the Python Kokoro engine only when the selected voice needs it.
@@ -558,20 +600,24 @@ final class AppModel: ObservableObject {
         } else if isSelectedVoiceLocalMLX {
             warmUpLocalVoiceServer()
         }
+        schedulePythonEngineIdleStop()
     }
 
-    /// Stops the Python Kokoro engine when a native Kokoro voice takes over,
-    /// unless it is still generating. Finished clips play without it.
-    private func stopPythonKokoroEngineIfIdle() {
+    /// Stops the Python Kokoro engine to free its memory (a native Kokoro
+    /// voice took over, or it went unused), unless it is still generating.
+    /// Finished clips play without it.
+    func stopPythonKokoroEngineIfIdle() {
         let supervisor = dependencies.engineSupervisor
         guard status.isProcessExpectedAlive || supervisor.isRunning,
               supervisor.healthSummary.activeJobID == nil
         else { return }
-        consoleTrace("stopping Python Kokoro engine; a native Kokoro voice was selected")
+        consoleTrace("stopping idle Python Kokoro engine")
         engineStartGeneration &+= 1
         engineStartTask?.cancel()
         engineStartTask = nil
+        pythonEngineIdleTask?.cancel()
         supervisor.stop()
+        pythonEngineSleeping = true
         store.engineStatus = .stopped
     }
 
@@ -668,6 +714,7 @@ final class AppModel: ObservableObject {
         engineStartTask?.cancel()
         engineStartGeneration &+= 1
         let startGeneration = engineStartGeneration
+        pythonEngineSleeping = false
         store.clearErrorMessage()
         store.engineStatus = .starting
         consoleTrace("engineStatus set to starting")
@@ -747,6 +794,8 @@ final class AppModel: ObservableObject {
         engineStartTask = nil
         store.clearErrorMessage()
         stopPlayback()
+        pythonEngineIdleTask?.cancel()
+        pythonEngineSleeping = false
         dependencies.engineSupervisor.stop()
         store.engineStatus = .stopped
         consoleTrace("engineStatus set to stopped")
@@ -836,8 +885,13 @@ final class AppModel: ObservableObject {
         }
         interruptForOverride()
         inputText = trimmed
-        if !status.isProcessExpectedAlive && !dependencies.engineSupervisor.isRunning && !isSelectedVoiceLocal && !isSelectedVoiceEngineIndependent {
-            startEngine()
+        if !status.isProcessExpectedAlive && !dependencies.engineSupervisor.isRunning && isSelectedVoicePythonKokoro {
+            if status == .stopped {
+                // The request below starts the engine and waits for it.
+                pythonEngineSleeping = true
+            } else {
+                startEngine()
+            }
         }
         speak(text: trimmed, addToHistory: false, targetLogEntryID: nil)
     }
@@ -1223,13 +1277,18 @@ final class AppModel: ObservableObject {
 
     private func speakRemote(segments: [SpeechSegment], voice: String, jobID: UUID, logEntryID: UUID) async {
         dependencies.engineSupervisor.noteRequestStarted(jobID: jobID)
+        pythonEngineIdleTask?.cancel()
         defer {
             dependencies.engineSupervisor.noteRequestFinished(jobID: jobID)
             persistSavedLogsIfNeeded()
+            schedulePythonEngineIdleStop()
         }
 
         do {
             guard !segments.isEmpty else { return }
+            if remoteService(for: voice) === dependencies.generationService {
+                try await wakePythonKokoroEngine()
+            }
             if segments.count > 1 {
                 updateJob(jobID, status: .queued, error: nil)
                 store.userMessage = "Speaking \(segments.count) segments in order…"
@@ -1321,7 +1380,10 @@ final class AppModel: ObservableObject {
             finishResourceSampling()
             finishPerformanceDiagnosticJob(message: "Speech request cancelled.")
             updateJob(jobID, status: .cancelled, error: nil)
-            store.playback = .idle
+            // A newer request that superseded this one owns playback now.
+            if store.playback.activeJobID == jobID {
+                store.playback = .idle
+            }
         } catch {
             let appError = normalizeGenerationError(error)
             failPlayback(jobID: jobID, logEntryID: logEntryID, error: appError)
@@ -1369,6 +1431,7 @@ final class AppModel: ObservableObject {
                 }
                 await fetchVoices()
                 refreshTelemetry()
+                schedulePythonEngineIdleStop()
                 return
             }
             consoleTrace("waitForEngineReady health not ready attempt=\(attempt) status=\(store.engineStatus.rawValue)")
@@ -2028,7 +2091,7 @@ final class AppModel: ObservableObject {
         // stop before generating again.
         let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return hasText
-            && (status.isAvailableForRemoteSpeech || isSelectedVoiceLocal || isSelectedVoiceEngineIndependent)
+            && (status.isAvailableForRemoteSpeech || isSelectedVoiceLocal || isSelectedVoiceEngineIndependent || isEngineOnStandby)
     }
 }
 
