@@ -16,7 +16,8 @@ struct WoadieInputRow: View {
                 )
 
                 if let speakers = model.selectedDialogueSpeakers {
-                    Text("DIALOGUE: START EACH LINE WITH " + speakers.map { "\($0.name.uppercased()):" }.joined(separator: " OR "))
+                    Text("DIALOGUE: START EACH LINE WITH " + speakers.map { "\($0.name.uppercased()):" }.joined(separator: " OR ")
+                         + " · ADD A NOTE LIKE \(speakers[0].name.uppercased()) (CHEERFUL):")
                         .font(WoadieTheme.mono(size: 9, weight: .medium))
                         .tracking(0.4)
                         .foregroundStyle(WoadieTheme.foregroundSubtle)

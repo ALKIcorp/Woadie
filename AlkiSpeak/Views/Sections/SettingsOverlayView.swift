@@ -460,7 +460,7 @@ private struct CloudVoicesSettings: View {
                 }
             }
             HStack {
-                caption("Then write lines like “\(dialogueNames[0]): Hi!” and “\(dialogueNames[1]): Hello!”")
+                caption("Then write lines like “\(dialogueNames[0]): Hi!” and “\(dialogueNames[1]) (calm and relaxed): Hello!”")
                 Spacer()
                 WoadieButton(title: "Add Dialogue", systemImage: "person.2", variant: .default) {
                     let speakers = zip(dialogueNames, dialogueVoices).map { DialogueSpeaker(name: $0, voice: $1) }

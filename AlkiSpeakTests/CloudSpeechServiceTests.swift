@@ -518,4 +518,50 @@ final class CloudSpeechServiceTests: XCTestCase {
         XCTAssertEqual(rebuilt.last, .init(speaker: "Joe", text: "Short closer."))
         XCTAssertTrue(rebuilt.dropFirst().dropLast().allSatisfy { $0.speaker == "Jane" })
     }
+
+    // MARK: Dialogue delivery notes
+
+    func testDeliveryNotesBecomeTurnStyle() throws {
+        let dialogue = CloudVoice(providerID: CloudProvider.gemini.id, model: "gemini-3.8-flash-tts", voice: "Puck+Kore", label: "Dialogue", speakers: cast)
+        settings.settings.voices = [dialogue]
+        try secrets.setSecret("g-test", for: CloudProvider.gemini.id)
+
+        let request = try service.makeRequest(
+            text: "Joe (cheerful and friendly): How's it going today Jane?\nJane: Not too bad, how about you?",
+            voiceID: dialogue.voiceID
+        )
+
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+        let content = try XCTUnwrap((body["input"] as? [[String: Any]])?.first?["content"] as? [[String: Any]])
+        let metadata = content.map { ($0["annotations"] as? [[String: String]])?.first ?? [:] }
+        XCTAssertEqual(metadata[0], ["type": "speech_metadata", "speaker": "Joe", "style": "cheerful and friendly"])
+        XCTAssertEqual(metadata[1], ["type": "speech_metadata", "speaker": "Jane"], "No note means no style key")
+        XCTAssertEqual(content[0]["text"] as? String, "How's it going today Jane?", "The note is never spoken")
+    }
+
+    func testDeliveryNoteParsingRules() {
+        let script = """
+        JOE (Whisper: very soft): Can you hear me?
+        Still whispering here.
+        Jane ( ): An empty note is ignored.
+        Jane(calm):No spaces needed.
+        Joe (excited) Not a label without a colon.
+        """
+        XCTAssertEqual(DialogueScript.turns(in: script, speakers: ["Joe", "Jane"]), [
+            .init(speaker: "Joe", text: "Can you hear me? Still whispering here.", style: "Whisper: very soft"),
+            .init(speaker: "Jane", text: "An empty note is ignored."),
+            .init(speaker: "Jane", text: "No spaces needed. Joe (excited) Not a label without a colon.", style: "calm")
+        ])
+    }
+
+    func testSplittingKeepsEachTurnsNote() {
+        let longTurn = String(repeating: "Jane keeps calmly explaining the plan. ", count: 12)
+        let script = "Joe (nervous): Is it ready?\nJane (calm and relaxed): \(longTurn)"
+        let segments = DialogueScript.segments(for: script, speakers: ["Joe", "Jane"])
+
+        let rebuilt = segments.flatMap { DialogueScript.turns(in: $0, speakers: ["Joe", "Jane"]) }
+        XCTAssertGreaterThan(rebuilt.count, 2)
+        XCTAssertEqual(rebuilt.first, .init(speaker: "Joe", text: "Is it ready?", style: "nervous"))
+        XCTAssertTrue(rebuilt.dropFirst().allSatisfy { $0.speaker == "Jane" && $0.style == "calm and relaxed" })
+    }
 }

@@ -393,7 +393,9 @@ final class CloudSpeechGenerationService: SpeechGenerating {
                     )
                 }
                 content = turns.map { turn in
-                    ["type": "text", "text": turn.text, "annotations": [["type": "speech_metadata", "speaker": turn.speaker]]]
+                    var metadata = ["type": "speech_metadata", "speaker": turn.speaker]
+                    if let style = turn.style { metadata["style"] = style }
+                    return ["type": "text", "text": turn.text, "annotations": [metadata]]
                 }
                 speechConfig = ["speakers": speakers.map { ["speaker": $0.name, "voice": $0.voice] }]
             } else {
@@ -727,29 +729,40 @@ struct DialogueSpeaker: Codable, Hashable {
     let voice: String
 }
 
-/// Reads `Name: line` scripts for two-speaker dialogue voices.
+/// Reads `Name: line` scripts for two-speaker dialogue voices. A label may
+/// carry a delivery note in parentheses, `Name (cheerful and friendly): line`,
+/// which Gemini receives as that turn's `style`.
 enum DialogueScript {
     struct Turn: Hashable {
         let speaker: String
         let text: String
+        var style: String? = nil
+
+        /// The script label for this turn, e.g. `Joe:` or `Joe (calm):`.
+        var label: String {
+            if let style { return "\(speaker) (\(style)):" }
+            return "\(speaker):"
+        }
     }
 
     /// Gemini's single-request limit for multi-speaker audio.
     static let maxSpeakers = 2
 
-    /// A line starting with a cast name and a colon opens that speaker's turn
-    /// (names match case-insensitively). Any other line continues the current
-    /// turn, or the first speaker's if the script doesn't open with a name.
+    /// A line starting with a cast name (optionally followed by a `(note)`)
+    /// and a colon opens that speaker's turn; names match case-insensitively.
+    /// Any other line continues the current turn, with its note, or the first
+    /// speaker's if the script doesn't open with a name.
     static func turns(in text: String, speakers: [String]) -> [Turn] {
         guard let firstSpeaker = speakers.first else { return [] }
         var turns: [Turn] = []
         var currentSpeaker: String?
+        var currentStyle: String?
         var currentText = ""
 
         func flush() {
             let trimmed = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
             if let currentSpeaker, !trimmed.isEmpty {
-                turns.append(Turn(speaker: currentSpeaker, text: trimmed))
+                turns.append(Turn(speaker: currentSpeaker, text: trimmed, style: currentStyle))
             }
             currentText = ""
         }
@@ -757,10 +770,11 @@ enum DialogueScript {
         for rawLine in text.components(separatedBy: .newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             guard !line.isEmpty else { continue }
-            if let (speaker, spoken) = labeledLine(line, speakers: speakers) {
+            if let labeled = labeledLine(line, speakers: speakers) {
                 flush()
-                currentSpeaker = speaker
-                currentText = spoken
+                currentSpeaker = labeled.speaker
+                currentStyle = labeled.style
+                currentText = labeled.spoken
             } else {
                 if currentSpeaker == nil { currentSpeaker = firstSpeaker }
                 currentText += currentText.isEmpty ? line : " " + line
@@ -771,12 +785,11 @@ enum DialogueScript {
     }
 
     /// Splits a script into request-sized pieces at turn boundaries. Every
-    /// piece starts with a `Name:` label, so each request knows who speaks;
-    /// a turn too long for one request is split and each part re-labeled.
+    /// piece starts with its turn's label, note included, so each request
+    /// knows who speaks and how; an over-long turn is split and re-labeled.
     static func segments(for text: String, speakers: [String], maxCharacters: Int = 250) -> [String] {
         let lines = turns(in: text, speakers: speakers).flatMap { turn -> [String] in
-            let pieces = TextBatcher.segments(for: turn.text)
-            return pieces.map { "\(turn.speaker): \($0)" }
+            TextBatcher.segments(for: turn.text).map { "\(turn.label) \($0)" }
         }
         var segments: [String] = []
         var current = ""
@@ -794,11 +807,24 @@ enum DialogueScript {
         return segments
     }
 
-    private static func labeledLine(_ line: String, speakers: [String]) -> (String, String)? {
-        guard let colon = line.firstIndex(of: ":") else { return nil }
-        let label = line[..<colon].trimmingCharacters(in: .whitespaces)
-        guard let speaker = speakers.first(where: { $0.caseInsensitiveCompare(label) == .orderedSame }) else { return nil }
-        let spoken = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-        return (speaker, spoken)
+    /// `Name: spoken` or `Name (note): spoken`. The note may itself contain a
+    /// colon, since the label's colon is the first one after the note.
+    private static let labelPattern = try! NSRegularExpression(
+        pattern: #"^([^:(]+?)\s*(?:\(([^)]*)\))?\s*:(.*)$"#
+    )
+
+    private static func labeledLine(_ line: String, speakers: [String]) -> (speaker: String, style: String?, spoken: String)? {
+        let range = NSRange(line.startIndex..., in: line)
+        guard let match = labelPattern.firstMatch(in: line, range: range),
+              let nameRange = Range(match.range(at: 1), in: line),
+              let spokenRange = Range(match.range(at: 3), in: line)
+        else { return nil }
+        let name = line[nameRange].trimmingCharacters(in: .whitespaces)
+        guard let speaker = speakers.first(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) else { return nil }
+        let style = Range(match.range(at: 2), in: line)
+            .map { line[$0].trimmingCharacters(in: .whitespaces) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        let spoken = line[spokenRange].trimmingCharacters(in: .whitespaces)
+        return (speaker, style, spoken)
     }
 }
