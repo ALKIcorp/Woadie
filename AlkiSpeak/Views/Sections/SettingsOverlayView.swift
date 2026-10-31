@@ -63,6 +63,7 @@ struct SettingsOverlayView: View {
     enum Tab: String, CaseIterable, Identifiable {
         case general = "General"
         case playback = "Playback"
+        case pronunciation = "Text & Pronunciation"
         case voices = "Voices & Services"
         case engines = "Downloads & Engines"
         case storage = "Storage"
@@ -73,6 +74,7 @@ struct SettingsOverlayView: View {
             switch self {
             case .general: return "gearshape"
             case .playback: return "slider.horizontal.3"
+            case .pronunciation: return "character.bubble"
             case .voices: return "person.wave.2"
             case .engines: return "arrow.down.circle"
             case .storage: return "internaldrive"
@@ -143,6 +145,16 @@ struct SettingsOverlayView: View {
         case .playback:
             SettingsSection("Speed and Pitch", subtitle: "Changes what you hear; saved clips are never re-rendered") {
                 PlaybackTuningControls(model: model)
+            }
+        case .pronunciation:
+            SettingsSection("Clean Up Text Before Speaking", subtitle: "Fixes what voices stumble on. Your text in the editor isn't changed") {
+                TextCleanupSettings(model: model)
+            }
+            SettingsSection("Try It", subtitle: "Type or paste anything to see what will be spoken") {
+                SpokenTextPreview(model: model)
+            }
+            SettingsSection("Pronunciations", subtitle: "Teach voices how to say names and words. Applies to every voice") {
+                PronunciationSettings(model: model)
             }
         case .voices:
             SettingsSection("Your Voices", subtitle: "Pick, preview, clone or describe voices") {
@@ -248,6 +260,167 @@ private struct SettingsSection<Content: View>: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             content
+        }
+    }
+}
+
+/// The cleanup rule switches.
+private struct TextCleanupSettings: View {
+    var model: AppModel
+
+    var body: some View {
+        let options = model.store.textCleanup
+        VStack(alignment: .leading, spacing: 6) {
+            toggle("Clean up text", \.isEnabled)
+            Group {
+                toggle("Remove formatting: headings, bold, bullets, links, code blocks, HTML", \.formatting)
+                toggle("Read web and email addresses as \"link to github dot com\"", \.links)
+                toggle("Skip citation marks like [12]", \.citations)
+                toggle("Read versions like v1.2.3 as \"version 1 point 2 point 3\"", \.versions)
+                toggle("Join lines a PDF broke mid-sentence", \.lineWraps)
+            }
+            .padding(.leading, 18)
+            .disabled(!options.isEnabled)
+        }
+    }
+
+    private func toggle(_ title: String, _ keyPath: WritableKeyPath<TextCleanupOptions, Bool>) -> some View {
+        Toggle(title, isOn: Binding(
+            get: { model.store.textCleanup[keyPath: keyPath] },
+            set: { value in
+                var options = model.store.textCleanup
+                options[keyPath: keyPath] = value
+                model.setTextCleanup(options)
+            }
+        ))
+        .font(WoadieTheme.rounded(size: 12, weight: .regular))
+    }
+}
+
+/// Shows the cleaned-up, pronunciation-applied text for whatever is typed.
+private struct SpokenTextPreview: View {
+    var model: AppModel
+    @State private var sample = "## Release notes\nSee **v2.1.0** at https://www.github.com/alki/woadie [3]. Questions? hello@alki.example"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Text", text: $sample, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(2...5)
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "speaker.wave.2")
+                    .foregroundStyle(WoadieTheme.foregroundSubtle)
+                Text(model.spokenText(for: sample))
+                    .font(WoadieTheme.rounded(size: 12, weight: .regular))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                IconActionButton(systemImage: "play.circle") { model.previewText(sample) }
+                    .help("Hear it in the selected voice")
+            }
+            .padding(10)
+            .background(WoadieTheme.surface, in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+}
+
+/// The pronunciation list: word, how to say it, a sample button.
+private struct PronunciationSettings: View {
+    var model: AppModel
+    @State private var newWord = ""
+    @State private var newSayAs = ""
+    @State private var message: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(model.store.pronunciations) { entry in
+                HStack(spacing: 8) {
+                    TextField("Word", text: binding(entry.id, \.word))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 160)
+                    Image(systemName: "arrow.right").foregroundStyle(WoadieTheme.foregroundSubtle)
+                    TextField("Say as", text: binding(entry.id, \.sayAs))
+                        .textFieldStyle(.roundedBorder)
+                    IconActionButton(systemImage: "play.circle") { model.previewText(entry.word) }
+                        .help("Hear it in the selected voice")
+                    IconActionButton(systemImage: "trash") {
+                        model.setPronunciations(model.store.pronunciations.filter { $0.id != entry.id })
+                    }
+                    .help("Remove")
+                }
+            }
+            HStack(spacing: 8) {
+                TextField("Word, e.g. ALKI", text: $newWord)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 160)
+                Image(systemName: "arrow.right").foregroundStyle(WoadieTheme.foregroundSubtle)
+                TextField("Say as, e.g. Al-kee", text: $newSayAs)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(add)
+                WoadieButton(title: "Add", systemImage: "plus", variant: .primary, action: add)
+                    .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty || newSayAs.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            Text("For Kokoro voices you can also write sounds between slashes, e.g. /ˈælki/.")
+                .font(WoadieTheme.mono(size: 10, weight: .medium))
+                .foregroundStyle(WoadieTheme.foregroundSubtle)
+            HStack {
+                WoadieButton(title: "Import…", systemImage: "square.and.arrow.down", variant: .ghost, action: importList)
+                WoadieButton(title: "Export…", systemImage: "square.and.arrow.up", variant: .ghost, action: exportList)
+                    .disabled(model.store.pronunciations.isEmpty)
+                if let message {
+                    Text(message)
+                        .font(WoadieTheme.mono(size: 10, weight: .medium))
+                        .foregroundStyle(WoadieTheme.foregroundSubtle)
+                }
+            }
+        }
+    }
+
+    private func binding(_ id: UUID, _ keyPath: WritableKeyPath<PronunciationEntry, String>) -> Binding<String> {
+        Binding(
+            get: { model.store.pronunciations.first { $0.id == id }?[keyPath: keyPath] ?? "" },
+            set: { value in
+                var entries = model.store.pronunciations
+                guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+                entries[index][keyPath: keyPath] = value
+                model.setPronunciations(entries)
+            }
+        )
+    }
+
+    private func add() {
+        let word = newWord.trimmingCharacters(in: .whitespaces)
+        let sayAs = newSayAs.trimmingCharacters(in: .whitespaces)
+        guard !word.isEmpty, !sayAs.isEmpty else { return }
+        model.setPronunciations(model.store.pronunciations + [PronunciationEntry(word: word, sayAs: sayAs)])
+        newWord = ""
+        newSayAs = ""
+    }
+
+    private func importList() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let imported = try PronunciationEntry.importJSON(Data(contentsOf: url))
+            // Imported words replace existing entries for the same word.
+            let words = Set(imported.map { $0.word.lowercased() })
+            model.setPronunciations(model.store.pronunciations.filter { !words.contains($0.word.lowercased()) } + imported)
+            message = "Imported \(imported.count)"
+        } catch {
+            message = "That file isn't a pronunciation list."
+        }
+    }
+
+    private func exportList() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "AlkiSpeak Pronunciations.json"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try PronunciationEntry.exportJSON(model.store.pronunciations).write(to: url)
+            message = "Exported \(model.store.pronunciations.count)"
+        } catch {
+            message = error.localizedDescription
         }
     }
 }

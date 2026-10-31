@@ -85,6 +85,8 @@ final class AppStore {
     private(set) var voiceDropdownSections: [AlkiDropdownSection] = []
     private(set) var voiceLabelsByID: [String: String] = [:]
     var cloudSettings = CloudSpeechSettings()
+    var textCleanup = TextCleanupOptions()
+    var pronunciations: [PronunciationEntry] = []
     var playbackTuning: PlaybackTuning = .default
     var lastQueryResourceUsage: QueryResourceUsage?
     var composerText: String = ""

@@ -612,6 +612,39 @@ final class AppModel {
         pipeline.interrupt()
     }
 
+    // MARK: Text cleanup and pronunciations
+
+    /// What the selected voice will actually be sent for `text`: cleaned up,
+    /// then with the pronunciation list applied.
+    func spokenText(for text: String) -> String {
+        let cleaned = TextNormalizer.clean(text, options: store.textCleanup)
+        // Phoneme markup is a Kokoro (Python engine) feature.
+        return TextNormalizer.applyPronunciations(cleaned, entries: store.pronunciations, phonemesSupported: isSelectedVoicePythonKokoro)
+    }
+
+    func setTextCleanup(_ options: TextCleanupOptions) {
+        store.textCleanup = options
+        if !AppConfig.isRunningUnitTests { options.save() }
+    }
+
+    func setPronunciations(_ entries: [PronunciationEntry]) {
+        store.pronunciations = entries
+        if !AppConfig.isRunningUnitTests { PronunciationEntry.save(entries) }
+    }
+
+    /// Speaks `text` in the selected voice, cleaned up, without logging it.
+    /// Used to try a pronunciation.
+    func previewText(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if appMode == .quick {
+            pipeline.deleteActiveClips()
+        }
+        interruptForOverride()
+        store.clearErrorMessage()
+        pipeline.speak(text: spokenText(for: trimmed), voice: selectedVoice, dialogueSpeakers: nil, addToHistory: false, targetLogEntryID: nil)
+    }
+
     // MARK: Documents and web pages
 
     /// True while a document or web page is loading.
@@ -891,7 +924,7 @@ final class AppModel {
         guard !trimmed.isEmpty else { return }
         store.clearErrorMessage()
         pipeline.speak(
-            text: trimmed,
+            text: spokenText(for: trimmed),
             voice: selectedVoice,
             dialogueSpeakers: selectedDialogueSpeakers?.map(\.name),
             addToHistory: addToHistory,
@@ -987,6 +1020,8 @@ final class AppModel {
         }
         store.voiceFavorites = favoritesStore.load()
         store.recentVoiceIDs = UserDefaults.standard.stringArray(forKey: Self.recentVoicesKey) ?? []
+        store.textCleanup = TextCleanupOptions.load()
+        store.pronunciations = PronunciationEntry.load()
         store.cloudSettings = dependencies.cloudSpeechSettings.load()
         store.playbackTuning = PlaybackTuning.load()
         dependencies.playbackCoordinator.applyTuning(store.playbackTuning)

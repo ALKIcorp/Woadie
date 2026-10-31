@@ -278,6 +278,94 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertNotEqual(before, after, "The elapsed time and scrubber must redraw when playback ticks")
     }
 
+    // MARK: Text cleanup and pronunciations (X7)
+
+    func testCleanupStripsMarkdownButKeepsTheWords() {
+        let markdown = """
+        # Release Notes
+        - **Bold** and _italic_ and `code` words
+        * A [link](https://example.com/page) and an ![chart](img.png)
+        > Quoted line
+        ---
+        ```swift
+        let x = 1
+        ```
+        """
+
+        let spoken = TextNormalizer.clean(markdown)
+
+        XCTAssertEqual(spoken, "Release Notes.\nBold and italic and code words\nA link and an chart\nQuoted line\n\n(code omitted)")
+    }
+
+    func testCleanupReadsLinksEmailsAndVersions() {
+        XCTAssertEqual(
+            TextNormalizer.clean("See https://www.github.com/alki/woadie, or mail hello@alki.example."),
+            "See link to github dot com, or mail hello at alki dot example."
+        )
+        XCTAssertEqual(TextNormalizer.clean("Update to v2.1 or 3.0.4 today."), "Update to version 2 point 1 or version 3 point 0 point 4 today.")
+        XCTAssertEqual(TextNormalizer.clean("Pi is 3.14 and costs $5.99."), "Pi is 3.14 and costs $5.99.", "Plain decimals and prices are left to the voice")
+    }
+
+    func testCleanupDropsCitationsAndJoinsWrappedLines() {
+        XCTAssertEqual(TextNormalizer.clean("Speech synthesis is old.[1][23] It works.[citation needed]"), "Speech synthesis is old. It works.")
+        XCTAssertEqual(
+            TextNormalizer.clean("The harbor woke\nslowly that morning.\nGulls argued."),
+            "The harbor woke slowly that morning.\nGulls argued."
+        )
+    }
+
+    func testCleanupLeavesExpressionTagsDialogueAndHTMLLikeMathAlone() {
+        let script = "Joe (cheerful): Hello [Laughter] there.\nJane: Hi! 2 < 3 and 5 > 4."
+
+        XCTAssertEqual(TextNormalizer.clean(script), script)
+    }
+
+    func testCleanupStripsHTMLTagsAndCanBeTurnedOff() {
+        XCTAssertEqual(TextNormalizer.clean("<p>Hello <b>world</b></p>"), "Hello world")
+        var off = TextCleanupOptions()
+        off.isEnabled = false
+        XCTAssertEqual(TextNormalizer.clean("**raw**", options: off), "**raw**")
+        var noLinks = TextCleanupOptions()
+        noLinks.links = false
+        XCTAssertEqual(TextNormalizer.clean("Go to https://a.example now", options: noLinks), "Go to https://a.example now")
+    }
+
+    func testPronunciationsSwapWholeWordsOnly() {
+        let entries = [
+            PronunciationEntry(word: "ALKI", sayAs: "Al-kee"),
+            PronunciationEntry(word: "Woadie", sayAs: "/wˈOdi/")
+        ]
+
+        XCTAssertEqual(
+            TextNormalizer.applyPronunciations("alki and ALKIcorp meet Woadie.", entries: entries, phonemesSupported: false),
+            "Al-kee and ALKIcorp meet Woadie.",
+            "Phoneme entries are skipped where the voice can't read them"
+        )
+        XCTAssertEqual(
+            TextNormalizer.applyPronunciations("Hi Woadie.", entries: entries, phonemesSupported: true),
+            "Hi [Woadie](/wˈOdi/)."
+        )
+    }
+
+    func testPronunciationListRoundTripsThroughJSON() throws {
+        let entries = [PronunciationEntry(word: "ALKI", sayAs: "Al-kee")]
+
+        let imported = try PronunciationEntry.importJSON(PronunciationEntry.exportJSON(entries))
+
+        XCTAssertEqual(imported.map(\.word), ["ALKI"])
+        XCTAssertEqual(imported.map(\.sayAs), ["Al-kee"])
+    }
+
+    @MainActor
+    func testSpokenTextUsesCleanupThenPronunciations() {
+        let store = AppStore()
+        store.activeWorkspace.selectedVoiceID = "apple:x"
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+        model.setPronunciations([PronunciationEntry(word: "ALKI", sayAs: "Al-kee")])
+
+        XCTAssertEqual(model.spokenText(for: "**ALKI** rocks"), "Al-kee rocks")
+    }
+
     // MARK: Document import (X4)
 
     func testPDFTextDropsRunningHeadersPageNumbersAndLineBreakHyphens() {
