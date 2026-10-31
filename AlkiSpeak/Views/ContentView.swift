@@ -5,6 +5,7 @@ struct ContentView: View {
     @Environment(AppModel.self) private var model
     @State private var minimumContentHeight: CGFloat = 0
     @State private var activeOverlay: AppOverlay?
+    @State private var isDropTargeted = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -117,6 +118,32 @@ struct ContentView: View {
             overlayContent
         }
         .environment(\.openVoices, OpenVoicesAction { activeOverlay = .voices($0) })
+        // Drop a document or a link anywhere on the window to read it.
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first else { return false }
+            if url.isFileURL {
+                model.importDocument(at: url)
+            } else if DocumentImporter.webURL(in: url.absoluteString) != nil {
+                model.importWebPage(url)
+            } else {
+                return false
+            }
+            return true
+        } isTargeted: { isDropTargeted = $0 }
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 16)
+                    .strokeBorder(WoadieTheme.primary.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+                    .overlay(
+                        Label("Drop to read it aloud", systemImage: "doc.text")
+                            .font(WoadieTheme.rounded(size: 15, weight: .semibold))
+                            .padding(14)
+                            .background(.ultraThinMaterial, in: Capsule())
+                    )
+                    .padding(6)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 
     @ViewBuilder

@@ -612,6 +612,72 @@ final class AppModel {
         pipeline.interrupt()
     }
 
+    // MARK: Documents and web pages
+
+    /// True while a document or web page is loading.
+    private(set) var isImporting = false
+
+    /// Shows an Open panel for PDFs, EPUBs, Word, RTF, HTML, Markdown and text.
+    func openDocument() {
+        let panel = NSOpenPanel()
+        panel.title = "Open a Document to Read Aloud"
+        panel.prompt = "Open"
+        panel.allowedContentTypes = DocumentImporter.readableTypes
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        importDocument(at: url)
+    }
+
+    /// Loads a file's text into the editor.
+    func importDocument(at url: URL) {
+        loadDocument(named: url.lastPathComponent) {
+            try await DocumentImporter.importDocument(at: url)
+        }
+    }
+
+    /// Loads a web page's main article into the editor, optionally speaking it.
+    func importWebPage(_ url: URL, speakWhenLoaded: Bool = false) {
+        loadDocument(named: url.host() ?? "the page", speakWhenLoaded: speakWhenLoaded) {
+            try await DocumentImporter.importWebPage(url)
+        }
+    }
+
+    /// Reads the clipboard aloud. A copied link reads the page it points to.
+    func speakClipboard() {
+        let text = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else {
+            store.userMessage = "The clipboard has no text to read."
+            return
+        }
+        if let url = DocumentImporter.webURL(in: text) {
+            importWebPage(url, speakWhenLoaded: true)
+        } else {
+            speakExternalText(text)
+        }
+    }
+
+    private func loadDocument(
+        named name: String,
+        speakWhenLoaded: Bool = false,
+        _ load: @escaping @Sendable () async throws -> ImportedDocument
+    ) {
+        isImporting = true
+        store.userMessage = "Opening \(name)…"
+        Task {
+            defer { isImporting = false }
+            do {
+                let document = try await Task.detached(priority: .userInitiated) { try await load() }.value
+                inputText = document.text
+                var message = "Loaded “\(document.title)” · \(document.wordCount.formatted()) words"
+                if document.wasTruncated { message += " (the first part only; it's very long)" }
+                store.userMessage = message
+                if speakWhenLoaded { speak() }
+            } catch {
+                store.userMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
     /// Speaks a short sample in `voiceID`, in its own language, without
     /// changing the selected voice or adding anything to the log.
     func previewVoice(_ voiceID: String) {

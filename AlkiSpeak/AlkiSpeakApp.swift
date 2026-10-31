@@ -70,6 +70,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model?.shutDownLocalVoiceServer()
     }
 
+    /// Files opened from Finder ("Open With", or dropped on the Dock icon).
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first else { return }
+        if url.isFileURL {
+            model?.importDocument(at: url)
+        } else {
+            model?.importWebPage(url)
+        }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
@@ -122,6 +132,12 @@ struct AlkiSpeakApp: App {
             }
         }
         .commands {
+            CommandGroup(after: .newItem) {
+                Button("Open Document…") { model.openDocument() }
+                    .keyboardShortcut("o")
+                Button("Speak Clipboard") { model.speakClipboard() }
+                    .keyboardShortcut("v", modifiers: [.command, .control])
+            }
             CommandGroup(after: .saveItem) {
                 ExportCommandButton(model: model)
 
@@ -206,7 +222,7 @@ private struct MenuBarQuickSpeakView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("AlkiSpeak")
                         .font(WoadieTheme.rounded(size: 16, weight: .semibold))
-                    Text(model.engineStatusLabel)
+                    Text(model.readiness.text)
                         .font(WoadieTheme.mono(size: 10, weight: .medium))
                         .foregroundStyle(WoadieTheme.foregroundSubtle)
                 }
@@ -234,6 +250,19 @@ private struct MenuBarQuickSpeakView: View {
             .background(.ultraThinMaterial, in: Capsule(style: .continuous))
             .overlay(Capsule(style: .continuous).strokeBorder(WoadieTheme.borderSubtle))
             .help("Speak the currently selected text from the frontmost app")
+
+            Button {
+                model.speakClipboard()
+            } label: {
+                Label("Speak Clipboard", systemImage: "doc.on.clipboard")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+            .overlay(Capsule(style: .continuous).strokeBorder(WoadieTheme.borderSubtle))
+            .help("Speak the copied text, or the web page a copied link points to")
 
             TextEditor(text: $quickText)
                 .font(WoadieTheme.rounded(size: 13, weight: .regular))

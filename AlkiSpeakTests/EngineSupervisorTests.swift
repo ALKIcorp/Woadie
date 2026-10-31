@@ -278,6 +278,153 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertNotEqual(before, after, "The elapsed time and scrubber must redraw when playback ticks")
     }
 
+    // MARK: Document import (X4)
+
+    func testPDFTextDropsRunningHeadersPageNumbersAndLineBreakHyphens() {
+        let words = ["harbor", "gulls", "fog", "radio"]
+        let pages = (1...4).map { page in
+            let word = words[page - 1]
+            return "The Long Road\nThe \(word) part of chapter one has an exam-\nple of a sentence about the \(word).\nSome more text about the \(word) follows here.\nAnd the \(word) paragraph keeps going for a while.\nIt ends on this line about the \(word).\n\(page)"
+        }
+
+        let text = DocumentImporter.pdfText(pages: pages)
+
+        XCTAssertFalse(text.contains("The Long Road"), "A title repeated on every page is a running header")
+        XCTAssertTrue(text.contains("example of a sentence"), "A hyphen split across a line break is joined")
+        XCTAssertFalse(text.components(separatedBy: .newlines).contains("3"), "Bare page numbers are dropped")
+        XCTAssertTrue(text.contains("Some more text about the fog follows here."))
+        XCTAssertTrue(text.contains("It ends on this line about the radio."))
+    }
+
+    func testArticleExtractionKeepsTheStoryAndDropsTheChrome() {
+        let html = """
+        <html><head><title>Fallback</title><meta property="og:title" content="Gulls &amp; Boats">
+        <style>p { color: red }</style><script>track()</script></head>
+        <body><nav><a href="/">Home</a> <a href="/about">About us and more links</a></nav>
+        <article><h1>Gulls &amp; Boats</h1><p>The quiet harbor woke slowly.</p><p>By noon the fog had lifted &#8212; at last.</p></article>
+        <footer>Copyright 2026 and other footer words</footer></body></html>
+        """
+
+        let page = DocumentImporter.article(fromHTML: html)
+
+        XCTAssertEqual(page.title, "Gulls & Boats")
+        XCTAssertTrue(page.text.contains("The quiet harbor woke slowly."))
+        XCTAssertTrue(page.text.contains("By noon the fog had lifted \u{2014} at last."))
+        XCTAssertFalse(page.text.contains("About us"))
+        XCTAssertFalse(page.text.contains("Copyright"))
+        XCTAssertFalse(page.text.contains("track()"))
+    }
+
+    func testArticleExtractionFallsBackToParagraphsWithoutAnArticle() {
+        let html = "<body><div><p>Short</p><p>This is a real paragraph with enough words to count as content.</p></div></body>"
+
+        XCTAssertEqual(DocumentImporter.article(fromHTML: html).text, "This is a real paragraph with enough words to count as content.")
+    }
+
+    func testEPUBChaptersFollowTheSpineNotTheManifest() {
+        let opf = """
+        <manifest><item id="c2" href="text/two.xhtml" media-type="application/xhtml+xml"/>
+        <item id="c1" href="text/one.xhtml" media-type="application/xhtml+xml"/></manifest>
+        <spine><itemref idref="c1"/><itemref idref="c2"/></spine>
+        """
+
+        XCTAssertEqual(DocumentImporter.epubChapterPaths(opf: opf), ["text/one.xhtml", "text/two.xhtml"])
+    }
+
+    func testWebURLDetection() {
+        XCTAssertEqual(DocumentImporter.webURL(in: "  https://example.com/story \n")?.host(), "example.com")
+        XCTAssertNil(DocumentImporter.webURL(in: "read https://example.com now"))
+        XCTAssertNil(DocumentImporter.webURL(in: "file:///etc/hosts"))
+        XCTAssertNil(DocumentImporter.webURL(in: "just words"))
+    }
+
+    func testImportsRealPDFEPUBAndRTFFiles() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("import-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        // PDF: three pages with the same header and a page number.
+        let pdfURL = folder.appendingPathComponent("book.pdf")
+        try Self.writePDF(to: pdfURL, pages: (1...3).map { ["My Book", "Page \($0) has a sentence worth reading aloud.", "\($0)"] })
+        let pdf = try await DocumentImporter.importDocument(at: pdfURL)
+        XCTAssertTrue(pdf.text.contains("Page 2 has a sentence worth reading aloud."))
+        XCTAssertFalse(pdf.text.contains("My Book"))
+
+        // A PDF with no text at all reads as scanned.
+        let scannedURL = folder.appendingPathComponent("scan.pdf")
+        try Self.writePDF(to: scannedURL, pages: [[], []])
+        do {
+            _ = try await DocumentImporter.importDocument(at: scannedURL)
+            XCTFail("Expected a scanned-PDF error")
+        } catch let error as DocumentImportError {
+            XCTAssertEqual(error, .scannedPDF)
+        }
+
+        // EPUB: container → OPF → two chapters in spine order.
+        let book = folder.appendingPathComponent("epub-src")
+        try FileManager.default.createDirectory(at: book.appendingPathComponent("META-INF"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: book.appendingPathComponent("OEBPS"), withIntermediateDirectories: true)
+        try "application/epub+zip".write(to: book.appendingPathComponent("mimetype"), atomically: true, encoding: .utf8)
+        try #"<container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>"#
+            .write(to: book.appendingPathComponent("META-INF/container.xml"), atomically: true, encoding: .utf8)
+        try """
+        <package><metadata><dc:title>Sea Stories</dc:title></metadata>
+        <manifest><item id="b" href="b.xhtml"/><item id="a" href="a.xhtml"/></manifest>
+        <spine><itemref idref="a"/><itemref idref="b"/></spine></package>
+        """.write(to: book.appendingPathComponent("OEBPS/content.opf"), atomically: true, encoding: .utf8)
+        try "<html><body><h1>One</h1><p>First chapter.</p></body></html>".write(to: book.appendingPathComponent("OEBPS/a.xhtml"), atomically: true, encoding: .utf8)
+        try "<html><body><h1>Two</h1><p>Second chapter.</p></body></html>".write(to: book.appendingPathComponent("OEBPS/b.xhtml"), atomically: true, encoding: .utf8)
+        let epubURL = folder.appendingPathComponent("stories.epub")
+        let zip = Process()
+        zip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        zip.arguments = ["-c", "-k", book.path, epubURL.path]
+        try zip.run()
+        zip.waitUntilExit()
+        let epub = try await DocumentImporter.importDocument(at: epubURL)
+        XCTAssertEqual(epub.title, "Sea Stories")
+        let first = try XCTUnwrap(epub.text.range(of: "First chapter."))
+        let second = try XCTUnwrap(epub.text.range(of: "Second chapter."))
+        XCTAssertLessThan(first.lowerBound, second.lowerBound)
+
+        // RTF through NSAttributedString.
+        let rtfURL = folder.appendingPathComponent("note.rtf")
+        let rtf = NSAttributedString(string: "Rich text, read plainly.")
+        try rtf.data(from: NSRange(location: 0, length: rtf.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+            .write(to: rtfURL)
+        let note = try await DocumentImporter.importDocument(at: rtfURL)
+        XCTAssertEqual(note.text, "Rich text, read plainly.")
+        XCTAssertEqual(note.title, "note")
+    }
+
+    func testImportsAWebPageArticle() async throws {
+        let html = "<html><head><title>Harbor News</title></head><body><nav>Menu items go here</nav><article><p>The harbor woke slowly today.</p></article></body></html>"
+        StubWebProtocol.body = Data(html.utf8)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubWebProtocol.self]
+        let page = try await DocumentImporter.importWebPage(URL(string: "https://news.example/story")!, session: URLSession(configuration: configuration))
+
+        XCTAssertEqual(page.title, "Harbor News")
+        XCTAssertEqual(page.text, "The harbor woke slowly today.")
+        XCTAssertEqual(page.source, "news.example")
+    }
+
+    /// Writes a PDF whose pages hold the given lines of text, top to bottom.
+    private static func writePDF(to url: URL, pages: [[String]]) throws {
+        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let context = try XCTUnwrap(CGContext(url as CFURL, mediaBox: &box, nil))
+        for lines in pages {
+            context.beginPDFPage(nil)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+            for (index, line) in lines.enumerated() {
+                (line as NSString).draw(at: CGPoint(x: 72, y: 720 - index * 300), withAttributes: [.font: NSFont.systemFont(ofSize: 14)])
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            context.endPDFPage()
+        }
+        context.closePDF()
+    }
+
     @MainActor
     func testTypingNotifiesOnlyReadersOfTheText() {
         let store = AppStore()
@@ -1798,4 +1945,21 @@ final class GlobalHotKeyTests: XCTestCase {
         XCTAssertEqual(outcome, .stopped)
         XCTAssertEqual(store.playbackState.state, .idle)
     }
+}
+
+/// Serves `body` for any request, for web page import tests.
+private final class StubWebProtocol: URLProtocol {
+    nonisolated(unsafe) static var body = Data()
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/html"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

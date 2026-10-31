@@ -50,6 +50,7 @@
 		A1000024 /* SystemResourceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000024 /* SystemResourceMonitor.swift */; };
 		A1000025 /* SelectedTextServiceProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000025 /* SelectedTextServiceProvider.swift */; };
 		A1000101 /* GlobalHotKeyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000101 /* GlobalHotKeyService.swift */; };
+		A1000201 /* DocumentImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000201 /* DocumentImporter.swift */; };
 		A1000026 /* AlkiComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000026 /* AlkiComponents.swift */; };
 		A1000027 /* SettingsOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000027 /* SettingsOverlayView.swift */; };
 		A1000028 /* EdgeSpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000028 /* EdgeSpeechService.swift */; };
@@ -119,6 +120,7 @@
 		A2000024 /* SystemResourceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemResourceMonitor.swift; sourceTree = "<group>"; };
 		A2000025 /* SelectedTextServiceProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectedTextServiceProvider.swift; sourceTree = "<group>"; };
 		A2000101 /* GlobalHotKeyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalHotKeyService.swift; sourceTree = "<group>"; };
+		A2000201 /* DocumentImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentImporter.swift; sourceTree = "<group>"; };
 		A2000026 /* AlkiComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlkiComponents.swift; sourceTree = "<group>"; };
 		A2000027 /* SettingsOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsOverlayView.swift; sourceTree = "<group>"; };
 		A2000028 /* EdgeSpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSpeechService.swift; sourceTree = "<group>"; };
@@ -273,6 +275,7 @@
 				A2000024 /* SystemResourceMonitor.swift */,
 				A2000025 /* SelectedTextServiceProvider.swift */,
 				A2000101 /* GlobalHotKeyService.swift */,
+				A2000201 /* DocumentImporter.swift */,
 				A2000028 /* EdgeSpeechService.swift */,
 				A2000040 /* CloudSpeechService.swift */,
 				A2000041 /* MLXAudioServerManager.swift */,
@@ -452,6 +455,7 @@
 				A1000024 /* SystemResourceMonitor.swift in Sources */,
 				A1000025 /* SelectedTextServiceProvider.swift in Sources */,
 				A1000101 /* GlobalHotKeyService.swift in Sources */,
+				A1000201 /* DocumentImporter.swift in Sources */,
 				A1000026 /* AlkiComponents.swift in Sources */,
 				A1000027 /* SettingsOverlayView.swift in Sources */,
 				A1000028 /* EdgeSpeechService.swift in Sources */,
