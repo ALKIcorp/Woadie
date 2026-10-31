@@ -112,7 +112,7 @@ struct SettingsOverlayView: View {
                     DisclosureSettingRow(
                         title: "Storage",
                         systemImage: "internaldrive",
-                        subtitle: ByteCountFormatter.string(fromByteCount: model.totalStorageBytes, countStyle: .file) + " across \(model.clipInventory.count) clips"
+                        subtitle: storageSubtitle
                     ) {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {
@@ -136,6 +136,13 @@ struct SettingsOverlayView: View {
 }
 
 extension SettingsOverlayView {
+    /// Builds the clip list once for both numbers.
+    var storageSubtitle: String {
+        let clips = model.clipInventory
+        let bytes = ClipInventory.totalBytes(of: clips)
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) + " across \(clips.count) clips"
+    }
+
     var nativeKokoroSubtitle: String {
         switch model.nativeKokoroState {
         case .off: return "Kokoro on the Neural Engine, without the Python engine"
@@ -262,12 +269,14 @@ private struct CloudVoicesSettings: View {
     @State private var cartesiaVoices: [CartesiaCatalog.Voice]?
     @State private var dialogueNames = ["Joe", "Jane"]
     @State private var dialogueVoices = ["Puck", "Kore"]
+    /// Keychain and disk lookups are slow enough to notice on every redraw,
+    /// so their answers are cached here and refreshed when they can change.
+    @State private var hasKey = false
+    @State private var downloadedModelIDs: Set<String> = []
 
     private var provider: CloudProvider {
         CloudProvider.provider(withID: providerID) ?? .openRouter
     }
-
-    private var hasKey: Bool { model.hasCloudAPIKey(for: provider) }
 
     private var canAdd: Bool {
         !modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -309,11 +318,13 @@ private struct CloudVoicesSettings: View {
                     WoadieButton(title: "Save Key", systemImage: "key", variant: .default) {
                         model.setCloudAPIKey(apiKey, for: provider)
                         apiKey = ""
+                        refreshKeyState()
                     }
                     .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     if hasKey {
                         IconActionButton(systemImage: "trash") {
                             model.setCloudAPIKey("", for: provider)
+                            refreshKeyState()
                         }
                         .help("Remove the saved \(provider.name) key")
                     }
@@ -374,7 +385,21 @@ private struct CloudVoicesSettings: View {
                 }
             }
         }
-        .onAppear { customBaseURL = model.cloudSettings.customBaseURL }
+        .onAppear {
+            customBaseURL = model.cloudSettings.customBaseURL
+            refreshKeyState()
+            refreshDownloadedModels()
+        }
+        .onChange(of: providerID) { _, _ in refreshKeyState() }
+        .onChange(of: model.localModelStates) { _, _ in refreshDownloadedModels() }
+    }
+
+    private func refreshKeyState() {
+        hasKey = model.hasCloudAPIKey(for: provider)
+    }
+
+    private func refreshDownloadedModels() {
+        downloadedModelIDs = Set(LocalVoiceCatalog.models.map(\.id).filter { MLXAudioServerManager.isModelDownloaded($0) })
     }
 
     /// Fills the model and voice fields from the account instead of raw IDs.
@@ -481,7 +506,7 @@ private struct CloudVoicesSettings: View {
                 .buttonStyle(.plain)
                 .font(WoadieTheme.mono(size: 9, weight: .semibold))
         case nil:
-            if MLXAudioServerManager.isModelDownloaded(localModel.id) {
+            if downloadedModelIDs.contains(localModel.id) {
                 badge("Downloaded")
             } else {
                 badge(String(format: "%.1f GB download", localModel.downloadGB))
@@ -669,6 +694,8 @@ struct StorageDashboardView: View {
 
     var body: some View {
         OverlayContainer(title: "Storage", onClose: onClose) {
+            // Sort once per redraw; the total and the list both use it.
+            let items = self.items
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                     Picker("Sort", selection: $sortField) {
@@ -691,7 +718,7 @@ struct StorageDashboardView: View {
 
                     Spacer()
 
-                    Text(ByteCountFormatter.string(fromByteCount: model.totalStorageBytes, countStyle: .file))
+                    Text(ByteCountFormatter.string(fromByteCount: ClipInventory.totalBytes(of: items), countStyle: .file))
                         .font(WoadieTheme.mono(size: 10, weight: .medium))
                         .foregroundStyle(WoadieTheme.foregroundSubtle)
                 }
