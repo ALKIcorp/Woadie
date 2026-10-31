@@ -82,7 +82,7 @@ struct AlkiGlassSurface<Content: View>: View {
     var body: some View {
         content
             .background {
-                Group {
+                ZStack {
                     if #available(macOS 26.0, *) {
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                             .fill(.clear)
@@ -97,12 +97,13 @@ struct AlkiGlassSurface<Content: View>: View {
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                             .fill(.ultraThinMaterial)
                     }
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(WoadieTheme.borderSubtle, lineWidth: 1)
                 }
+                // Cast from the static shape and border, not the content, so
+                // animating content (the waveform, the whole window) doesn't
+                // redraw the shadow.
+                .shadow(color: .black.opacity(0.10), radius: 8, y: 4)
             }
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(WoadieTheme.borderSubtle, lineWidth: 1)
-            }
-            .shadow(color: .black.opacity(0.10), radius: 8, y: 4)
     }
 }
