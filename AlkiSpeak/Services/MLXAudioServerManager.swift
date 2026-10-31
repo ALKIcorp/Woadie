@@ -48,8 +48,10 @@ final class MLXAudioServerManager: LocalVoiceServerEnsuring, @unchecked Sendable
     private var launchTask: Task<Void, Error>?
     private var preparedModels: Set<String> = []
     private var prepareTasks: [String: Task<Void, Error>] = [:]
-    /// A loaded model can hold several GB, so an owned server that sees no
-    /// requests for this long is stopped; the next request relaunches it.
+    /// A loaded model can hold several GB (Qwen3 1.7B: ~3 GB, enough to push
+    /// other apps into swap on a 16 GB Mac), so an owned server that sees no
+    /// requests for this long is stopped. Relaunching and reloading takes
+    /// only ~2–3 s, so the window is kept short.
     private let idleTimeout: TimeInterval
     private var activeUses = 0
     private var lastActivity = Date()
@@ -60,7 +62,7 @@ final class MLXAudioServerManager: LocalVoiceServerEnsuring, @unchecked Sendable
         port: Int = MLXAudioServerManager.port,
         session: URLSession = .shared,
         startupTimeout: TimeInterval = 90,
-        idleTimeout: TimeInterval = 10 * 60,
+        idleTimeout: TimeInterval = 3 * 60,
         pidFileURL: URL? = MLXAudioServerManager.defaultPIDFileURL,
         isServerProcess: @escaping (pid_t) -> Bool = MLXAudioServerManager.isMLXAudioServerProcess
     ) {
