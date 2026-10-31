@@ -743,6 +743,22 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     @MainActor
+    func testAddingLocalVoiceWarmsUpServerAndQuitStopsIt() async {
+        let server = FakeLocalVoiceServer()
+        let model = AppModel(store: AppStore(), dependencies: .test(engineSupervisor: FakeEngineSupervisor(), localVoiceServer: server))
+
+        model.addCloudVoice(provider: .openRouter, model: "m", voice: "v", label: "")
+        model.addCloudVoice(provider: .localMLX, model: "qwen", voice: "Ryan", label: "")
+        for _ in 0..<50 where server.ensureCount == 0 {
+            await Task.yield()
+        }
+        XCTAssertEqual(server.ensureCount, 1, "Only the local voice should start the server")
+
+        model.shutDownLocalVoiceServer()
+        XCTAssertEqual(server.stopCount, 1)
+    }
+
+    @MainActor
     func testCloudAPIKeyRoundTripsThroughSecretStore() {
         let secrets = InMemorySecretStore()
         let model = AppModel(store: AppStore(), dependencies: .test(engineSupervisor: FakeEngineSupervisor(), secretStore: secrets))
@@ -1257,7 +1273,8 @@ private extension AppDependencies {
         selectedTextReader: SelectedTextReading? = nil,
         cloudSpeechService: SpeechGenerating? = nil,
         cloudSpeechSettings: CloudSpeechSettingsStoring = InMemoryCloudSpeechSettingsStore(),
-        secretStore: SecretStoring = InMemorySecretStore()
+        secretStore: SecretStoring = InMemorySecretStore(),
+        localVoiceServer: LocalVoiceServerEnsuring = FakeLocalVoiceServer()
     ) -> AppDependencies {
         AppDependencies(
             engineSupervisor: engineSupervisor,
@@ -1266,6 +1283,7 @@ private extension AppDependencies {
             cloudSpeechService: cloudSpeechService ?? FakeSpeechGenerating(),
             cloudSpeechSettings: cloudSpeechSettings,
             secretStore: secretStore,
+            localVoiceServer: localVoiceServer,
             playbackCoordinator: playbackCoordinator,
             localSpeechService: localSpeechService,
             selectedTextReader: selectedTextReader ?? FakeSelectedTextReader(result: .noSelection),

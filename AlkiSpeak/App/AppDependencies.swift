@@ -8,6 +8,7 @@ struct AppDependencies {
     let cloudSpeechService: SpeechGenerating
     let cloudSpeechSettings: CloudSpeechSettingsStoring
     let secretStore: SecretStoring
+    let localVoiceServer: LocalVoiceServerEnsuring
     let playbackCoordinator: PlaybackCoordinating
     let localSpeechService: LocalSpeechSynthesizing
     let selectedTextReader: SelectedTextReading
@@ -27,9 +28,10 @@ struct AppDependencies {
             engineSupervisor: EngineManager.shared,
             generationService: KokoroSpeechGenerationService(),
             edgeSpeechService: EdgeSpeechGenerationService(),
-            cloudSpeechService: CloudSpeechGenerationService(settings: cloudSettings, secrets: secrets),
+            cloudSpeechService: CloudSpeechGenerationService(settings: cloudSettings, secrets: secrets, localServer: MLXAudioServerManager.shared),
             cloudSpeechSettings: cloudSettings,
             secretStore: secrets,
+            localVoiceServer: MLXAudioServerManager.shared,
             playbackCoordinator: AVAudioPlaybackCoordinator(),
             localSpeechService: AppleSpeechService(),
             selectedTextReader: SelectedTextReader(),

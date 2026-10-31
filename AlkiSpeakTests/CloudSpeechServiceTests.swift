@@ -21,6 +21,19 @@ final class InMemorySecretStore: SecretStoring {
     }
 }
 
+final class FakeLocalVoiceServer: LocalVoiceServerEnsuring {
+    var ensureCount = 0
+    var stopCount = 0
+    var error: Error?
+
+    func ensureRunning() async throws {
+        ensureCount += 1
+        if let error { throw error }
+    }
+
+    func stopOwnedServer() { stopCount += 1 }
+}
+
 /// Captures the outgoing request and replies with a canned response.
 private final class StubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var handler: ((URLRequest) -> (Int, Data))?
@@ -60,6 +73,8 @@ final class CloudSpeechServiceTests: XCTestCase {
     private var settings: InMemoryCloudSpeechSettingsStore!
     private var secrets: InMemorySecretStore!
     private var service: CloudSpeechGenerationService!
+    private var localServer: FakeLocalVoiceServer!
+    private var stubSession: URLSession!
     private let openRouterVoice = CloudVoice(providerID: CloudProvider.openRouter.id, model: "mistralai/voxtral-mini-tts-2603", voice: "en_paul_neutral", label: "Paul")
 
     override func setUp() {
@@ -68,7 +83,9 @@ final class CloudSpeechServiceTests: XCTestCase {
         secrets = InMemorySecretStore()
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
-        service = CloudSpeechGenerationService(settings: settings, secrets: secrets, session: URLSession(configuration: configuration))
+        stubSession = URLSession(configuration: configuration)
+        localServer = FakeLocalVoiceServer()
+        service = CloudSpeechGenerationService(settings: settings, secrets: secrets, session: stubSession, localServer: localServer)
         StubURLProtocol.handler = nil
         StubURLProtocol.lastRequest = nil
         StubURLProtocol.lastBody = nil
@@ -160,5 +177,69 @@ final class CloudSpeechServiceTests: XCTestCase {
         XCTAssertEqual(CloudSpeechGenerationService.providerMessage(from: Data(#"{"detail":"bad voice"}"#.utf8)), "bad voice")
         XCTAssertEqual(CloudSpeechGenerationService.providerMessage(from: Data("Gateway down".utf8)), "Gateway down")
         XCTAssertNil(CloudSpeechGenerationService.providerMessage(from: Data()))
+    }
+
+    // MARK: Local mlx-audio server
+
+    func testLocalVoiceEnsuresServerBeforeRequesting() async throws {
+        let local = CloudVoice(providerID: CloudProvider.localMLX.id, model: "qwen", voice: "Ryan", label: "Local")
+        settings.settings.voices = [local]
+        StubURLProtocol.handler = { _ in (200, Data([0x01])) }
+
+        _ = try await service.synthesize(text: "Hi", voice: local.voiceID, jobID: nil)
+
+        XCTAssertEqual(localServer.ensureCount, 1)
+    }
+
+    func testHostedVoiceNeverTouchesLocalServer() async throws {
+        try secrets.setSecret("sk-test", for: CloudProvider.openRouter.id)
+        StubURLProtocol.handler = { _ in (200, Data([0x01])) }
+
+        _ = try await service.synthesize(text: "Hi", voice: openRouterVoice.voiceID, jobID: nil)
+
+        XCTAssertEqual(localServer.ensureCount, 0)
+    }
+
+    func testLocalServerFailureStopsBeforeAnyRequest() async {
+        let local = CloudVoice(providerID: CloudProvider.localMLX.id, model: "qwen", voice: "Ryan", label: "Local")
+        settings.settings.voices = [local]
+        localServer.error = AlkiSpeakError.generation(code: "mlx.not-installed", title: "t", message: "m", recoverySuggestion: "r")
+
+        do {
+            _ = try await service.synthesize(text: "Hi", voice: local.voiceID, jobID: nil)
+            XCTFail("Expected the server error")
+        } catch let error as AlkiSpeakError {
+            XCTAssertEqual(error.code, "generation.mlx.not-installed")
+            XCTAssertNil(StubURLProtocol.lastRequest)
+        } catch {
+            XCTFail("Unexpected error \(error)")
+        }
+    }
+
+    func testManagerAdoptsAServerThatAlreadyAnswers() async throws {
+        StubURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/v1/models")
+            return (200, Data(#"{"object":"list","data":[]}"#.utf8))
+        }
+        let manager = MLXAudioServerManager(executableURL: URL(fileURLWithPath: "/nonexistent/mlx_audio.server"), session: stubSession)
+
+        try await manager.ensureRunning()
+
+        XCTAssertFalse(manager.isOwnedServerRunning, "An adopted server must not be treated as ours")
+    }
+
+    func testManagerReportsMissingInstall() async {
+        StubURLProtocol.handler = { _ in (503, Data()) }
+        let manager = MLXAudioServerManager(executableURL: URL(fileURLWithPath: "/nonexistent/mlx_audio.server"), session: stubSession)
+
+        do {
+            try await manager.ensureRunning()
+            XCTFail("Expected a not-installed error")
+        } catch let error as AlkiSpeakError {
+            XCTAssertEqual(error.code, "generation.mlx.not-installed")
+            XCTAssertTrue(error.message.contains("/nonexistent/mlx_audio.server"))
+        } catch {
+            XCTFail("Unexpected error \(error)")
+        }
     }
 }

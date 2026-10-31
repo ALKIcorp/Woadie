@@ -188,15 +188,18 @@ final class CloudSpeechGenerationService: SpeechGenerating {
     private let settings: CloudSpeechSettingsStoring
     private let secrets: SecretStoring
     private let session: URLSession
+    private let localServer: LocalVoiceServerEnsuring?
 
     init(
         settings: CloudSpeechSettingsStoring = UserDefaultsCloudSpeechSettingsStore(),
         secrets: SecretStoring = KeychainSecretStore(),
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        localServer: LocalVoiceServerEnsuring? = nil
     ) {
         self.settings = settings
         self.secrets = secrets
         self.session = session
+        self.localServer = localServer
     }
 
     /// There is no shared endpoint to probe; "healthy" means a voice is set up.
@@ -212,6 +215,9 @@ final class CloudSpeechGenerationService: SpeechGenerating {
         let startedAt = Date()
         let request = try makeRequest(text: text, voiceID: voice)
         do {
+            if settings.load().voice(withID: voice)?.providerID == CloudProvider.localMLX.id {
+                try await localServer?.ensureRunning()
+            }
             let (data, response) = try await session.data(for: request)
             let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
             guard let http = response as? HTTPURLResponse else {

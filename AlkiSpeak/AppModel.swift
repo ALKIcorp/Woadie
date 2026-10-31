@@ -241,6 +241,27 @@ final class AppModel: ObservableObject {
         dependencies.cloudSpeechSettings.save(store.cloudSettings)
         refreshCloudVoices()
         selectedVoice = cloudVoice.voiceID
+        if provider == .localMLX {
+            warmUpLocalVoiceServer()
+        }
+    }
+
+    /// Starts the local mlx-audio server in the background so the first local
+    /// voice request doesn't pay its boot time. Speaking a local voice also
+    /// ensures the server, so a failure here is only logged.
+    func warmUpLocalVoiceServer() {
+        Task { [localVoiceServer = dependencies.localVoiceServer] in
+            do {
+                try await localVoiceServer.ensureRunning()
+            } catch {
+                self.consoleTrace("local voice server warm-up failed error=\(String(describing: error))")
+            }
+        }
+    }
+
+    /// Called on app quit. Leaves alone a server the app adopted rather than launched.
+    func shutDownLocalVoiceServer() {
+        dependencies.localVoiceServer.stopOwnedServer()
     }
 
     func removeCloudVoice(_ cloudVoice: CloudVoice) {
@@ -323,6 +344,9 @@ final class AppModel: ObservableObject {
             // Edge voices don't depend on the Kokoro engine, so fetch them right
             // away instead of waiting on waitForEngineReady().
             Task { await fetchVoices() }
+            if store.cloudSettings.voices.contains(where: { $0.providerID == CloudProvider.localMLX.id }) {
+                warmUpLocalVoiceServer()
+            }
         } else {
             consoleTrace("unit test mode detected; skipping auto-start")
         }
