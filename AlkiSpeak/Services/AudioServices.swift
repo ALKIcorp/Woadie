@@ -44,6 +44,9 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
     // which keeps controls and the voice picker snappy.
     private let analysisPublishInterval: TimeInterval = 1.0 / 30.0
     private var lastAnalysisPublishTime: TimeInterval = 0
+    /// The tap runs on the audio render thread while `stop()` resets the
+    /// analyzer on the main thread; both go through this lock.
+    private let analysisLock = NSLock()
 
     /// URLs of every clip currently queued, in order. Used to assert that tuning
     /// changes never alter the underlying generated files.
@@ -56,7 +59,8 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         publish(state: .preparing)
     }
 
-    func append(audioURL: URL, segmentID: UUID, index: Int) throws {
+    @discardableResult
+    func append(audioURL: URL, segmentID: UUID, index: Int) throws -> TimeInterval {
         let file = try AVAudioFile(forReading: audioURL)
         let format = file.processingFormat
         if let expectedFormat,
@@ -93,6 +97,7 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         }
         scheduleFile(file, for: entry)
         publish(state: .playing)
+        return duration
     }
 
     func finishEnqueuing() {
@@ -171,8 +176,10 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         pausedTime = nil
         baseOffsetSeconds = 0
         fftMagnitudes = Array(repeating: 0, count: 128)
-        spectrumAnalyzer.reset()
-        lastAnalysisPublishTime = 0
+        analysisLock.withLock {
+            spectrumAnalyzer.reset()
+            lastAnalysisPublishTime = 0
+        }
     }
 
     func applyTuning(_ tuning: PlaybackTuning) {
@@ -289,12 +296,14 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
             let now = time.hostTime == 0
                 ? Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000
                 : AVAudioTime.seconds(forHostTime: time.hostTime)
-            guard self.shouldPublishAnalysis(at: now) else { return }
-
-            let magnitudes = self.spectrumAnalyzer.analyze(
-                channel: channel,
-                frameLength: Int(buffer.frameLength)
-            )
+            let magnitudes: [Float]? = self.analysisLock.withLock {
+                guard self.shouldPublishAnalysis(at: now) else { return nil }
+                return self.spectrumAnalyzer.analyze(
+                    channel: channel,
+                    frameLength: Int(buffer.frameLength)
+                )
+            }
+            guard let magnitudes else { return }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.fftMagnitudes = magnitudes

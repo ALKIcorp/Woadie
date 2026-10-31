@@ -36,6 +36,7 @@ final class AppModel: ObservableObject {
     private var performanceDiagnosticPhase: PerformanceDiagnosticPhase = .idle
     private var activePerformanceDiagnosticJobID: UUID?
     private var hasRequestedAccessibilityPrompt = false
+    private var savedLogsNeedPersisting = false
 
     private func consoleTrace(_ message: String, function: StaticString = #function, line: UInt = #line) {
         guard AppConfig.isVerboseConsoleTracingEnabled else { return }
@@ -51,12 +52,10 @@ final class AppModel: ObservableObject {
     var selectedVoice: String {
         get { store.selectedVoiceID }
         set {
-            let changed = newValue != store.selectedVoiceID
+            guard newValue != store.selectedVoiceID else { return }
             store.selectedVoiceID = newValue
             saveWorkspace()
-            if changed {
-                prepareForSelectedVoice()
-            }
+            prepareForSelectedVoice()
         }
     }
     var message: String { store.userMessage }
@@ -132,7 +131,6 @@ final class AppModel: ObservableObject {
         let ids = voiceOptions.filter { !$0.isLocal }.map(\.id)
         if let next = VoiceCycler.next(current: selectedVoice, in: ids, offset: offset) {
             selectedVoice = next
-            saveWorkspace()
         }
     }
 
@@ -1225,7 +1223,10 @@ final class AppModel: ObservableObject {
 
     private func speakRemote(segments: [SpeechSegment], voice: String, jobID: UUID, logEntryID: UUID) async {
         dependencies.engineSupervisor.noteRequestStarted(jobID: jobID)
-        defer { dependencies.engineSupervisor.noteRequestFinished(jobID: jobID) }
+        defer {
+            dependencies.engineSupervisor.noteRequestFinished(jobID: jobID)
+            persistSavedLogsIfNeeded()
+        }
 
         do {
             guard !segments.isEmpty else { return }
@@ -1272,8 +1273,8 @@ final class AppModel: ObservableObject {
                     self.store.dashboardTelemetry.lastLatencyMs = result.latencyMs
                     self.store.dashboardTelemetry.lastCharCount = result.charCount
                 }
-                let duration = try? await AVURLAsset(url: url).load(.duration).seconds
-                return GeneratedSegment(audioURL: url, durationSeconds: duration)
+                // The player reads the duration when it opens the clip.
+                return GeneratedSegment(audioURL: url, durationSeconds: nil)
             } onReady: { [playbackCoordinator = dependencies.playbackCoordinator] segment in
                 await MainActor.run {
                     self.setPerformanceDiagnosticPhase(
@@ -1289,7 +1290,10 @@ final class AppModel: ObservableObject {
                     self.store.playback.state = .playing
                 }
                 guard let audioURL = segment.audioURL else { return }
-                try playbackCoordinator.append(audioURL: audioURL, segmentID: segment.id, index: segment.index)
+                let duration = try playbackCoordinator.append(audioURL: audioURL, segmentID: segment.id, index: segment.index)
+                await MainActor.run {
+                    self.setJobSegmentDuration(jobID, segmentID: segment.id, duration: duration)
+                }
             }
 
             let snapshot = await ttsQueue.snapshot()
@@ -1627,6 +1631,13 @@ final class AppModel: ObservableObject {
         store.speechJobs[jobIndex].updatedAt = Date()
     }
 
+    private func setJobSegmentDuration(_ jobID: UUID, segmentID: UUID, duration: TimeInterval) {
+        guard let jobIndex = store.speechJobs.firstIndex(where: { $0.id == jobID }),
+              let segmentIndex = store.speechJobs[jobIndex].segments.firstIndex(where: { $0.id == segmentID })
+        else { return }
+        store.speechJobs[jobIndex].segments[segmentIndex].durationSeconds = duration
+    }
+
     private func updateSavedLogSegment(_ logEntryID: UUID, segmentID: UUID, status: SpeechSegment.Status, audioURL: URL?, error: AlkiSpeakError?) {
         guard let entryIndex = store.savedLogEntries.firstIndex(where: { $0.id == logEntryID }),
               let segmentIndex = store.savedLogEntries[entryIndex].segments.firstIndex(where: { $0.id == segmentID })
@@ -1634,6 +1645,14 @@ final class AppModel: ObservableObject {
         store.savedLogEntries[entryIndex].segments[segmentIndex].status = status
         store.savedLogEntries[entryIndex].segments[segmentIndex].audioURL = audioURL
         store.savedLogEntries[entryIndex].segments[segmentIndex].error = error
+        savedLogsNeedPersisting = true
+    }
+
+    /// Writes the saved logs once a job is over, instead of re-encoding all
+    /// of them for every segment that becomes ready.
+    private func persistSavedLogsIfNeeded() {
+        guard savedLogsNeedPersisting else { return }
+        savedLogsNeedPersisting = false
         try? dependencies.logStore.replaceLogs(store.savedLogEntries, workspaceID: store.activeWorkspace.id)
     }
 
@@ -1921,7 +1940,9 @@ final class AppModel: ObservableObject {
 
     private func saveEntry(for job: SpeechJob) {
         guard !store.speechEntries.contains(where: { $0.id == job.logEntryID }) else { return }
-        let urls = job.segments.compactMap(\.audioURL)
+        let readySegments = job.segments.filter { $0.audioURL != nil }
+        let urls = readySegments.compactMap(\.audioURL)
+        let knownDurations = readySegments.compactMap(\.durationSeconds)
         let paths = urls.compactMap { try? dependencies.speechEntryStore.relativePath(for: $0) }
         guard !paths.isEmpty else { return }
         let elapsed = queryStartedAt.map { $0.duration(to: ContinuousClock.now) } ?? .zero
@@ -1931,7 +1952,8 @@ final class AppModel: ObservableObject {
         }
         Task {
             let after = await SystemResourceMonitor.shared.snapshot()
-            let durations = await audioDurations(urls)
+            // Durations come from playback; only parse files it never opened.
+            let durations = knownDurations.count == urls.count ? knownDurations : await audioDurations(urls)
             let entry = SpeechEntry(
                 id: job.logEntryID ?? UUID(),
                 textContent: job.text,

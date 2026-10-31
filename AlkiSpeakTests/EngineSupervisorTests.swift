@@ -1027,6 +1027,7 @@ final class EngineSupervisorTests: XCTestCase {
             context: ["segment": "0"]
         )
         recorder.finishSession(context: ["result": "done"])
+        recorder.flush()
 
         let log = try String(contentsOf: recorder.logURL, encoding: .utf8)
         XCTAssertTrue(log.contains("\"kind\":\"sample\""))
@@ -1305,7 +1306,7 @@ private final class FakePlaybackCoordinating: PlaybackCoordinating {
     private(set) var toggleCallCount = 0
     private(set) var lastTuning: PlaybackTuning?
     func prepare(characterCounts: [Int]) {}
-    func append(audioURL: URL, segmentID: UUID, index: Int) throws {}
+    func append(audioURL: URL, segmentID: UUID, index: Int) throws -> TimeInterval { 0 }
     func finishEnqueuing() {}
     func seek(to globalTime: TimeInterval) -> Bool { false }
     func togglePlayback() { toggleCallCount += 1 }
@@ -1452,5 +1453,42 @@ private extension AppDependencies {
             ),
             speechEntryArchiveService: SpeechEntryArchiveService()
         )
+    }
+}
+
+final class CPULoadTests: XCTestCase {
+    func testPercentUsesTheChangeSinceTheLastReading() {
+        // Since boot this core is 10% busy, but between readings it was 50% busy.
+        let before = [CPULoad.Ticks(user: 100, system: 0, nice: 0, idle: 900)]
+        let after = [CPULoad.Ticks(user: 150, system: 0, nice: 0, idle: 950)]
+
+        XCTAssertEqual(CPULoad.percent(from: before, to: after) ?? -1, 50, accuracy: 0.001)
+    }
+
+    func testPercentSurvivesCounterWraparound() {
+        let before = [CPULoad.Ticks(user: UInt32.max - 9, system: 0, nice: 0, idle: UInt32.max - 9)]
+        let after = [CPULoad.Ticks(user: 20, system: 0, nice: 0, idle: 20)]
+
+        XCTAssertEqual(CPULoad.percent(from: before, to: after) ?? -1, 50, accuracy: 0.001)
+    }
+
+    func testPercentAddsUpEveryCore() {
+        let before = [
+            CPULoad.Ticks(user: 0, system: 0, nice: 0, idle: 0),
+            CPULoad.Ticks(user: 0, system: 0, nice: 0, idle: 0)
+        ]
+        let after = [
+            CPULoad.Ticks(user: 80, system: 20, nice: 0, idle: 0),
+            CPULoad.Ticks(user: 0, system: 0, nice: 0, idle: 100)
+        ]
+
+        XCTAssertEqual(CPULoad.percent(from: before, to: after) ?? -1, 50, accuracy: 0.001)
+    }
+
+    func testPercentIsNilWithoutAnEarlierReadingOrElapsedTicks() {
+        let ticks = [CPULoad.Ticks(user: 5, system: 5, nice: 0, idle: 5)]
+
+        XCTAssertNil(CPULoad.percent(from: [], to: ticks))
+        XCTAssertNil(CPULoad.percent(from: ticks, to: ticks))
     }
 }

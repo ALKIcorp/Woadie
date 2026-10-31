@@ -66,7 +66,7 @@ struct StatusIndicatorView: View {
                         }
                         resourceRow("CPU", value: model.store.dashboardTelemetry.resourceSnapshot.cpuPercent ?? 0, suffix: "%")
                         resourceRow(
-                            "RAM",
+                            "App RAM",
                             value: Double(model.store.dashboardTelemetry.resourceSnapshot.memoryBytes ?? 0) / 1_048_576,
                             suffix: " MB"
                         )

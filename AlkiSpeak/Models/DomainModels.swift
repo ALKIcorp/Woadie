@@ -245,6 +245,8 @@ struct SpeechSegment: Identifiable, Codable, Hashable {
     var status: Status
     var audioURL: URL?
     var error: AlkiSpeakError?
+    /// Read from the clip when playback queues it, so it isn't parsed again.
+    var durationSeconds: Double?
 
     init(
         id: UUID = UUID(),

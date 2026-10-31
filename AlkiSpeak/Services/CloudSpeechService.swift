@@ -303,8 +303,11 @@ final class CloudSpeechGenerationService: SpeechGenerating {
 
     func synthesize(text: String, voice: String, jobID: UUID?) async throws -> SpeechGenerationResult {
         let startedAt = Date()
-        let request = try makeRequest(text: text, voiceID: voice)
-        let provider = settings.load().voice(withID: voice)?.provider
+        // Decode the stored settings once for the whole call.
+        let current = settings.load()
+        let request = try makeRequest(text: text, voiceID: voice, settings: current)
+        let cloudVoice = current.voice(withID: voice)
+        let provider = cloudVoice?.provider
         if provider == .localMLX { localServer?.beginUse() }
         defer { if provider == .localMLX { localServer?.endUse() } }
         do {
@@ -313,7 +316,7 @@ final class CloudSpeechGenerationService: SpeechGenerating {
                 // A model that isn't on disk yet downloads through the
                 // no-time-limit prepare call instead of racing the speech
                 // request's timeout.
-                if let model = settings.load().voice(withID: voice)?.model,
+                if let model = cloudVoice?.model,
                    !MLXAudioServerManager.isModelDownloaded(model) {
                     try await localServer?.prepareModel(model)
                 }
@@ -357,7 +360,10 @@ final class CloudSpeechGenerationService: SpeechGenerating {
     // MARK: - Request building
 
     func makeRequest(text: String, voiceID: String) throws -> URLRequest {
-        let current = settings.load()
+        try makeRequest(text: text, voiceID: voiceID, settings: settings.load())
+    }
+
+    private func makeRequest(text: String, voiceID: String, settings current: CloudSpeechSettings) throws -> URLRequest {
         guard let cloudVoice = current.voice(withID: voiceID) else {
             throw Self.failure(
                 code: "cloud.voice-missing",

@@ -805,6 +805,16 @@ final class CloudSpeechServiceTests: XCTestCase {
         XCTAssertEqual([i16(44), i16(46), i16(48), i16(50)], [0, 16383, -16383, 32767], "clamped samples")
     }
 
+    func testNativeKokoroWAVMatchesPerSampleConversion() {
+        let samples: [Float] = (0..<4_001).map { Float($0 - 2_000) / 1_500 }
+        let wav = NativeKokoroSpeechService.wavData(samples: samples, sampleRate: 24_000)
+        let expected = samples.map { Int16(max(-1, min(1, $0)) * Float(Int16.max)) }
+        let actual = stride(from: 44, to: wav.count, by: 2).map {
+            Int16(bitPattern: UInt16(wav[$0]) | UInt16(wav[$0 + 1]) << 8)
+        }
+        XCTAssertEqual(actual, expected)
+    }
+
     func testNativeKokoroUnknownVoiceAndFailedLoadAreClear() async throws {
         let service = nativeService { FakeKokoroModel() }
         service.isEnabled = true

@@ -38,7 +38,9 @@ protocol PlaybackCoordinating: AnyObject {
     var onSnapshotChanged: ((PlaybackTransportSnapshot) -> Void)? { get set }
     var onFinished: (() -> Void)? { get set }
     func prepare(characterCounts: [Int])
-    func append(audioURL: URL, segmentID: UUID, index: Int) throws
+    /// Queues a clip and returns its duration in seconds.
+    @discardableResult
+    func append(audioURL: URL, segmentID: UUID, index: Int) throws -> TimeInterval
     func finishEnqueuing()
     func seek(to globalTime: TimeInterval) -> Bool
     func togglePlayback()

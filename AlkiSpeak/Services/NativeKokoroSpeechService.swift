@@ -1,3 +1,4 @@
+import Accelerate
 import CoreML
 import Foundation
 import KokoroTTS
@@ -145,12 +146,17 @@ final class NativeKokoroSpeechService: SpeechGenerating {
     /// Wraps mono float samples in a 16-bit PCM WAV, the format the clip
     /// store and player already handle for Kokoro.
     static func wavData(samples: [Float], sampleRate: Int) -> Data {
-        var pcm = Data(capacity: samples.count * 2)
-        for sample in samples {
-            let clamped = max(-1, min(1, sample))
-            var value = Int16(clamped * Float(Int16.max)).littleEndian
-            withUnsafeBytes(of: &value) { pcm.append(contentsOf: $0) }
-        }
+        // Clip to [-1, 1], scale, and truncate toward zero in bulk. Apple
+        // silicon is little-endian, so the Int16s are already in WAV order.
+        var low: Float = -1
+        var high: Float = 1
+        var scale = Float(Int16.max)
+        var scaled = [Float](repeating: 0, count: samples.count)
+        vDSP_vclip(samples, 1, &low, &high, &scaled, 1, vDSP_Length(samples.count))
+        vDSP_vsmul(scaled, 1, &scale, &scaled, 1, vDSP_Length(samples.count))
+        var ints = [Int16](repeating: 0, count: samples.count)
+        vDSP_vfix16(scaled, 1, &ints, 1, vDSP_Length(samples.count))
+        let pcm = ints.withUnsafeBufferPointer { Data(buffer: $0) }
         var wav = Data()
         func append<T: FixedWidthInteger>(_ value: T) {
             var little = value.littleEndian

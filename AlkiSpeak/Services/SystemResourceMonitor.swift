@@ -5,6 +5,10 @@ import OSLog
 actor SystemResourceMonitor {
     static let shared = SystemResourceMonitor()
 
+    private var previousTicks: [CPULoad.Ticks] = []
+    private var lastCPUPercent = 0.0
+    private var previousTicksAt = ContinuousClock.now
+
     func snapshot() -> SystemResourceSnapshot {
         var hostInfo = host_basic_info()
         var hostInfoCount = mach_msg_type_number_t(MemoryLayout<host_basic_info_data_t>.size / MemoryLayout<integer_t>.size)
@@ -39,19 +43,33 @@ actor SystemResourceMonitor {
                 start: cpuInfo,
                 count: Int(cpuInfoCount)
             )
-            var used: Int32 = 0
-            var total: Int32 = 0
+            var ticks: [CPULoad.Ticks] = []
+            ticks.reserveCapacity(Int(cpuCount))
             for cpu in 0..<Int(cpuCount) {
                 let offset = Int(CPU_STATE_MAX) * cpu
-                let userTicks = loads[offset + Int(CPU_STATE_USER)]
-                let systemTicks = loads[offset + Int(CPU_STATE_SYSTEM)]
-                let niceTicks = loads[offset + Int(CPU_STATE_NICE)]
-                let idleTicks = loads[offset + Int(CPU_STATE_IDLE)]
-                used += userTicks + systemTicks + niceTicks
-                total += userTicks + systemTicks + niceTicks + idleTicks
+                // Mach reports the counters as signed 32-bit values that wrap;
+                // reinterpret them as unsigned so the delta below can wrap too.
+                ticks.append(CPULoad.Ticks(
+                    user: UInt32(bitPattern: loads[offset + Int(CPU_STATE_USER)]),
+                    system: UInt32(bitPattern: loads[offset + Int(CPU_STATE_SYSTEM)]),
+                    nice: UInt32(bitPattern: loads[offset + Int(CPU_STATE_NICE)]),
+                    idle: UInt32(bitPattern: loads[offset + Int(CPU_STATE_IDLE)])
+                ))
             }
-            if total > 0 { cpuPercent = Double(used) / Double(total) * 100 }
             vm_deallocate(mach_task_self_, vm_address_t(bitPattern: cpuInfo), vm_size_t(cpuInfoCount) * vm_size_t(MemoryLayout<integer_t>.size))
+            // The counters are cumulative since boot, so the load right now is
+            // the change since the previous reading, not the running totals.
+            // Readings closer than a quarter second hold too few ticks to be
+            // meaningful, so reuse the last figure and keep the older baseline.
+            let now = ContinuousClock.now
+            if previousTicks.isEmpty || now - previousTicksAt >= .milliseconds(250) {
+                cpuPercent = CPULoad.percent(from: previousTicks, to: ticks) ?? lastCPUPercent
+                previousTicks = ticks
+                previousTicksAt = now
+                lastCPUPercent = cpuPercent
+            } else {
+                cpuPercent = lastCPUPercent
+            }
         }
 
         guard hostResult == KERN_SUCCESS, vmResult == KERN_SUCCESS else {
@@ -70,6 +88,34 @@ actor SystemResourceMonitor {
     func canProceed() -> Bool {
         let value = snapshot()
         return value.cpuPercent < 80 && value.ramAvailableMB > 500
+    }
+}
+
+/// System-wide CPU load from Mach per-core tick counters.
+enum CPULoad {
+    struct Ticks: Equatable {
+        var user: UInt32
+        var system: UInt32
+        var nice: UInt32
+        var idle: UInt32
+    }
+
+    /// Percent of CPU time spent busy between two readings, or nil when there
+    /// is no earlier reading (or no time has passed) to compare against.
+    static func percent(from previous: [Ticks], to current: [Ticks]) -> Double? {
+        guard !previous.isEmpty, previous.count == current.count else { return nil }
+        var used: Int64 = 0
+        var total: Int64 = 0
+        for (old, new) in zip(previous, current) {
+            let user = Int64(new.user &- old.user)
+            let system = Int64(new.system &- old.system)
+            let nice = Int64(new.nice &- old.nice)
+            let idle = Int64(new.idle &- old.idle)
+            used += user + system + nice
+            total += user + system + nice + idle
+        }
+        guard total > 0 else { return nil }
+        return Double(used) / Double(total) * 100
     }
 }
 
@@ -166,6 +212,12 @@ final class FilePerformanceDiagnosticRecorder: PerformanceDiagnosticRecording {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.alki.Woadie", category: "PerformanceDiagnostics")
     private let lock = NSLock()
     private let encoder = JSONEncoder()
+    /// File writes happen here, in order, so callers (often the main actor)
+    /// never wait on disk. Only this queue touches `logHandle`.
+    private let ioQueue = DispatchQueue(label: "com.alki.Woadie.diagnostics", qos: .utility)
+    private var logHandle: FileHandle?
+    private var lastSummaryWrite: ContinuousClock.Instant?
+    private static let summaryInterval: Duration = .seconds(30)
 
     private var sessionID = UUID()
     private var startedAt = Date()
@@ -213,9 +265,19 @@ final class FilePerformanceDiagnosticRecorder: PerformanceDiagnosticRecording {
         spikeCount = 0
         phaseStats = [:]
 
+        ioQueue.async { [self] in
+            do {
+                try? logHandle?.close()
+                logHandle = nil
+                try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+                try Data().write(to: logURL, options: .atomic)
+                logHandle = try FileHandle(forWritingTo: logURL)
+                logger.info("Performance diagnostics writing to \(self.logURL.path, privacy: .public)")
+            } catch {
+                logger.error("Failed to start performance diagnostics: \(error.localizedDescription, privacy: .public)")
+            }
+        }
         do {
-            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-            try Data().write(to: logURL, options: .atomic)
             try writeUnlocked(
                 PerformanceDiagnosticEvent(
                     timestamp: startedAt,
@@ -229,7 +291,6 @@ final class FilePerformanceDiagnosticRecorder: PerformanceDiagnosticRecording {
                 )
             )
             try writeSummaryUnlocked()
-            logger.info("Performance diagnostics writing to \(self.logURL.path, privacy: .public)")
         } catch {
             logger.error("Failed to start performance diagnostics: \(error.localizedDescription, privacy: .public)")
         }
@@ -305,6 +366,11 @@ final class FilePerformanceDiagnosticRecorder: PerformanceDiagnosticRecording {
                 )
                 logger.warning("Performance spike phase=\(phase.rawValue, privacy: .public) reasons=\(reasons.joined(separator: ", "), privacy: .public)")
             }
+            // The summary is rewritten whole, so refresh it at most every 30 s
+            // while sampling; finishSession always writes the final one.
+            if let lastSummaryWrite, ContinuousClock.now - lastSummaryWrite < Self.summaryInterval {
+                return
+            }
             try writeSummaryUnlocked()
         } catch {
             logger.error("Failed to write performance sample: \(error.localizedDescription, privacy: .public)")
@@ -330,6 +396,10 @@ final class FilePerformanceDiagnosticRecorder: PerformanceDiagnosticRecording {
                 )
             )
             try writeSummaryUnlocked()
+            ioQueue.async { [self] in
+                try? logHandle?.close()
+                logHandle = nil
+            }
         } catch {
             logger.error("Failed to finish performance diagnostics: \(error.localizedDescription, privacy: .public)")
         }
@@ -349,17 +419,29 @@ final class FilePerformanceDiagnosticRecorder: PerformanceDiagnosticRecording {
         return reasons
     }
 
+    /// Waits until every queued write has reached disk.
+    func flush() {
+        ioQueue.sync {}
+    }
+
     private func writeUnlocked(_ event: PerformanceDiagnosticEvent) throws {
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try encoder.encode(event)
-        if !fileManager.fileExists(atPath: logURL.path) {
-            fileManager.createFile(atPath: logURL.path, contents: nil)
+        var line = try encoder.encode(event)
+        line.append(0x0A)
+        ioQueue.async { [self] in
+            do {
+                if logHandle == nil {
+                    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+                    if !fileManager.fileExists(atPath: logURL.path) {
+                        fileManager.createFile(atPath: logURL.path, contents: nil)
+                    }
+                    logHandle = try FileHandle(forWritingTo: logURL)
+                }
+                try logHandle?.seekToEnd()
+                try logHandle?.write(contentsOf: line)
+            } catch {
+                logger.error("Failed to write performance event: \(error.localizedDescription, privacy: .public)")
+            }
         }
-        let handle = try FileHandle(forWritingTo: logURL)
-        try handle.seekToEnd()
-        try handle.write(contentsOf: data)
-        try handle.write(contentsOf: Data([0x0A]))
-        try handle.close()
     }
 
     private func writeSummaryUnlocked() throws {
@@ -379,7 +461,14 @@ final class FilePerformanceDiagnosticRecorder: PerformanceDiagnosticRecording {
             phases: summaries
         )
         let data = try encoder.encode(summary)
-        try data.write(to: summaryURL, options: .atomic)
+        lastSummaryWrite = .now
+        ioQueue.async { [self] in
+            do {
+                try data.write(to: summaryURL, options: .atomic)
+            } catch {
+                logger.error("Failed to write performance summary: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     private struct RunningPhaseStats {
