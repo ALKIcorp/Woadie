@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -6,6 +7,7 @@ import UniformTypeIdentifiers
 enum VoicesTab: String, CaseIterable, Identifiable {
     case mine = "My Voices"
     case browse = "Browse"
+    case compare = "Compare"
     case new = "New Voice"
 
     var id: Self { self }
@@ -44,7 +46,7 @@ struct VoicesOverlayView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(maxWidth: 360)
+                .frame(maxWidth: 460)
                 .padding(.vertical, 14)
 
                 switch tab {
@@ -52,6 +54,8 @@ struct VoicesOverlayView: View {
                     MyVoicesList(model: model, onBrowse: { tab = .browse }, onNew: { tab = .new })
                 case .browse:
                     BrowseVoicesList(model: model)
+                case .compare:
+                    CompareVoicesPane(model: model)
                 case .new:
                     NewVoicePane(model: model, onFinished: onClose)
                 }
@@ -160,7 +164,7 @@ private struct MyVoicesList: View {
         let recent = model.store.recentVoiceIDs.compactMap { byID[$0] }.prefix(VoiceGrouping.recentLimit)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 2) {
-                if added.isEmpty && favorites.isEmpty && recent.isEmpty {
+                if added.isEmpty && favorites.isEmpty && recent.isEmpty && model.store.kokoroBlends.isEmpty {
                     VStack(spacing: 12) {
                         note("Voices you add, clone or star show up here.")
                         HStack {
@@ -174,6 +178,13 @@ private struct MyVoicesList: View {
                     SectionHeader(title: "Added by you", trailing: "\(added.count)")
                     ForEach(added, id: \.0.id) { cloud, voice in
                         VoiceRow(model: model, voice: voice, onRemove: { model.removeCloudVoice(cloud) })
+                    }
+                }
+                let blends = model.store.kokoroBlends.compactMap { blend in byID[blend.voiceID].map { (blend, $0) } }
+                if !blends.isEmpty {
+                    SectionHeader(title: "Your blends", trailing: "\(blends.count)")
+                    ForEach(blends, id: \.0.id) { blend, voice in
+                        VoiceRow(model: model, voice: voice, onRemove: { model.removeKokoroBlend(blend) })
                     }
                 }
                 if !favorites.isEmpty {
@@ -291,7 +302,7 @@ private struct MoreLocalVoices: View {
 // MARK: - New Voice
 
 private struct NewVoicePane: View {
-    enum Kind { case clone, describe, connect }
+    enum Kind { case clone, describe, blend, connect }
 
     var model: AppModel
     var onFinished: () -> Void
@@ -312,6 +323,11 @@ private struct NewVoicePane: View {
                     text: "Type what it should sound like, e.g. \"a warm, gentle storyteller\"."
                 ) { kind = .describe }
                 card(
+                    "Blend Kokoro voices",
+                    systemImage: "slider.horizontal.below.square.and.square.filled",
+                    text: "Mix two or three Kokoro voices into a new one, like 60% Bella and 40% Michael."
+                ) { kind = .blend }
+                card(
                     "Connect a service",
                     systemImage: "link",
                     text: "Use voices from ElevenLabs, OpenAI, Gemini and others with your own API key."
@@ -323,6 +339,8 @@ private struct NewVoicePane: View {
             back { CloneVoiceFlow(model: model, onFinished: onFinished) }
         case .describe?:
             back { DescribeVoiceForm(model: model, onFinished: onFinished) }
+        case .blend?:
+            back { BlendVoicesForm(model: model, onFinished: onFinished) }
         case .connect?:
             back {
                 ScrollView {
@@ -604,5 +622,330 @@ private struct DescribeVoiceForm: View {
             Spacer(minLength: 0)
         }
         .padding(16)
+    }
+}
+
+// MARK: - Compare
+
+/// One sentence in several voices, side by side: generate them all, then play
+/// each or play them in turn, and keep the one you like.
+private struct CompareVoicesPane: View {
+    enum Sample: Equatable {
+        case generating
+        case ready(Data, latencyMs: Int, fromCache: Bool)
+        /// Apple voices speak live rather than producing a clip.
+        case live
+        case failed(String)
+    }
+
+    var model: AppModel
+    @State private var text = "Hi! This is a quick sample, so you can hear how I sound reading something longer than a word or two."
+    @State private var voiceIDs: [String] = []
+    @State private var samples: [String: Sample] = [:]
+    @State private var query = ""
+    @State private var player: AVAudioPlayer?
+    @State private var playingID: String?
+    @State private var task: Task<Void, Never>?
+
+    static let limit = 8
+
+    private var byID: [String: VoiceOption] {
+        Dictionary(model.voiceOptions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    var body: some View {
+        let byID = byID
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("What should each voice say?", text: $text, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(2...3)
+                .onChange(of: text) { _, _ in samples = [:] }
+            HStack {
+                TextField("Add a voice to compare…", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 280)
+                Spacer()
+                WoadieButton(title: "Generate All", systemImage: "waveform", variant: .primary, action: generateAll)
+                    .disabled(voiceIDs.isEmpty || text.trimmingCharacters(in: .whitespaces).isEmpty)
+                WoadieButton(title: "Play All", systemImage: "play.fill", variant: .default, action: playAll)
+                    .disabled(!samples.values.contains { if case .ready = $0 { return true } else { return false } })
+            }
+            if !query.isEmpty {
+                let matches = VoiceGrouping.search(model.voiceOptions, query: query).filter { !voiceIDs.contains($0.id) }.prefix(6)
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(matches)) { voice in
+                        Button {
+                            add(voice.id)
+                            query = ""
+                        } label: {
+                            HStack {
+                                Image(systemName: "plus.circle")
+                                Text(voice.name).font(WoadieTheme.rounded(size: 12, weight: .semibold))
+                                Text(voice.detail).font(WoadieTheme.mono(size: 9, weight: .medium)).foregroundStyle(WoadieTheme.foregroundSubtle)
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(voiceIDs.count >= Self.limit)
+                    }
+                }
+                .padding(8)
+                .background(WoadieTheme.surface, in: RoundedRectangle(cornerRadius: 10))
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    if voiceIDs.isEmpty {
+                        note("Add up to \(Self.limit) voices above. Your favorites and recent voices are added for you.")
+                            .frame(maxWidth: .infinity, minHeight: 120)
+                    }
+                    ForEach(voiceIDs, id: \.self) { id in
+                        if let voice = byID[id] {
+                            row(voice)
+                        }
+                    }
+                }
+            }
+            note("Samples are cached, so comparing again is instant. Online voices may cost a little per sample.")
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 16)
+        .onAppear(perform: seed)
+        .onDisappear {
+            task?.cancel()
+            player?.stop()
+        }
+    }
+
+    private func row(_ voice: VoiceOption) -> some View {
+        let isFavorite = model.voiceFavorites.contains(voice.id)
+        return HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(voice.name).font(WoadieTheme.rounded(size: 13, weight: .semibold))
+                Text(voice.detail)
+                    .font(WoadieTheme.mono(size: 9, weight: .medium))
+                    .foregroundStyle(WoadieTheme.foregroundSubtle)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            status(samples[voice.id])
+            IconActionButton(systemImage: playingID == voice.id ? "stop.circle" : "play.circle") { play(voice.id) }
+                .help("Play this sample")
+            Button { model.toggleFavorite(voice.id) } label: {
+                Image(systemName: isFavorite ? "star.fill" : "star")
+                    .foregroundStyle(isFavorite ? WoadieTheme.warning : WoadieTheme.foregroundSubtle)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            if model.selectedVoice == voice.id {
+                Text("In use")
+                    .font(WoadieTheme.mono(size: 9, weight: .semibold))
+                    .foregroundStyle(WoadieTheme.success)
+                    .frame(width: 52)
+            } else {
+                WoadieButton(title: "Use", variant: .default) { model.selectedVoice = voice.id }
+                    .frame(width: 52)
+            }
+            IconActionButton(systemImage: "xmark") {
+                voiceIDs.removeAll { $0 == voice.id }
+                samples[voice.id] = nil
+            }
+            .help("Remove from the comparison")
+        }
+        .padding(.vertical, 5)
+        .padding(.horizontal, 10)
+        .background(playingID == voice.id ? WoadieTheme.surface : .clear, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private func status(_ sample: Sample?) -> some View {
+        Group {
+            switch sample {
+            case .generating?:
+                ProgressView().controlSize(.small)
+            case .ready(_, let latency, let fromCache)?:
+                Text(fromCache ? "cached" : String(format: "%.1f s", Double(latency) / 1000))
+                    .help(fromCache ? "Played from the cache" : "Time it took to generate")
+            case .live?:
+                Text("speaks live")
+            case .failed(let message)?:
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(WoadieTheme.warning)
+                    .help(message)
+            case nil:
+                Text("–")
+            }
+        }
+        .font(WoadieTheme.mono(size: 9, weight: .medium))
+        .foregroundStyle(WoadieTheme.foregroundSubtle)
+        .frame(width: 70, alignment: .trailing)
+    }
+
+    private func seed() {
+        guard voiceIDs.isEmpty else { return }
+        let available = Set(model.voiceOptions.map(\.id))
+        var seeded: [String] = []
+        for id in [model.selectedVoice] + Array(model.voiceFavorites).sorted() + model.store.recentVoiceIDs
+        where available.contains(id) && !seeded.contains(id) && seeded.count < 4 {
+            seeded.append(id)
+        }
+        voiceIDs = seeded
+    }
+
+    private func add(_ id: String) {
+        guard !voiceIDs.contains(id), voiceIDs.count < Self.limit else { return }
+        voiceIDs.append(id)
+    }
+
+    /// Generates one voice at a time, so the Mac isn't asked to run several
+    /// models at once.
+    private func generateAll() {
+        task?.cancel()
+        let sample = text
+        let ids = voiceIDs
+        task = Task {
+            for id in ids {
+                if id.hasPrefix("apple:") {
+                    samples[id] = .live
+                    continue
+                }
+                samples[id] = .generating
+                do {
+                    let result = try await model.sampleAudio(sample, voice: id)
+                    guard !Task.isCancelled else { return }
+                    samples[id] = .ready(result.data, latencyMs: result.latencyMs, fromCache: result.fromCache)
+                } catch {
+                    samples[id] = .failed((error as? AlkiSpeakError)?.message ?? error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func play(_ id: String) {
+        if playingID == id {
+            player?.stop()
+            playingID = nil
+            return
+        }
+        player?.stop()
+        switch samples[id] {
+        case .ready(let data, _, _)?:
+            player = try? AVAudioPlayer(data: data)
+            player?.play()
+            playingID = id
+        default:
+            // No clip yet (or an Apple voice): speak it live.
+            model.speakSample(text, voice: id)
+            playingID = nil
+        }
+    }
+
+    private func playAll() {
+        task?.cancel()
+        let ids = voiceIDs
+        task = Task {
+            for id in ids {
+                guard case .ready(let data, _, _)? = samples[id],
+                      let next = try? AVAudioPlayer(data: data)
+                else { continue }
+                player?.stop()
+                player = next
+                playingID = id
+                next.play()
+                try? await Task.sleep(for: .seconds(next.duration + 0.4))
+                guard !Task.isCancelled else { return }
+            }
+            playingID = nil
+        }
+    }
+}
+
+// MARK: - Blend
+
+/// Two or three Kokoro voices mixed by weight into a new voice.
+private struct BlendVoicesForm: View {
+    var model: AppModel
+    var onFinished: () -> Void
+    @State private var parts: [KokoroBlend.Part] = []
+    @State private var name = ""
+    @State private var created = false
+
+    private static let sample = "Hi! This is my blended voice. Does it sound the way you hoped?"
+
+    private var kokoroVoices: [VoiceOption] {
+        model.voiceOptions.filter { $0.source == .kokoro && !KokoroBlend.isBlend($0.id) }
+    }
+
+    private var draft: KokoroBlend { KokoroBlend(name: name, parts: parts.filter { $0.weight > 0 }) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if created {
+                Label("\(name.isEmpty ? "Your blend" : name) is ready and selected.", systemImage: "checkmark.seal.fill")
+                    .font(WoadieTheme.rounded(size: 15, weight: .semibold))
+                    .foregroundStyle(WoadieTheme.success)
+                HStack {
+                    WoadieButton(title: "Hear It", systemImage: "play.circle", variant: .default) {
+                        model.speakSample(Self.sample, voice: model.selectedVoice)
+                    }
+                    WoadieButton(title: "Done", variant: .primary, action: onFinished)
+                }
+            } else if kokoroVoices.count < 2 {
+                note("Kokoro voices appear once the Kokoro engine has run. Pick a Kokoro voice, press Generate once, then come back.")
+            } else {
+                note("Pick two or three Kokoro voices and how much of each. Runs on this Mac with the Kokoro engine.")
+                ForEach(parts.indices, id: \.self) { index in
+                    HStack(spacing: 10) {
+                        Picker("Voice", selection: $parts[index].voice) {
+                            ForEach(kokoroVoices) { voice in
+                                Text("\(voice.name) · \(voice.detail.replacingOccurrences(of: "Kokoro · ", with: ""))").tag(voice.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 280)
+                        Slider(value: $parts[index].weight, in: 0...1)
+                        Text("\(Int((parts[index].weight / max(parts.reduce(0) { $0 + $1.weight }, 0.0001) * 100).rounded()))%")
+                            .font(WoadieTheme.mono(size: 11, weight: .semibold))
+                            .frame(width: 44, alignment: .trailing)
+                        if parts.count > 2 {
+                            IconActionButton(systemImage: "minus.circle") { parts.remove(at: index) }
+                        }
+                    }
+                }
+                if parts.count < 3 {
+                    WoadieButton(title: "Add a Third Voice", systemImage: "plus", variant: .ghost) {
+                        parts.append(KokoroBlend.Part(voice: kokoroVoices.first { voice in !parts.contains { $0.voice == voice.id } }?.id ?? kokoroVoices[0].id, weight: 0.3))
+                    }
+                }
+                Text(draft.detail)
+                    .font(WoadieTheme.mono(size: 10, weight: .medium))
+                    .foregroundStyle(WoadieTheme.foregroundSubtle)
+                HStack {
+                    TextField("Name, e.g. Warm narrator", text: $name)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 280)
+                    WoadieButton(title: "Preview", systemImage: "play.circle", variant: .default) {
+                        model.speakSample(Self.sample, voice: draft.voiceID)
+                    }
+                    .disabled(draft.parts.count < 2)
+                    WoadieButton(title: "Save Voice", systemImage: "checkmark", variant: .primary) {
+                        model.addKokoroBlend(name: name, parts: parts)
+                        created = true
+                    }
+                    .disabled(draft.parts.count < 2)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .onAppear(perform: seed)
+    }
+
+    private func seed() {
+        guard parts.isEmpty, kokoroVoices.count >= 2 else { return }
+        let ids = kokoroVoices.map(\.id)
+        let first = ids.contains("af_bella") ? "af_bella" : ids[0]
+        let second = ids.contains("am_michael") ? "am_michael" : ids.first { $0 != first } ?? ids[1]
+        parts = [KokoroBlend.Part(voice: first, weight: 0.6), KokoroBlend.Part(voice: second, weight: 0.4)]
     }
 }

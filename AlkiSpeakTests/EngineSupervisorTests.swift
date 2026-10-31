@@ -2217,6 +2217,53 @@ final class GlobalHotKeyTests: XCTestCase {
         XCTAssertEqual(outcome, .stopped)
         XCTAssertEqual(store.playbackState.state, .idle)
     }
+
+
+    // MARK: X8 voice blends
+
+    func testKokoroBlendVoiceIDAndDetail() {
+        let blend = KokoroBlend(name: "Warm", parts: [.init(voice: "af_bella", weight: 0.6), .init(voice: "am_michael", weight: 0.4)])
+        XCTAssertEqual(blend.voiceID, "af_bella*0.60,am_michael*0.40")
+        XCTAssertTrue(KokoroBlend.isBlend(blend.voiceID))
+        XCTAssertFalse(KokoroBlend.isBlend("af_bella"))
+        XCTAssertTrue(blend.detail.contains("60%"), blend.detail)
+        XCTAssertTrue(blend.detail.contains("40%"), blend.detail)
+    }
+
+    func testKokoroBlendSavesAndLoads() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "blend-\(UUID().uuidString)"))
+        let blend = KokoroBlend(name: "Mix", parts: [.init(voice: "af_heart", weight: 1), .init(voice: "bf_emma", weight: 1)])
+        KokoroBlend.save([blend], to: defaults)
+        XCTAssertEqual(KokoroBlend.load(from: defaults), [blend])
+    }
+
+    func testAddingABlendListsAndSelectsItAndRemovingDropsIt() {
+        let store = AppStore()
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+        model.selectedVoice = "af_bella"
+        model.addKokoroBlend(name: "  ", parts: [.init(voice: "af_bella", weight: 0.7), .init(voice: "am_michael", weight: 0.3), .init(voice: "bf_emma", weight: 0)])
+
+        let blend = try! XCTUnwrap(store.kokoroBlends.first)
+        XCTAssertEqual(blend.name, "My blend")
+        XCTAssertEqual(blend.parts.count, 2, "zero-weight voices are left out")
+        XCTAssertEqual(model.selectedVoice, blend.voiceID)
+        let option = store.voiceOptions.first { $0.id == blend.voiceID }
+        XCTAssertEqual(option?.source, .kokoro)
+        XCTAssertEqual(option?.name, "My blend")
+        XCTAssertFalse(store.voiceOptions.first { $0.id == blend.voiceID }?.isLocal ?? true, "a blend runs on the Kokoro engine")
+
+        model.removeKokoroBlend(blend)
+        XCTAssertTrue(store.kokoroBlends.isEmpty)
+        XCTAssertFalse(store.voiceOptions.contains { $0.id == blend.voiceID })
+        XCTAssertEqual(model.selectedVoice, "af_bella")
+    }
+
+    func testABlendNeedsTwoVoices() {
+        let store = AppStore()
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+        model.addKokoroBlend(name: "Solo", parts: [.init(voice: "af_bella", weight: 1), .init(voice: "am_michael", weight: 0)])
+        XCTAssertTrue(store.kokoroBlends.isEmpty)
+    }
 }
 
 /// Serves `body` for any request, for web page import tests.

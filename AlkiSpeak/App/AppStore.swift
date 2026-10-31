@@ -92,6 +92,7 @@ final class AppStore {
     var bookChapter = 0
     var bookRender: BookRenderState?
     var sleepTimer: SleepTimer = .off
+    var kokoroBlends: [KokoroBlend] = []
     /// The part of the text an Apple voice is about to speak (UTF-16 offsets).
     var appleSpokenRange: NSRange?
     var pronunciations: [PronunciationEntry] = []

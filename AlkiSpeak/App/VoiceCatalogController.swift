@@ -293,7 +293,15 @@ final class VoiceCatalogController {
         {
             remoteIDs.append(selectedVoice)
         }
-        let remoteOptions = remoteIDs.map { id -> VoiceOption in
+        for blend in store.kokoroBlends where !remoteIDs.contains(blend.voiceID) {
+            remoteIDs.append(blend.voiceID)
+        }
+        let remoteOptions = remoteIDs.compactMap { id -> VoiceOption? in
+            if KokoroBlend.isBlend(id) {
+                // A removed blend drops out of the list.
+                guard let blend = store.kokoroBlends.first(where: { $0.voiceID == id }) else { return nil }
+                return VoiceOption(id: id, label: "Kokoro - \(blend.name)", source: .kokoro, name: blend.name, detail: blend.detail)
+            }
             if id.hasPrefix(EdgeSpeechGenerationService.idPrefix) {
                 let name = EdgeSpeechGenerationService.stripPrefix(id)
                 return VoiceOption(id: id, label: "Edge - \(name)", source: .edge)

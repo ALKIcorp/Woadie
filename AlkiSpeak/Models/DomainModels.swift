@@ -760,6 +760,45 @@ private extension String {
     }
 }
 
+/// A mix of Kokoro voices saved as a voice of its own. The Python Kokoro
+/// engine reads the ID ("af_bella*0.60,am_michael*0.40") and mixes the
+/// voices' style tensors by weight.
+struct KokoroBlend: Codable, Identifiable, Hashable {
+    struct Part: Codable, Hashable {
+        var voice: String
+        var weight: Double
+    }
+
+    static let defaultsKey = "AlkiSpeak.kokoroBlends"
+
+    var id = UUID()
+    var name: String
+    var parts: [Part]
+
+    var voiceID: String {
+        parts.map { "\($0.voice)*" + String(format: "%.2f", $0.weight) }.joined(separator: ",")
+    }
+
+    /// "Kokoro blend · Bella 60% + Michael 40%"
+    var detail: String {
+        let total = parts.reduce(0) { $0 + $1.weight }
+        let mix = parts.map { part in
+            "\(VoiceNaming.kokoro(part.voice).name) \(Int((part.weight / max(total, 0.0001) * 100).rounded()))%"
+        }
+        return "Kokoro blend · " + mix.joined(separator: " + ")
+    }
+
+    static func isBlend(_ voiceID: String) -> Bool { voiceID.contains("*") }
+
+    static func load(from defaults: UserDefaults = .standard) -> [KokoroBlend] {
+        defaults.data(forKey: defaultsKey).flatMap { try? JSONDecoder().decode([KokoroBlend].self, from: $0) } ?? []
+    }
+
+    static func save(_ blends: [KokoroBlend], to defaults: UserDefaults = .standard) {
+        defaults.set(try? JSONEncoder().encode(blends), forKey: defaultsKey)
+    }
+}
+
 /// Groups voices the way people choose them: favorites and recent first, then
 /// what runs on this Mac (free, private) versus online services. Apple's
 /// novelty and low-quality voices sit in their own section at the end.

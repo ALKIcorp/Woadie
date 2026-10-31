@@ -1093,6 +1093,50 @@ final class AppModel {
 
     /// Speaks a short sample in `voiceID`, in its own language, without
     /// changing the selected voice or adding anything to the log.
+    /// Speaks `text` in `voice` (any voice ID, even one not in the list yet,
+    /// like a blend being tried) without changing the selection or the log.
+    func speakSample(_ text: String, voice: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if appMode == .quick {
+            pipeline.deleteActiveClips()
+        }
+        interruptForOverride()
+        store.clearErrorMessage()
+        store.appleSpokenRange = nil
+        pipeline.speak(text: spokenText(for: trimmed), voice: voice, dialogueSpeakers: nil, addToHistory: false, targetLogEntryID: nil)
+    }
+
+    /// One voice's audio for `text`, without playing it, for side-by-side
+    /// comparison. Cached, so comparing again is instant.
+    func sampleAudio(_ text: String, voice: String) async throws -> (data: Data, latencyMs: Int, fromCache: Bool) {
+        try await pipeline.audio(for: spokenText(for: text), voice: voice)
+    }
+
+    // MARK: Kokoro blends
+
+    /// Saves a blend as a voice and selects it.
+    func addKokoroBlend(name: String, parts: [KokoroBlend.Part]) {
+        let clean = parts.filter { $0.weight > 0 }
+        guard clean.count >= 2 else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let blend = KokoroBlend(name: trimmed.isEmpty ? "My blend" : trimmed, parts: clean)
+        store.kokoroBlends.append(blend)
+        if !AppConfig.isRunningUnitTests { KokoroBlend.save(store.kokoroBlends) }
+        voiceCatalog.mergeVoiceOptions(remote: store.voiceOptions.filter { !$0.isLocal }.map(\.id))
+        selectedVoice = blend.voiceID
+    }
+
+    func removeKokoroBlend(_ blend: KokoroBlend) {
+        if selectedVoice == blend.voiceID, let first = blend.parts.first {
+            selectedVoice = first.voice
+        }
+        store.kokoroBlends.removeAll { $0.id == blend.id }
+        if !AppConfig.isRunningUnitTests { KokoroBlend.save(store.kokoroBlends) }
+        store.voiceFavorites.remove(blend.voiceID)
+        voiceCatalog.mergeVoiceOptions(remote: store.voiceOptions.filter { !$0.isLocal && $0.id != blend.voiceID }.map(\.id))
+    }
+
     func previewVoice(_ voiceID: String) {
         guard let option = store.voiceOptions.first(where: { $0.id == voiceID }) else { return }
         if appMode == .quick {
@@ -1402,6 +1446,7 @@ final class AppModel {
         }
         store.voiceFavorites = favoritesStore.load()
         store.recentVoiceIDs = UserDefaults.standard.stringArray(forKey: Self.recentVoicesKey) ?? []
+        store.kokoroBlends = KokoroBlend.load()
         store.textCleanup = TextCleanupOptions.load()
         store.readAlongMode = ReadAlongMode.load()
         if !AppConfig.isRunningUnitTests { restoreLastBook() }
