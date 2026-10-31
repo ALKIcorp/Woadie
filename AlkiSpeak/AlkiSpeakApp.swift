@@ -107,7 +107,7 @@ struct AlkiSpeakApp: App {
         WindowGroup("AlkiSpeak", id: "main") {
             AppearanceRoot(model: model) {
                 ContentView()
-                    .environmentObject(model)
+                    .environment(model)
             }
             .onChange(of: scenePhase) { _, phase in
                 guard !AppConfig.isRunningUnitTests else { return }
@@ -152,7 +152,7 @@ struct AlkiSpeakApp: App {
 /// Applies the chosen appearance from its own view, so only this view (not
 /// the whole scene) re-evaluates when the model changes.
 private struct AppearanceRoot<Content: View>: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -161,7 +161,7 @@ private struct AppearanceRoot<Content: View>: View {
 }
 
 private struct ExportCommandButton: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     var body: some View {
         Button("Export") {
@@ -196,7 +196,7 @@ private struct MenuBarIconLabel: View {
 }
 
 private struct MenuBarQuickSpeakView: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @Environment(\.openWindow) private var openWindow
     @State private var quickText = ""
 
@@ -292,7 +292,7 @@ private struct MenuBarQuickSpeakView: View {
 }
 
 private struct SettingsView: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     var body: some View {
         Form {

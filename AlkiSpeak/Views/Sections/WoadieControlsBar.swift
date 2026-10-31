@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct WoadieControlsBar: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     var body: some View {
         HStack(spacing: 12) {

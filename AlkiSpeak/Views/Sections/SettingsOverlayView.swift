@@ -56,7 +56,7 @@ struct OverlayContainer<Content: View>: View {
 }
 
 struct SettingsOverlayView: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     var onOpenStorage: () -> Void
     var onClose: () -> Void
 
@@ -165,7 +165,7 @@ extension SettingsOverlayView {
 /// Turns the in-process CoreML Kokoro on or off. It sits beside the Python
 /// Kokoro engine rather than replacing it.
 private struct NativeKokoroSettings: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -281,7 +281,7 @@ private struct HotKeyRecorderRow: View {
 }
 
 private struct PlaybackTuningControls: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -338,7 +338,7 @@ private struct PlaybackTuningControls: View {
 /// Add/remove cloud voices and manage each provider's Keychain-stored key.
 /// Keys are write-only here: once saved they are never read back into the UI.
 private struct CloudVoicesSettings: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @State private var providerID = CloudProvider.openRouter.id
     @State private var apiKey = ""
     @State private var customBaseURL = ""
@@ -765,7 +765,7 @@ private struct CloudVoicesSettings: View {
 }
 
 struct StorageDashboardView: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     var onClose: () -> Void
     @State private var sortField: ClipSortField = .date
     @State private var ascending = false
@@ -896,7 +896,7 @@ struct StorageDashboardView: View {
 /// Records (or picks) a short clip of a voice and adds it as a cloned local
 /// voice. Recording shows a sentence to read, so the transcript fills itself.
 private struct VoiceCloneBuilder: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @StateObject private var recorder = VoiceCloneRecorder()
     @State private var clipURL: URL?
     @State private var transcript = ""

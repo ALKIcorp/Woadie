@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 struct ContentView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model
     @State private var minimumContentHeight: CGFloat = 0
     @State private var activeOverlay: AppOverlay?
 
@@ -173,7 +173,7 @@ struct ContentView: View {
 /// Its own view so playback ticks, which it reads for the waveform, re-render
 /// this panel and not the whole window.
 private struct NowSpeakingPanel: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     var body: some View {
         AlkiGlassSurface {
@@ -251,6 +251,6 @@ struct ContentView_Previews: PreviewProvider {
         let store = AppStore()
         let dependencies = AppDependencies.live()
         ContentView()
-            .environmentObject(AppModel(store: store, dependencies: dependencies))
+            .environment(AppModel(store: store, dependencies: dependencies))
     }
 }

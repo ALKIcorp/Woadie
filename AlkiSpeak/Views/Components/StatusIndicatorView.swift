@@ -3,7 +3,7 @@ import QuartzCore
 import SwiftUI
 
 struct StatusIndicatorView: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     @State private var breathing = false
     @State private var expanded = false
 

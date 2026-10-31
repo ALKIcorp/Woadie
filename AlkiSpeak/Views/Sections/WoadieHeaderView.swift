@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct WoadieHeaderView: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     var onOpenSettings: () -> Void
     var onOpenStorage: () -> Void
 

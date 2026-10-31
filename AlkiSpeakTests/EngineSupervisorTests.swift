@@ -279,6 +279,79 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     @MainActor
+    func testTypingNotifiesOnlyReadersOfTheText() {
+        let store = AppStore()
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+        var textChanged = false
+        var othersChanged = false
+        withObservationTracking { _ = model.inputText } onChange: { textChanged = true }
+        withObservationTracking {
+            _ = model.voiceDropdownSections
+            _ = model.engineStatusLabel
+            _ = model.chatItems
+            _ = model.cloudSettings
+            _ = model.playback
+        } onChange: { othersChanged = true }
+
+        store.composerText = "Hello"
+
+        XCTAssertTrue(textChanged)
+        XCTAssertFalse(othersChanged, "A keystroke must not re-render the voice picker, status, log or settings")
+    }
+
+    @MainActor
+    func testEngineStatusLabelFollowsEngineHealth() {
+        let store = AppStore()
+        store.activeWorkspace.selectedVoiceID = "af_heart"
+        store.engineStatus = .running
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+        var changed = false
+        withObservationTracking { _ = model.engineStatusLabel } onChange: { changed = true }
+
+        var health = store.engineHealth
+        health.consecutiveHealthFailures += 1
+        store.engineHealth = health
+
+        XCTAssertTrue(changed, "The supervisor's status text changes with the health summary")
+    }
+
+    @MainActor
+    func testInputRowAndStatusRedrawFromStoreChanges() {
+        let store = AppStore()
+        store.activeWorkspace.selectedVoiceID = "af_heart"
+        store.engineStatus = .running
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+        let input = Self.host(WoadieInputRow(model: model).frame(width: 600, height: 220))
+        let status = Self.host(StatusIndicatorView(model: model).frame(width: 300, height: 60))
+
+        let inputBefore = Self.render(input)
+        store.composerText = "Typed after the first render."
+        XCTAssertNotEqual(inputBefore, Self.render(input), "The text box must redraw when the text changes")
+
+        let statusBefore = Self.render(status)
+        store.engineStatus = .stopped
+        XCTAssertNotEqual(statusBefore, Self.render(status), "The status label must redraw when the engine stops")
+    }
+
+    @MainActor
+    private static func host<V: View>(_ view: V) -> NSHostingView<V> {
+        let host = NSHostingView(rootView: view)
+        host.frame = NSRect(origin: .zero, size: host.fittingSize)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        return host
+    }
+
+    @MainActor
+    private static func render(_ host: NSView) -> Data {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        host.layoutSubtreeIfNeeded()
+        let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds)!
+        host.cacheDisplay(in: host.bounds, to: rep)
+        return rep.tiffRepresentation!
+    }
+
+    @MainActor
     func testVoicePickerIndexFollowsVoicesAndFavorites() {
         let store = AppStore()
         store.activeWorkspace.selectedVoiceID = "af_sky"

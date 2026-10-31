@@ -1,11 +1,10 @@
-import Combine
 import Foundation
 import Observation
 
 /// Playback progress, which changes up to 30 times a second while audio
-/// plays. It is observed field by field instead of through
-/// `AppStore.objectWillChange`, so a tick re-renders only the views that read
-/// the field that changed, not the whole window.
+/// plays. Each field is assigned only when it changes, so a tick re-renders
+/// only the views that read the field that changed, not every view that reads
+/// playback.
 @MainActor
 @Observable
 final class PlaybackState {
@@ -45,31 +44,35 @@ final class PlaybackState {
     }
 }
 
+/// The app's shared state. `@Observable` tracks each property separately, so
+/// a view re-renders only when something it read changes: typing in the text
+/// box no longer redraws the header, log, voice pickers and settings.
 @MainActor
-final class AppStore: ObservableObject {
-    @Published var appMode: AppMode = .quick
-    @Published var logMode: LogMode = .auto
-    @Published var appearance: AppAppearance = .system
-    @Published var selectedLogEntryID: UUID?
-    @Published var engineStatus: EngineStatus = .stopped
-    @Published var engineHealth: EngineHealthSummary = .stopped
-    @Published var engineDiagnostics: [EngineDiagnostic] = []
-    @Published var activeWorkspace: WorkspaceSession = WorkspaceSession()
-    @Published var speechJobs: [SpeechJob] = []
+@Observable
+final class AppStore {
+    var appMode: AppMode = .quick
+    var logMode: LogMode = .auto
+    var appearance: AppAppearance = .system
+    var selectedLogEntryID: UUID?
+    var engineStatus: EngineStatus = .stopped
+    var engineHealth: EngineHealthSummary = .stopped
+    var engineDiagnostics: [EngineDiagnostic] = []
+    var activeWorkspace: WorkspaceSession = WorkspaceSession()
+    var speechJobs: [SpeechJob] = []
     let playbackState = PlaybackState()
     var playback: PlaybackSnapshot {
         get { playbackState.snapshot }
         set { playbackState.snapshot = newValue }
     }
-    @Published var dashboardTelemetry: DashboardTelemetry = .empty
-    @Published var persistence: PersistenceSnapshot = .idle
-    @Published var savedPackages: [SavedSpeechPackage] = []
-    @Published var savedLogEntries: [SavedLogEntry] = []
-    @Published var speechEntries: [SpeechEntry] = []
-    @Published var voiceOptions: [VoiceOption] = [] {
+    var dashboardTelemetry: DashboardTelemetry = .empty
+    var persistence: PersistenceSnapshot = .idle
+    var savedPackages: [SavedSpeechPackage] = []
+    var savedLogEntries: [SavedLogEntry] = []
+    var speechEntries: [SpeechEntry] = []
+    var voiceOptions: [VoiceOption] = [] {
         didSet { rebuildVoiceIndex() }
     }
-    @Published var voiceFavorites: Set<String> = [] {
+    var voiceFavorites: Set<String> = [] {
         didSet { rebuildVoiceIndex() }
     }
     /// The picker's grouped voices and an id → label lookup, rebuilt when the
@@ -77,15 +80,15 @@ final class AppStore: ObservableObject {
     private(set) var voiceSections: [VoiceGrouping.Section] = []
     private(set) var voiceDropdownSections: [AlkiDropdownSection] = []
     private(set) var voiceLabelsByID: [String: String] = [:]
-    @Published var cloudSettings = CloudSpeechSettings()
-    @Published var playbackTuning: PlaybackTuning = .default
-    @Published var lastQueryResourceUsage: QueryResourceUsage?
-    @Published var composerText: String = ""
-    @Published var userMessage: String = ""
-    @Published var selectedTextPermissionRequired: Bool = false
-    @Published var lastError: AlkiSpeakError?
-    @Published var showPortInUseAlert: Bool = false
-    @Published var portInUsePids: [Int32] = []
+    var cloudSettings = CloudSpeechSettings()
+    var playbackTuning: PlaybackTuning = .default
+    var lastQueryResourceUsage: QueryResourceUsage?
+    var composerText: String = ""
+    var userMessage: String = ""
+    var selectedTextPermissionRequired: Bool = false
+    var lastError: AlkiSpeakError?
+    var showPortInUseAlert: Bool = false
+    var portInUsePids: [Int32] = []
 
     private func rebuildVoiceIndex() {
         voiceSections = VoiceGrouping.sections(voices: voiceOptions, favorites: voiceFavorites)

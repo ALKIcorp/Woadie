@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct WoadieInputRow: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     /// Kept while the Expression menu has focus, so a tag lands at the cursor.
     @State private var selection: TextSelection?
 

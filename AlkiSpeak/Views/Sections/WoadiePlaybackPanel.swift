@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct WoadiePlaybackPanel: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
     let onTogglePlayback: () -> Void
     private var isPlaying: Bool { model.playback.state == .playing || model.playback.state == .preparing }
     private var hasPlayableClip: Bool { model.playback.bufferedDuration > 0 }
@@ -165,7 +165,7 @@ private struct ShareButtonFramePreferenceKey: PreferenceKey {
 }
 
 private struct ProgressiveScrubber: View {
-    @ObservedObject var model: AppModel
+    var model: AppModel
 
     var body: some View {
         let total = max(model.playback.duration ?? 0, 0.1)

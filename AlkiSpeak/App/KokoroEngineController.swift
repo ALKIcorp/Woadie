@@ -5,6 +5,7 @@ import Foundation
 /// waking it for a request, and turning supervisor health reports into
 /// engine status in the store.
 @MainActor
+@Observable
 final class KokoroEngineController {
     private let store: AppStore
     private let dependencies: AppDependencies

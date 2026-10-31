@@ -4,11 +4,12 @@ import AppKit
 import Foundation
 
 @MainActor
-final class AppModel: ObservableObject {
+@Observable
+final class AppModel {
     let store: AppStore
     private let dependencies: AppDependencies
     private let favoritesStore = VoiceFavoritesStore()
-    private lazy var voiceCatalog = VoiceCatalogController(
+    @ObservationIgnored private lazy var voiceCatalog = VoiceCatalogController(
         store: store,
         dependencies: dependencies,
         favoritesStore: favoritesStore,
@@ -16,11 +17,11 @@ final class AppModel: ObservableObject {
         record: { [weak self] in self?.record($0) },
         trace: { [weak self] in self?.consoleTrace($0) }
     )
-    private lazy var diagnostics = SpeechDiagnostics(dependencies: dependencies, store: store) { [weak self] in
+    @ObservationIgnored private lazy var diagnostics = SpeechDiagnostics(dependencies: dependencies, store: store) { [weak self] in
         self?.diagnosticsBaseContext() ?? [:]
     }
-    private lazy var pipeline = SpeechPipeline(store: store, dependencies: dependencies, diagnostics: diagnostics)
-    private lazy var engine = KokoroEngineController(
+    @ObservationIgnored private lazy var pipeline = SpeechPipeline(store: store, dependencies: dependencies, diagnostics: diagnostics)
+    @ObservationIgnored private lazy var engine = KokoroEngineController(
         store: store,
         dependencies: dependencies,
         diagnostics: diagnostics,
@@ -29,13 +30,13 @@ final class AppModel: ObservableObject {
         stopPlayback: { [weak self] in self?.stopPlayback() },
         trace: { [weak self] in self?.consoleTrace($0) }
     )
-    private lazy var history = HistoryController(store: store, dependencies: dependencies) { [weak self] error in
+    @ObservationIgnored private lazy var history = HistoryController(store: store, dependencies: dependencies) { [weak self] error in
         self?.record(error)
     }
-    private var cancellables: Set<AnyCancellable> = []
-    private var tuningSaveTask: Task<Void, Never>?
-    private var hasRequestedAccessibilityPrompt = false
-    private var lastHotKeyClipboardChangeCount = NSPasteboard.general.changeCount
+    @ObservationIgnored private var cancellables: Set<AnyCancellable> = []
+    @ObservationIgnored private var tuningSaveTask: Task<Void, Never>?
+    @ObservationIgnored private var hasRequestedAccessibilityPrompt = false
+    @ObservationIgnored private var lastHotKeyClipboardChangeCount = NSPasteboard.general.changeCount
 
     private func consoleTrace(_ message: String, function: StaticString = #function, line: UInt = #line) {
         guard AppConfig.isVerboseConsoleTracingEnabled else { return }
@@ -65,6 +66,9 @@ final class AppModel: ObservableObject {
     }
     var engineStatusLabel: String {
         if isEngineOnStandby { return "Kokoro Standby" }
+        // The supervisor's state isn't observable. It changes along with the
+        // health summary, so reading that redraws the label when it does.
+        _ = store.engineHealth
         return dependencies.engineSupervisor.engineState.statusText
     }
     var chatItems: [SpeechEntry] { store.speechEntries }
@@ -216,9 +220,8 @@ final class AppModel: ObservableObject {
 
     /// Saves (or, with an empty string, removes) a provider's key in the Keychain.
     func setCloudAPIKey(_ key: String, for provider: CloudProvider) {
-        if voiceCatalog.setCloudAPIKey(key, for: provider) {
-            objectWillChange.send()
-        }
+        // Settings re-reads the Keychain after saving, so nothing to publish.
+        _ = voiceCatalog.setCloudAPIKey(key, for: provider)
     }
 
     func setCloudCustomBaseURL(_ url: String) {
@@ -308,7 +311,7 @@ final class AppModel: ObservableObject {
 
     /// Local models currently downloading/loading, or whose preparation failed.
     /// Absent means idle; Settings checks the disk for "downloaded".
-    @Published private(set) var localModelStates: [String: LocalModelState] = [:]
+    private(set) var localModelStates: [String: LocalModelState] = [:]
 
     /// Downloads and loads a local model in the background with no time limit,
     /// so its first speech request doesn't have to.
@@ -346,7 +349,7 @@ final class AppModel: ObservableObject {
         case failed(String)
     }
 
-    @Published private(set) var nativeKokoroState: NativeKokoroState = .off
+    private(set) var nativeKokoroState: NativeKokoroState = .off
 
     var isNativeKokoroEnabled: Bool { dependencies.nativeKokoroService.isEnabled }
 
@@ -482,10 +485,6 @@ final class AppModel: ObservableObject {
         if !AppConfig.isRunningUnitTests {
             diagnostics.startSession()
         }
-
-        store.objectWillChange
-            .sink { [weak self] _ in self?.objectWillChange.send() }
-            .store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: AVSpeechSynthesizer.availableVoicesDidChangeNotification)
             .receive(on: RunLoop.main)
