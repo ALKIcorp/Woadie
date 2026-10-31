@@ -60,91 +60,225 @@ struct OverlayContainer<Content: View>: View {
 }
 
 struct SettingsOverlayView: View {
+    enum Tab: String, CaseIterable, Identifiable {
+        case general = "General"
+        case playback = "Playback"
+        case voices = "Voices & Services"
+        case engines = "Downloads & Engines"
+        case storage = "Storage"
+
+        var id: Self { self }
+
+        var systemImage: String {
+            switch self {
+            case .general: return "gearshape"
+            case .playback: return "slider.horizontal.3"
+            case .voices: return "person.wave.2"
+            case .engines: return "arrow.down.circle"
+            case .storage: return "internaldrive"
+            }
+        }
+    }
+
     var model: AppModel
     var onOpenStorage: () -> Void
     var onClose: () -> Void
+    @State private var tab: Tab = .general
+    @Environment(\.openVoices) private var openVoices
 
     var body: some View {
-        OverlayContainer(title: "Settings", onClose: onClose) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    DisclosureSettingRow(
-                        title: "Appearance",
-                        systemImage: "circle.lefthalf.filled",
-                        subtitle: "Light, dark, or follow the system",
-                        initiallyExpanded: true
-                    ) {
-                        Picker("Appearance", selection: Binding(
-                            get: { model.appearance },
-                            set: { model.setAppearance($0) }
-                        )) {
-                            ForEach(AppAppearance.allCases, id: \.self) { appearance in
-                                Text(appearance.label).tag(appearance)
-                            }
+        OverlayContainer(title: "Settings", maxWidth: 800, maxHeight: 620, onClose: onClose) {
+            HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Tab.allCases) { item in
+                        Button { tab = item } label: {
+                            Label(item.rawValue, systemImage: item.systemImage)
+                                .font(WoadieTheme.rounded(size: 13, weight: tab == item ? .semibold : .regular))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 7)
+                                .background(tab == item ? WoadieTheme.surface : .clear, in: RoundedRectangle(cornerRadius: 8))
+                                .contentShape(Rectangle())
                         }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
+                        .buttonStyle(.plain)
                     }
-
-                    DisclosureSettingRow(
-                        title: "Playback Tuning",
-                        systemImage: "slider.horizontal.3",
-                        subtitle: "Listen-only speed and pitch — clips are never re-rendered",
-                        initiallyExpanded: true
-                    ) {
-                        PlaybackTuningControls(model: model)
-                    }
-
-                    DisclosureSettingRow(
-                        title: "Keyboard Shortcuts",
-                        systemImage: "keyboard",
-                        subtitle: "Speak selected text from any app",
-                        initiallyExpanded: false
-                    ) {
-                        HotKeySettings()
-                    }
-
-                    DisclosureSettingRow(
-                        title: "Cloud Voices",
-                        systemImage: "cloud",
-                        subtitle: model.cloudSettings.voices.isEmpty
-                            ? "OpenRouter, OpenAI, Mistral, local mlx-audio, or any OpenAI-compatible endpoint"
-                            : "\(model.cloudSettings.voices.count) configured"
-                    ) {
-                        CloudVoicesSettings(model: model)
-                    }
-
-                    DisclosureSettingRow(
-                        title: "Native Kokoro",
-                        systemImage: "cpu",
-                        subtitle: nativeKokoroSubtitle
-                    ) {
-                        NativeKokoroSettings(model: model)
-                    }
-
-                    DisclosureSettingRow(
-                        title: "Storage",
-                        systemImage: "internaldrive",
-                        subtitle: storageSubtitle
-                    ) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                WoadieButton(title: "Open Clips Folder", systemImage: "folder", variant: .default) {
-                                    model.openClipsFolder()
-                                }
-                                WoadieButton(title: "Clean Up Orphans", systemImage: "trash", variant: .default) {
-                                    model.cleanupOrphanClips()
-                                }
-                            }
-                            WoadieButton(title: "Open Storage Dashboard", systemImage: "square.grid.2x2", variant: .primary) {
-                                onOpenStorage()
-                            }
-                        }
-                    }
+                    Spacer()
                 }
-                .padding(20)
+                .padding(12)
+                .frame(width: 210)
+
+                Divider().opacity(0.4)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 22) {
+                        content
+                    }
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch tab {
+        case .general:
+            SettingsSection("Appearance", subtitle: "Light, dark, or follow the system") {
+                Picker("Appearance", selection: Binding(
+                    get: { model.appearance },
+                    set: { model.setAppearance($0) }
+                )) {
+                    ForEach(AppAppearance.allCases, id: \.self) { appearance in
+                        Text(appearance.label).tag(appearance)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 320)
+            }
+            SettingsSection("Keyboard Shortcuts", subtitle: "Speak selected text from any app") {
+                HotKeySettings()
+            }
+        case .playback:
+            SettingsSection("Speed and Pitch", subtitle: "Changes what you hear; saved clips are never re-rendered") {
+                PlaybackTuningControls(model: model)
+            }
+        case .voices:
+            SettingsSection("Your Voices", subtitle: "Pick, preview, clone or describe voices") {
+                HStack {
+                    WoadieButton(title: "Open Voices", systemImage: "person.wave.2", variant: .primary) { openVoices(.mine) }
+                    WoadieButton(title: "New Voice…", systemImage: "plus", variant: .default) { openVoices(.new) }
+                }
+            }
+            SettingsSection(
+                "Online Services and Local Models",
+                subtitle: model.cloudSettings.voices.isEmpty
+                    ? "ElevenLabs, OpenAI, Gemini, OpenRouter, Mistral, or voices that run on this Mac"
+                    : "\(model.cloudSettings.voices.count) added"
+            ) {
+                CloudVoicesSettings(model: model)
+            }
+        case .engines:
+            SettingsSection("Voice Downloads", subtitle: "Free voices that run on this Mac download once, the first time you use them") {
+                LocalModelDownloads(model: model)
+            }
+            SettingsSection("Kokoro on the Neural Engine", subtitle: nativeKokoroSubtitle) {
+                NativeKokoroSettings(model: model)
+            }
+            SettingsSection("Kokoro Engine", subtitle: "Starts by itself when a Kokoro voice needs it and stops after 3 minutes unused") {
+                HStack {
+                    Text(model.status.isProcessExpectedAlive ? "Running" : "Off")
+                        .font(WoadieTheme.mono(size: 11, weight: .medium))
+                    WoadieButton(title: model.startStopLabel, systemImage: model.startStopSystemImage, variant: .default) {
+                        model.toggleEngine()
+                    }
+                }
+            }
+        case .storage:
+            SettingsSection("Saved Clips", subtitle: storageSubtitle) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        WoadieButton(title: "Open Clips Folder", systemImage: "folder", variant: .default) {
+                            model.openClipsFolder()
+                        }
+                        WoadieButton(title: "Clean Up Orphans", systemImage: "trash", variant: .default) {
+                            model.cleanupOrphanClips()
+                        }
+                    }
+                    WoadieButton(title: "Open Storage Dashboard", systemImage: "square.grid.2x2", variant: .primary) {
+                        onOpenStorage()
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A titled group within a Settings tab.
+private struct SettingsSection<Content: View>: View {
+    let title: String
+    let subtitle: String
+    @ViewBuilder var content: Content
+
+    init(_ title: String, subtitle: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.subtitle = subtitle
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(WoadieTheme.rounded(size: 14, weight: .semibold))
+                Text(subtitle)
+                    .font(WoadieTheme.mono(size: 10, weight: .medium))
+                    .foregroundStyle(WoadieTheme.foregroundSubtle)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            content
+        }
+    }
+}
+
+/// Each local model: downloaded, downloading, or a button to fetch it now.
+private struct LocalModelDownloads: View {
+    var model: AppModel
+    /// Disk checks walk the Hugging Face cache, so they run on appear and
+    /// when a download finishes, not on every render.
+    @State private var downloaded: Set<String> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(LocalVoiceCatalog.models) { localModel in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(localModel.name).font(WoadieTheme.rounded(size: 12, weight: .semibold))
+                        Text(localModel.summary)
+                            .font(WoadieTheme.mono(size: 9, weight: .medium))
+                            .foregroundStyle(WoadieTheme.foregroundSubtle)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    status(localModel)
+                }
+                .padding(10)
+                .background(WoadieTheme.surface, in: RoundedRectangle(cornerRadius: 10))
+            }
+        }
+        .onAppear(perform: refresh)
+        .onChange(of: model.localModelStates) { _, _ in refresh() }
+    }
+
+    @ViewBuilder
+    private func status(_ localModel: LocalVoiceCatalog.Model) -> some View {
+        switch model.localModelStates[localModel.id] {
+        case .preparing?:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text(String(format: "Downloading %.1f GB…", localModel.downloadGB))
+                    .font(WoadieTheme.mono(size: 10, weight: .medium))
+            }
+        case .failed(let message)?:
+            WoadieButton(title: "Retry Download", systemImage: "arrow.clockwise", variant: .default) {
+                model.prepareLocalModel(localModel.id)
+            }
+            .help(message)
+        case nil:
+            if downloaded.contains(localModel.id) {
+                Label("Downloaded", systemImage: "checkmark.circle.fill")
+                    .font(WoadieTheme.mono(size: 10, weight: .medium))
+                    .foregroundStyle(WoadieTheme.success)
+            } else {
+                WoadieButton(title: String(format: "Download %.1f GB", localModel.downloadGB), systemImage: "arrow.down.circle", variant: .default) {
+                    model.prepareLocalModel(localModel.id)
+                }
+            }
+        }
+    }
+
+    private func refresh() {
+        downloaded = Set(LocalVoiceCatalog.models.map(\.id).filter { MLXAudioServerManager.isModelDownloaded($0) })
     }
 }
 
