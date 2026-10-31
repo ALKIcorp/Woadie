@@ -195,6 +195,7 @@ private struct CloudVoicesSettings: View {
     @State private var catalogError: String?
     @State private var designDescription = ""
     @State private var designLabel = ""
+    @State private var cartesiaVoices: [CartesiaCatalog.Voice]?
     @State private var dialogueNames = ["Joe", "Jane"]
     @State private var dialogueVoices = ["Puck", "Kore"]
 
@@ -262,6 +263,9 @@ private struct CloudVoicesSettings: View {
             }
             if provider == .localMLX {
                 localPresets
+            }
+            if provider == .cartesia && hasKey {
+                cartesiaPickers
             }
 
             HStack {
@@ -426,6 +430,58 @@ private struct CloudVoicesSettings: View {
             }
         }
         .pickerStyle(.menu)
+    }
+
+    /// Fills the voice from the account's Cartesia library; models are fixed.
+    @ViewBuilder
+    private var cartesiaPickers: some View {
+        if let voices = cartesiaVoices {
+            HStack {
+                Picker("Voice", selection: Binding(
+                    get: { voiceID },
+                    set: { id in
+                        voiceID = id
+                        label = voices.first { $0.id == id }.map { "Cartesia \($0.name)" } ?? label
+                        if modelID.isEmpty, let first = CartesiaCatalog.models.first {
+                            modelID = first.id
+                        }
+                    }
+                )) {
+                    Text("Choose a voice").tag("")
+                    ForEach(voices) { voice in
+                        let detail = [voice.tagline, voice.language].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+                        Text(detail.isEmpty ? voice.name : "\(voice.name) · \(detail)").tag(voice.id)
+                    }
+                }
+                Picker("Model", selection: $modelID) {
+                    Text("Choose a model").tag("")
+                    ForEach(CartesiaCatalog.models, id: \.id) { model in
+                        Text(model.name).tag(model.id)
+                    }
+                }
+            }
+            .pickerStyle(.menu)
+            caption("\(voices.count) voices on this account")
+        } else {
+            HStack {
+                WoadieButton(title: isLoadingCatalog ? "Loading…" : "Load My Voices", systemImage: "arrow.down.circle", variant: .default) {
+                    isLoadingCatalog = true
+                    catalogError = nil
+                    Task {
+                        do {
+                            cartesiaVoices = try await model.loadCartesiaVoices()
+                        } catch {
+                            catalogError = (error as? AlkiSpeakError)?.message ?? error.localizedDescription
+                        }
+                        isLoadingCatalog = false
+                    }
+                }
+                .disabled(isLoadingCatalog)
+                if let catalogError {
+                    caption(catalogError)
+                }
+            }
+        }
     }
 
     private func voiceSummary(_ voice: CloudVoice) -> String {

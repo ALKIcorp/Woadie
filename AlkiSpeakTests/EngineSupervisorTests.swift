@@ -1344,7 +1344,8 @@ private extension AppDependencies {
         cloudSpeechSettings: CloudSpeechSettingsStoring = InMemoryCloudSpeechSettingsStore(),
         secretStore: SecretStoring = InMemorySecretStore(),
         localVoiceServer: LocalVoiceServerEnsuring = FakeLocalVoiceServer(),
-        elevenLabsCatalog: ElevenLabsCatalogFetching = FakeElevenLabsCatalog()
+        elevenLabsCatalog: ElevenLabsCatalogFetching = FakeElevenLabsCatalog(),
+        cartesiaVoices: CartesiaVoiceFetching = FakeCartesiaVoices()
     ) -> AppDependencies {
         AppDependencies(
             engineSupervisor: engineSupervisor,
@@ -1355,6 +1356,7 @@ private extension AppDependencies {
             secretStore: secretStore,
             localVoiceServer: localVoiceServer,
             elevenLabsCatalog: elevenLabsCatalog,
+            cartesiaVoices: cartesiaVoices,
             playbackCoordinator: playbackCoordinator,
             localSpeechService: localSpeechService,
             selectedTextReader: selectedTextReader ?? FakeSelectedTextReader(result: .noSelection),

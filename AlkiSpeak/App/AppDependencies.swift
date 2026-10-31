@@ -10,6 +10,7 @@ struct AppDependencies {
     let secretStore: SecretStoring
     let localVoiceServer: LocalVoiceServerEnsuring
     let elevenLabsCatalog: ElevenLabsCatalogFetching
+    let cartesiaVoices: CartesiaVoiceFetching
     let playbackCoordinator: PlaybackCoordinating
     let localSpeechService: LocalSpeechSynthesizing
     let selectedTextReader: SelectedTextReading
@@ -34,6 +35,7 @@ struct AppDependencies {
             secretStore: secrets,
             localVoiceServer: MLXAudioServerManager.shared,
             elevenLabsCatalog: ElevenLabsCatalogService(secrets: secrets),
+            cartesiaVoices: CartesiaVoiceService(secrets: secrets),
             playbackCoordinator: AVAudioPlaybackCoordinator(),
             localSpeechService: AppleSpeechService(),
             selectedTextReader: SelectedTextReader(),

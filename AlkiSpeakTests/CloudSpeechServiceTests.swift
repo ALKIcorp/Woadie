@@ -39,6 +39,11 @@ final class FakeElevenLabsCatalog: ElevenLabsCatalogFetching {
     func fetchCatalog() async throws -> ElevenLabsCatalog { catalog }
 }
 
+final class FakeCartesiaVoices: CartesiaVoiceFetching {
+    var voices: [CartesiaCatalog.Voice] = []
+    func fetchVoices() async throws -> [CartesiaCatalog.Voice] { voices }
+}
+
 /// Captures the outgoing request and replies with a canned response.
 private final class StubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var handler: ((URLRequest) -> (Int, Data))?
@@ -563,5 +568,51 @@ final class CloudSpeechServiceTests: XCTestCase {
         XCTAssertGreaterThan(rebuilt.count, 2)
         XCTAssertEqual(rebuilt.first, .init(speaker: "Joe", text: "Is it ready?", style: "nervous"))
         XCTAssertTrue(rebuilt.dropFirst().allSatisfy { $0.speaker == "Jane" && $0.style == "calm and relaxed" })
+    }
+
+    // MARK: Cartesia
+
+    func testCartesiaRequestShape() throws {
+        let voice = CloudVoice(providerID: CloudProvider.cartesia.id, model: "sonic-3.6", voice: "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4", label: "Skylar")
+        settings.settings.voices = [voice]
+        try secrets.setSecret("sk_car_test", for: CloudProvider.cartesia.id)
+
+        let request = try service.makeRequest(text: "Hello there.", voiceID: voice.voiceID)
+
+        XCTAssertEqual(request.url?.absoluteString, "https://api.cartesia.ai/tts/bytes")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer sk_car_test")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cartesia-Version"), "2026-08-14")
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+        XCTAssertEqual(body["model_id"] as? String, "sonic-3.6")
+        XCTAssertEqual(body["transcript"] as? String, "Hello there.")
+        XCTAssertEqual(body["voice"] as? [String: String], ["id": "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4"])
+        let format = try XCTUnwrap(body["output_format"] as? [String: Any])
+        XCTAssertEqual(format["container"] as? String, "mp3")
+        XCTAssertEqual(format["sample_rate"] as? Int, 44100)
+        XCTAssertEqual(format["bit_rate"] as? Int, 128000)
+    }
+
+    func testCartesiaVoicesPageAndSort() async throws {
+        try secrets.setSecret("sk_car_test", for: CloudProvider.cartesia.id)
+        var requestedCursors: [String?] = []
+        StubURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cartesia-Version"), "2026-08-14")
+            let cursor = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "starting_after" }?.value
+            requestedCursors.append(cursor)
+            if cursor == nil {
+                return (200, Data(#"{"data":[{"id":"v2","name":"Zane","tagline":"Calm Narrator","language":"en"}],"has_more":true,"next_page":"v2"}"#.utf8))
+            }
+            return (200, Data(#"{"data":[{"id":"v1","name":"Ava","tagline":"","language":"en"}],"has_more":false,"next_page":null}"#.utf8))
+        }
+
+        let voices = try await CartesiaVoiceService(secrets: secrets, session: stubSession).fetchVoices()
+
+        XCTAssertEqual(voices.map(\.name), ["Ava", "Zane"])
+        XCTAssertEqual(requestedCursors, [nil, "v2"])
+    }
+
+    func testCartesiaErrorMessageIsReadable() {
+        let body = Data(#"{"error_code":"quota_exceeded","title":"Quota exceeded","message":"You have run out of credits.","request_id":"550e8400"}"#.utf8)
+        XCTAssertEqual(CloudSpeechGenerationService.providerMessage(from: body), "You have run out of credits.")
     }
 }

@@ -14,6 +14,9 @@ enum CloudAPIStyle: Hashable {
     /// Gemini Interactions API: `POST {base}/interactions`, `x-goog-api-key`
     /// auth. Audio comes back base64-encoded inside JSON (a WAV file by default).
     case gemini
+    /// Cartesia: `POST {base}/tts/bytes` with JSON `model_id`, `transcript`,
+    /// `voice {id}`, `output_format`; Bearer auth plus a `Cartesia-Version` date.
+    case cartesia
 }
 
 /// A hosted (or local) speech endpoint.
@@ -44,6 +47,15 @@ struct CloudProvider: Identifiable, Hashable {
         modelPrompt: "e.g. gemini-3.8-flash-tts",
         voicePrompt: "e.g. Kore",
         style: .gemini
+    )
+    static let cartesia = CloudProvider(
+        id: "cartesia",
+        name: "Cartesia",
+        defaultBaseURL: "https://api.cartesia.ai",
+        requiresAPIKey: true,
+        modelPrompt: "e.g. sonic-3.6",
+        voicePrompt: "Voice ID",
+        style: .cartesia
     )
     static let openRouter = CloudProvider(
         id: "openrouter",
@@ -86,7 +98,7 @@ struct CloudProvider: Identifiable, Hashable {
         voicePrompt: "Voice ID"
     )
 
-    static let all: [CloudProvider] = [.elevenLabs, .gemini, .openRouter, .openAI, .mistral, .localMLX, .custom]
+    static let all: [CloudProvider] = [.elevenLabs, .gemini, .cartesia, .openRouter, .openAI, .mistral, .localMLX, .custom]
 
     static func provider(withID id: String) -> CloudProvider? {
         all.first { $0.id == id }
@@ -326,6 +338,8 @@ final class CloudSpeechGenerationService: SpeechGenerating {
             url = current.baseURL(for: provider).flatMap { Self.elevenLabsSpeechURL(base: $0, voiceID: cloudVoice.voice) }
         case .gemini:
             url = current.baseURL(for: provider).flatMap { Self.normalizedBase($0) }.flatMap { URL(string: $0 + "/interactions") }
+        case .cartesia:
+            url = current.baseURL(for: provider).flatMap { Self.normalizedBase($0) }.flatMap { URL(string: $0 + "/tts/bytes") }
         }
         guard let url else {
             throw Self.failure(
@@ -407,6 +421,17 @@ final class CloudSpeechGenerationService: SpeechGenerating {
                 "input": [["type": "user_input", "content": content]],
                 "response_format": ["type": "audio"],
                 "generation_config": ["speech_config": speechConfig]
+            ] as [String: Any])
+        case .cartesia:
+            if let apiKey, !apiKey.isEmpty {
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+            request.setValue(CartesiaCatalog.apiVersion, forHTTPHeaderField: "Cartesia-Version")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "model_id": cloudVoice.model,
+                "transcript": text,
+                "voice": ["id": cloudVoice.voice],
+                "output_format": ["container": "mp3", "sample_rate": 44100, "bit_rate": 128000]
             ] as [String: Any])
         }
         return request
@@ -826,5 +851,93 @@ enum DialogueScript {
             .flatMap { $0.isEmpty ? nil : $0 }
         let spoken = line[spokenRange].trimmingCharacters(in: .whitespaces)
         return (speaker, style, spoken)
+    }
+}
+
+// MARK: - Cartesia catalog
+
+/// Cartesia's speech models and the account's voice list (`GET /voices`).
+enum CartesiaCatalog {
+    /// The only `Cartesia-Version` the current API spec accepts.
+    static let apiVersion = "2026-08-14"
+
+    /// `sonic-3.6` tracks the latest stable snapshot; `sonic-latest` is deprecated.
+    static let models: [(id: String, name: String)] = [
+        ("sonic-3.6", "Sonic 3.6"),
+        ("sonic-3.5", "Sonic 3.5"),
+        ("sonic-3", "Sonic 3")
+    ]
+
+    struct Voice: Identifiable, Hashable, Decodable {
+        let id: String
+        let name: String
+        let tagline: String?
+        let language: String?
+    }
+}
+
+protocol CartesiaVoiceFetching: AnyObject {
+    func fetchVoices() async throws -> [CartesiaCatalog.Voice]
+}
+
+/// Pages through `GET /voices` (100 per page, up to 500 voices).
+final class CartesiaVoiceService: CartesiaVoiceFetching {
+    private let secrets: SecretStoring
+    private let session: URLSession
+    private let base: String
+    private let maxPages = 5
+
+    init(secrets: SecretStoring, session: URLSession = .shared, base: String = CloudProvider.cartesia.defaultBaseURL ?? "") {
+        self.secrets = secrets
+        self.session = session
+        self.base = base
+    }
+
+    private struct Page: Decodable {
+        let data: [CartesiaCatalog.Voice]
+        let hasMore: Bool
+        let nextPage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case data
+            case hasMore = "has_more"
+            case nextPage = "next_page"
+        }
+    }
+
+    func fetchVoices() async throws -> [CartesiaCatalog.Voice] {
+        guard let key = secrets.secret(for: CloudProvider.cartesia.id), !key.isEmpty else {
+            throw AlkiSpeakError.generation(
+                code: "cloud.api-key-missing",
+                title: "Cloud Voice Error",
+                message: "No API key saved for Cartesia.",
+                recoverySuggestion: "Add your Cartesia key in Settings → Cloud Voices."
+            )
+        }
+        guard let normalized = CloudSpeechGenerationService.normalizedBase(base) else {
+            throw AlkiSpeakError.generation(code: "cloud.base-url", title: "Cloud Voice Error", message: "Cartesia has no valid base URL.", recoverySuggestion: "Retry.")
+        }
+        var voices: [CartesiaCatalog.Voice] = []
+        var cursor: String?
+        for _ in 0..<maxPages {
+            guard var components = URLComponents(string: normalized + "/voices") else { break }
+            components.queryItems = [URLQueryItem(name: "limit", value: "100")]
+                + (cursor.map { [URLQueryItem(name: "starting_after", value: $0)] } ?? [])
+            guard let url = components.url else { break }
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 15
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            request.setValue(CartesiaCatalog.apiVersion, forHTTPHeaderField: "Cartesia-Version")
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(status) else {
+                throw CloudSpeechGenerationService.httpError(status: status, body: data)
+            }
+            let page = try JSONDecoder().decode(Page.self, from: data)
+            voices += page.data
+            guard page.hasMore, let next = page.nextPage ?? page.data.last?.id else { break }
+            cursor = next
+        }
+        return voices.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 }
