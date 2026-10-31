@@ -1087,7 +1087,7 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertTrue(PlaybackTuning.default.isDefault)
     }
 
-    func testPlaybackTuningPersistsRoundTrip() {
+    func testPlaybackTuningKeepsPitchButStartsAtNormalSpeed() {
         let suite = "Tuning-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -1095,8 +1095,24 @@ final class EngineSupervisorTests: XCTestCase {
         PlaybackTuning(speed: 1.25, pitch: -3).save(to: defaults)
         let loaded = PlaybackTuning.load(from: defaults)
 
-        XCTAssertEqual(loaded.speed, 1.25, accuracy: 0.0001)
+        XCTAssertEqual(loaded.speed, 1.0, accuracy: 0.0001)
         XCTAssertEqual(loaded.pitch, -3, accuracy: 0.0001)
+    }
+
+    func testPlaybackTuningIgnoresAndClearsSavedSpeeds() {
+        let suite = "Tuning-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        for key in PlaybackTuning.legacySpeedDefaultsKeys {
+            defaults.set(1.75, forKey: key)
+        }
+
+        let loaded = PlaybackTuning.load(from: defaults)
+
+        XCTAssertEqual(loaded.speed, 1.0, accuracy: 0.0001)
+        for key in PlaybackTuning.legacySpeedDefaultsKeys {
+            XCTAssertNil(defaults.object(forKey: key))
+        }
     }
 
     @MainActor

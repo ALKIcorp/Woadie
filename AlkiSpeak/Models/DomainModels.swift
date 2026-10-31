@@ -610,7 +610,10 @@ struct PlaybackTuning: Codable, Hashable {
     static let pitchRange: ClosedRange<Double> = -6...6
     static let `default` = PlaybackTuning(speed: 1.0, pitch: 0)
 
-    static let speedDefaultsKey = "AlkiSpeak.playback.speed_v2"
+    /// Speed is no longer saved; these keys only get cleaned up. A remembered
+    /// speed kept reopening the app at whatever the knob was last left at
+    /// (often its 1.75x maximum).
+    static let legacySpeedDefaultsKeys = ["AlkiSpeak.playback.speed", "AlkiSpeak.playback.speed_v2"]
     static let pitchDefaultsKey = "AlkiSpeak.playback.pitch"
 
     let speed: Double
@@ -626,14 +629,14 @@ struct PlaybackTuning: Codable, Hashable {
     func withSpeed(_ value: Double) -> PlaybackTuning { PlaybackTuning(speed: value, pitch: pitch) }
     func withPitch(_ value: Double) -> PlaybackTuning { PlaybackTuning(speed: speed, pitch: value) }
 
+    /// Every launch starts at 1x speed; only pitch carries over.
     static func load(from defaults: UserDefaults = .standard) -> PlaybackTuning {
-        let speed = defaults.object(forKey: speedDefaultsKey) as? Double ?? PlaybackTuning.default.speed
+        legacySpeedDefaultsKeys.forEach { defaults.removeObject(forKey: $0) }
         let pitch = defaults.object(forKey: pitchDefaultsKey) as? Double ?? PlaybackTuning.default.pitch
-        return PlaybackTuning(speed: speed, pitch: pitch)
+        return PlaybackTuning(speed: PlaybackTuning.default.speed, pitch: pitch)
     }
 
     func save(to defaults: UserDefaults = .standard) {
-        defaults.set(speed, forKey: PlaybackTuning.speedDefaultsKey)
         defaults.set(pitch, forKey: PlaybackTuning.pitchDefaultsKey)
     }
 }
