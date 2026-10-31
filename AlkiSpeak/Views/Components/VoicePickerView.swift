@@ -3,15 +3,15 @@ import SwiftUI
 struct VoicePickerView: View {
     @Binding var selection: String
     let selectedLabel: String
-    let sections: [VoiceGrouping.Section]
-    let favorites: Set<String>
+    /// Built once per voice list change; see `AppStore.voiceDropdownSections`.
+    let sections: [AlkiDropdownSection]
     let onStep: (Int) -> Void
     let onToggleFavorite: (String) -> Void
 
     var body: some View {
         AlkiDropdown(
             title: selectedLabel,
-            sections: dropdownSections,
+            sections: sections,
             selectedID: selection,
             placeholder: "Select Voice",
             onSelect: { selection = $0 },
@@ -20,7 +20,7 @@ struct VoicePickerView: View {
         )
     }
 
-    private var dropdownSections: [AlkiDropdownSection] {
+    static func dropdownSections(_ sections: [VoiceGrouping.Section], favorites: Set<String>) -> [AlkiDropdownSection] {
         sections.map { section in
             AlkiDropdownSection(
                 id: section.id,

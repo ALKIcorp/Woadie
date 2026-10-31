@@ -235,6 +235,26 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     @MainActor
+    func testVoicePickerIndexFollowsVoicesAndFavorites() {
+        let store = AppStore()
+        store.activeWorkspace.selectedVoiceID = "af_sky"
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+        store.voiceOptions = [
+            VoiceOption(id: "af_heart", label: "Kokoro Heart", source: .kokoro),
+            VoiceOption(id: "af_sky", label: "Kokoro Sky", source: .kokoro)
+        ]
+
+        XCTAssertEqual(model.selectedVoiceLabel, "Kokoro Sky")
+        XCTAssertFalse(model.voiceDropdownSections.map(\.title).contains("Favorites"))
+
+        store.voiceFavorites.insert("af_sky")
+
+        let favorites = model.voiceDropdownSections.first { $0.title == "Favorites" }
+        XCTAssertEqual(favorites?.options.map(\.id), ["af_sky"])
+        XCTAssertEqual(favorites?.options.first?.isFavorite, true)
+    }
+
+    @MainActor
     func testIdleStoppedKokoroEngineKeepsGenerateAvailable() {
         let store = AppStore()
         store.composerText = "Wake up"

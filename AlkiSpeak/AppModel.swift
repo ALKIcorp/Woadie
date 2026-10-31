@@ -130,7 +130,7 @@ final class AppModel: ObservableObject {
     }
 
     var selectedVoiceLabel: String {
-        voiceOptions.first(where: { $0.id == selectedVoice })?.label ?? "Select Voice"
+        store.voiceLabelsByID[selectedVoice] ?? "Select Voice"
     }
 
     func cycleVoice(_ offset: Int) {
@@ -167,9 +167,9 @@ final class AppModel: ObservableObject {
     }
 
     /// Grouped voices for the dropdown: Favorites first, then per-source sections.
-    var voiceSections: [VoiceGrouping.Section] {
-        VoiceGrouping.sections(voices: voiceOptions, favorites: store.voiceFavorites)
-    }
+    var voiceSections: [VoiceGrouping.Section] { store.voiceSections }
+
+    var voiceDropdownSections: [AlkiDropdownSection] { store.voiceDropdownSections }
 
     var voiceFavorites: Set<String> { store.voiceFavorites }
 

@@ -18,8 +18,17 @@ final class AppStore: ObservableObject {
     @Published var savedPackages: [SavedSpeechPackage] = []
     @Published var savedLogEntries: [SavedLogEntry] = []
     @Published var speechEntries: [SpeechEntry] = []
-    @Published var voiceOptions: [VoiceOption] = []
-    @Published var voiceFavorites: Set<String> = []
+    @Published var voiceOptions: [VoiceOption] = [] {
+        didSet { rebuildVoiceIndex() }
+    }
+    @Published var voiceFavorites: Set<String> = [] {
+        didSet { rebuildVoiceIndex() }
+    }
+    /// The picker's grouped voices and an id → label lookup, rebuilt when the
+    /// voice list or favorites change instead of on every render.
+    private(set) var voiceSections: [VoiceGrouping.Section] = []
+    private(set) var voiceDropdownSections: [AlkiDropdownSection] = []
+    private(set) var voiceLabelsByID: [String: String] = [:]
     @Published var cloudSettings = CloudSpeechSettings()
     @Published var playbackTuning: PlaybackTuning = .default
     @Published var lastQueryResourceUsage: QueryResourceUsage?
@@ -29,6 +38,12 @@ final class AppStore: ObservableObject {
     @Published var lastError: AlkiSpeakError?
     @Published var showPortInUseAlert: Bool = false
     @Published var portInUsePids: [Int32] = []
+
+    private func rebuildVoiceIndex() {
+        voiceSections = VoiceGrouping.sections(voices: voiceOptions, favorites: voiceFavorites)
+        voiceDropdownSections = VoicePickerView.dropdownSections(voiceSections, favorites: voiceFavorites)
+        voiceLabelsByID = Dictionary(voiceOptions.map { ($0.id, $0.label) }, uniquingKeysWith: { first, _ in first })
+    }
 
     var selectedVoiceID: String {
         get { activeWorkspace.selectedVoiceID }
