@@ -249,7 +249,7 @@ final class CloudSpeechServiceTests: XCTestCase {
             XCTAssertEqual(request.url?.path, "/v1/models")
             return (200, Data(#"{"object":"list","data":[]}"#.utf8))
         }
-        let manager = MLXAudioServerManager(executableURL: URL(fileURLWithPath: "/nonexistent/mlx_audio.server"), session: stubSession)
+        let manager = MLXAudioServerManager(executableURL: URL(fileURLWithPath: "/nonexistent/mlx_audio.server"), session: stubSession, pidFileURL: nil)
 
         try await manager.ensureRunning()
 
@@ -258,7 +258,7 @@ final class CloudSpeechServiceTests: XCTestCase {
 
     func testManagerReportsMissingInstall() async {
         StubURLProtocol.handler = { _ in (503, Data()) }
-        let manager = MLXAudioServerManager(executableURL: URL(fileURLWithPath: "/nonexistent/mlx_audio.server"), session: stubSession)
+        let manager = MLXAudioServerManager(executableURL: URL(fileURLWithPath: "/nonexistent/mlx_audio.server"), session: stubSession, pidFileURL: nil)
 
         do {
             try await manager.ensureRunning()
