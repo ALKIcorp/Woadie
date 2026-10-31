@@ -26,6 +26,7 @@ final class SpeechPipeline {
     private let dependencies: AppDependencies
     private let diagnostics: SpeechDiagnostics
     private let cache: AudioClipCache
+    private let usage: UsageMeter
     private let requestPolicy = EngineRequestPolicy.live
     private let ttsQueue = TTSQueue()
     weak var host: SpeechPipelineHost?
@@ -35,11 +36,18 @@ final class SpeechPipeline {
     private let playbackSnapshotMinimumInterval: TimeInterval = 1.0 / 30.0
     private var lastPlaybackSnapshotAppliedAt: TimeInterval = 0
 
-    init(store: AppStore, dependencies: AppDependencies, diagnostics: SpeechDiagnostics, cache: AudioClipCache = .shared) {
+    init(
+        store: AppStore,
+        dependencies: AppDependencies,
+        diagnostics: SpeechDiagnostics,
+        cache: AudioClipCache = .shared,
+        usage: UsageMeter = .shared
+    ) {
         self.store = store
         self.dependencies = dependencies
         self.diagnostics = diagnostics
         self.cache = cache
+        self.usage = usage
         wirePlaybackCallbacks()
     }
 
@@ -162,16 +170,83 @@ final class SpeechPipeline {
 
     /// Audio for one request without playing it: from the cache, or
     /// generated and cached. Used to render books ahead and compare voices.
+    /// Audio for one request without playing it: from the cache, or
+    /// generated and cached. Used to render books ahead and compare voices,
+    /// so it never swaps in a different voice.
     func audio(for text: String, voice: String) async throws -> (data: Data, latencyMs: Int, fromCache: Bool) {
-        let key = AudioClipCache.key(text: text, voiceConfiguration: cacheConfiguration(forVoice: voice))
-        if let cached = await cache.audio(forKey: key) {
-            return (cached, 0, true)
-        }
-        try await host?.prepareEngine(forVoice: voice)
+        let generator = makeGenerator(forVoice: voice, allowFallback: false)
+        try await generator.preparePrimary()
         let started = Date()
-        let result = try await remoteService(for: voice).synthesize(text: text, voice: voice, jobID: nil)
-        await cache.store(result.audioData, forKey: key)
-        return (result.audioData, result.latencyMs ?? Int(Date().timeIntervalSince(started) * 1000), false)
+        let (result, fromCache) = try await generator.generate(text: text, jobID: nil)
+        let latency = fromCache ? 0 : (result.latencyMs ?? Int(Date().timeIntervalSince(started) * 1000))
+        return (result.audioData, latency, fromCache)
+    }
+
+    // MARK: Fallback
+
+    /// A generator for `voice` that, unless fallback is off, moves on to the
+    /// user's backup voice, then native Kokoro, then Edge when it fails.
+    private func makeGenerator(forVoice voice: String, allowFallback: Bool) -> FallbackGenerator {
+        let settings = UsageSettings.load()
+        var voices = [voice]
+        if allowFallback, settings.fallbackEnabled {
+            voices += fallbackVoices(after: voice, backup: settings.backupVoiceID)
+        }
+        return FallbackGenerator(
+            candidates: voices.map(candidate(for:)),
+            cache: cache,
+            usage: usage,
+            prepareEngine: { [weak self] voice in try await self?.host?.prepareEngine(forVoice: voice) },
+            onFallback: { [weak self] from, to, reason in self?.noteFallback(from: from, to: to, reason: reason) }
+        )
+    }
+
+    /// Voices to try after `voice`, in order. Apple voices can't stand in:
+    /// they speak live instead of producing clips the player can queue.
+    func fallbackVoices(after voice: String, backup: String?) -> [String] {
+        let available = store.voiceOptions.map(\.id)
+        var chain: [String] = []
+        if let backup, available.contains(backup) {
+            chain.append(backup)
+        }
+        if dependencies.nativeKokoroService.isEnabled {
+            let preferred = NativeKokoroSpeechService.idPrefix + "af_heart"
+            if let native = available.contains(preferred) ? preferred : available.first(where: NativeKokoroSpeechService.isNativeKokoroVoice) {
+                chain.append(native)
+            }
+        }
+        let preferredEdge = EdgeSpeechGenerationService.idPrefix + "en-US-AriaNeural"
+        if let edge = available.contains(preferredEdge) ? preferredEdge : available.first(where: { $0.hasPrefix(EdgeSpeechGenerationService.idPrefix) }) {
+            chain.append(edge)
+        }
+        var seen: Set<String> = [voice]
+        return chain.filter { !$0.hasPrefix("apple:") && seen.insert($0).inserted }
+    }
+
+    private func candidate(for voice: String) -> FallbackGenerator.Candidate {
+        let cloudVoice = store.cloudSettings.voice(withID: voice)
+        let isPythonKokoro = !voice.hasPrefix("apple:")
+            && !voice.hasPrefix(EdgeSpeechGenerationService.idPrefix)
+            && cloudVoice == nil
+            && !CloudSpeechGenerationService.isCloudVoice(voice)
+            && !NativeKokoroSpeechService.isNativeKokoroVoice(voice)
+        return FallbackGenerator.Candidate(
+            voice: voice,
+            label: store.voiceLabelsByID[voice] ?? voice,
+            service: remoteService(for: voice),
+            cacheConfiguration: cacheConfiguration(forVoice: voice),
+            providerKey: UsageMeter.providerKey(forVoice: voice, cloudProviderID: cloudVoice?.providerID),
+            needsPythonEngine: isPythonKokoro
+        )
+    }
+
+    private func noteFallback(from: FallbackGenerator.Candidate, to: FallbackGenerator.Candidate, reason: FallbackReason) {
+        store.userMessage = "\(from.label) \(reason.phrase), so this continues with \(to.label)."
+        diagnostics.recordMarkerForActiveJob(message: "Fell back to another voice.", context: [
+            "from": SpeechDiagnostics.voiceSource(for: from.voice),
+            "to": SpeechDiagnostics.voiceSource(for: to.voice),
+            "reason": reason.rawValue
+        ])
     }
 
     private func remoteService(for voice: String) -> SpeechGenerating {
@@ -190,7 +265,8 @@ final class SpeechPipeline {
 
         do {
             guard !segments.isEmpty else { return }
-            try await host?.prepareEngine(forVoice: voice)
+            let generator = makeGenerator(forVoice: voice, allowFallback: true)
+            try await generator.preparePrimary()
             if segments.count > 1 {
                 updateJob(jobID, status: .queued, error: nil)
             }
@@ -218,7 +294,7 @@ final class SpeechPipeline {
                         )
                     }
                 }
-            }) { [generationService = remoteService(for: voice), clipStore = dependencies.clipStore, workspaceID = store.activeWorkspace.id, cache, cacheConfiguration = cacheConfiguration(forVoice: voice)] segment in
+            }) { [clipStore = dependencies.clipStore, workspaceID = store.activeWorkspace.id] segment in
                 await MainActor.run {
                     self.diagnostics.setPhase(
                         .remoteGeneration,
@@ -230,25 +306,16 @@ final class SpeechPipeline {
                         ]
                     )
                 }
-                let cacheKey = AudioClipCache.key(text: segment.text, voiceConfiguration: cacheConfiguration)
-                let result: SpeechGenerationResult
-                if let cached = await cache.audio(forKey: cacheKey) {
-                    // Same words, same voice: replay the earlier audio with no
-                    // network call or engine work.
-                    result = SpeechGenerationResult(audioData: cached, latencyMs: 0, charCount: segment.text.count)
+                // Cached audio replays with no network call or engine work;
+                // otherwise the voice (or a fallback) generates it.
+                let (result, fromCache) = try await generator.generate(text: segment.text, jobID: jobID)
+                if fromCache {
                     await MainActor.run {
                         self.diagnostics.recordMarkerForActiveJob(
                             message: "Segment served from cache.",
                             context: ["segmentIndex": "\(segment.index)"]
                         )
                     }
-                } else {
-                    result = try await generationService.synthesize(
-                        text: segment.text,
-                        voice: voice,
-                        jobID: jobID
-                    )
-                    await cache.store(result.audioData, forKey: cacheKey)
                 }
                 let url = try clipStore.writeClip(data: result.audioData, segmentID: segment.id, workspaceID: workspaceID)
                 await MainActor.run {

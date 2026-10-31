@@ -66,6 +66,7 @@ struct SettingsOverlayView: View {
         case pronunciation = "Text & Pronunciation"
         case voices = "Voices & Services"
         case engines = "Downloads & Engines"
+        case usage = "Usage & Fallback"
         case storage = "Storage"
 
         var id: Self { self }
@@ -77,6 +78,7 @@ struct SettingsOverlayView: View {
             case .pronunciation: return "character.bubble"
             case .voices: return "person.wave.2"
             case .engines: return "arrow.down.circle"
+            case .usage: return "chart.bar"
             case .storage: return "internaldrive"
             }
         }
@@ -198,6 +200,8 @@ struct SettingsOverlayView: View {
                     }
                 }
             }
+        case .usage:
+            UsageAndFallbackSettings(model: model)
         case .storage:
             SettingsSection("Saved Clips", subtitle: storageSubtitle) {
                 VStack(alignment: .leading, spacing: 10) {
@@ -220,6 +224,136 @@ struct SettingsOverlayView: View {
 }
 
 /// Size of the replay cache, and a way to empty it.
+/// Fallback voices, and characters and spend per provider this month.
+private struct UsageAndFallbackSettings: View {
+    var model: AppModel
+    @State private var settings = UsageSettings.load()
+    private let month = UsageMeter.monthKey(for: Date())
+
+    var body: some View {
+        SettingsSection(
+            "When a Voice Fails",
+            subtitle: "If a voice can't be reached, runs out of quota, rejects its key or hits a cap, speech continues with your backup voice, then native Kokoro (if it's on), then an Edge voice."
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Fall back to another voice", isOn: binding(\.fallbackEnabled))
+                    .font(WoadieTheme.rounded(size: 12, weight: .regular))
+                Picker("Backup voice", selection: binding(\.backupVoiceID)) {
+                    Text("None").tag(String?.none)
+                    ForEach(model.voiceOptions.filter { !$0.isLocal }) { voice in
+                        Text(voice.label).tag(Optional(voice.id))
+                    }
+                }
+                .font(WoadieTheme.rounded(size: 12, weight: .regular))
+                .disabled(!settings.fallbackEnabled)
+                .frame(maxWidth: 420)
+            }
+        }
+
+        SettingsSection(
+            "Usage This Month",
+            subtitle: "Characters generated per provider. Cached replays are free and aren't counted. Enter what you pay per million characters to see spend; a cap makes that provider fall back once reached."
+        ) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Provider").frame(width: 150, alignment: .leading)
+                    Text("Characters").frame(width: 90, alignment: .trailing)
+                    Text("$ / 1M chars").frame(width: 100, alignment: .trailing)
+                    Text("Monthly cap").frame(width: 110, alignment: .trailing)
+                    Text("Spend").frame(width: 70, alignment: .trailing)
+                }
+                .font(WoadieTheme.mono(size: 10, weight: .semibold))
+                .foregroundStyle(WoadieTheme.foregroundSubtle)
+                ForEach(providers, id: \.self) { provider in
+                    row(for: provider)
+                }
+                Text("Total this month: " + settings.totalSpend(forMonth: month).formatted(.currency(code: "USD")))
+                    .font(WoadieTheme.mono(size: 11, weight: .semibold))
+                    .padding(.top, 4)
+            }
+        }
+        .onAppear { settings = UsageSettings.load() }
+    }
+
+    /// Paid providers the user has set up, plus any provider used this month.
+    private var providers: [String] {
+        let configured = model.cloudSettings.voices.map(\.providerID)
+        let used = Array((settings.characters[month] ?? [:]).keys)
+        var seen = Set<String>()
+        return (configured + used + ["edge", "kokoro", "kokoro-native"]).filter { seen.insert($0).inserted }
+    }
+
+    private func name(for provider: String) -> String {
+        switch provider {
+        case "edge": return "Edge"
+        case "kokoro": return "Kokoro"
+        case "kokoro-native": return "Kokoro (Native)"
+        case "apple": return "Apple"
+        default: return CloudProvider.all.first { $0.id == provider }?.name ?? provider
+        }
+    }
+
+    @ViewBuilder
+    private func row(for provider: String) -> some View {
+        let isFree = UsageMeter.freeProviders.contains(provider)
+        HStack {
+            Text(name(for: provider)).frame(width: 150, alignment: .leading)
+            Text(settings.characters(forMonth: month, provider: provider).formatted())
+                .frame(width: 90, alignment: .trailing)
+            if isFree {
+                Text("free").foregroundStyle(WoadieTheme.foregroundSubtle).frame(width: 100, alignment: .trailing)
+            } else {
+                TextField("–", value: priceBinding(provider), format: .number)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 100)
+            }
+            TextField("none", value: capBinding(provider), format: .number)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 110)
+            Text(settings.spend(forMonth: month, provider: provider).map { $0.formatted(.currency(code: "USD")) } ?? "–")
+                .frame(width: 70, alignment: .trailing)
+        }
+        .font(WoadieTheme.mono(size: 11, weight: .medium))
+        .textFieldStyle(.roundedBorder)
+    }
+
+    private func binding<Value>(_ keyPath: WritableKeyPath<UsageSettings, Value>) -> Binding<Value> {
+        Binding(
+            get: { settings[keyPath: keyPath] },
+            set: { value in
+                settings[keyPath: keyPath] = value
+                save { $0[keyPath: keyPath] = value }
+            }
+        )
+    }
+
+    private func priceBinding(_ provider: String) -> Binding<Double?> {
+        Binding(
+            get: { settings.pricePerMillion[provider] },
+            set: { value in
+                settings.pricePerMillion[provider] = value
+                save { $0.pricePerMillion[provider] = value }
+            }
+        )
+    }
+
+    private func capBinding(_ provider: String) -> Binding<Int?> {
+        Binding(
+            get: { settings.monthlyCap[provider] },
+            set: { value in
+                let cap = value.flatMap { $0 > 0 ? $0 : nil }
+                settings.monthlyCap[provider] = cap
+                save { $0.monthlyCap[provider] = cap }
+            }
+        )
+    }
+
+    /// Writes through the meter, so a save never races its usage counting.
+    private func save(_ change: @escaping @Sendable (inout UsageSettings) -> Void) {
+        Task { await UsageMeter.shared.update(change) }
+    }
+}
+
 private struct AudioCacheSettings: View {
     @State private var bytes: Int64?
     @State private var isClearing = false

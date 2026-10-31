@@ -1057,7 +1057,7 @@ final class EngineSupervisorTests: XCTestCase {
         coordinator.stop()
     }
 
-    func testQueuePlaybackRejectsInconsistentSegmentFormat() throws {
+    func testQueuePlaybackConvertsASegmentInADifferentFormat() throws {
         let firstURL = try makeTestAudioFile(sampleRate: 24_000, duration: 0.1)
         let secondURL = try makeTestAudioFile(sampleRate: 44_100, duration: 0.1)
         defer {
@@ -1069,9 +1069,10 @@ final class EngineSupervisorTests: XCTestCase {
         coordinator.prepare(characterCounts: [15, 15])
         try coordinator.append(audioURL: firstURL, segmentID: UUID(), index: 0)
 
-        XCTAssertThrowsError(try coordinator.append(audioURL: secondURL, segmentID: UUID(), index: 1)) {
-            XCTAssertEqual(($0 as? AlkiSpeakError)?.code, "playback.inconsistent-audio-format")
-        }
+        // A fallback voice can answer at another sample rate; it's converted
+        // to match instead of failing the job.
+        let duration = try coordinator.append(audioURL: secondURL, segmentID: UUID(), index: 1)
+        XCTAssertEqual(duration, 0.1, accuracy: 0.01)
         coordinator.stop()
     }
 

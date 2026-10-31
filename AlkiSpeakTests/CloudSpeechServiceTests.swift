@@ -1342,3 +1342,209 @@ final class AudioClipCacheTests: XCTestCase {
         XCTAssertNil(gone)
     }
 }
+
+final class VoiceFallbackTests: XCTestCase {
+    // MARK: Classifying errors
+
+    func testFallsBackOnQuotaAuthNetworkServerAndEngineFailures() {
+        func error(_ code: String) -> AlkiSpeakError {
+            AlkiSpeakError.generation(code: code, title: "", message: "", recoverySuggestion: "")
+        }
+        XCTAssertEqual(VoiceFallback.reason(for: error("cloud.http.429")), .quota)
+        XCTAssertEqual(VoiceFallback.reason(for: error("cloud.http.402")), .quota)
+        XCTAssertEqual(VoiceFallback.reason(for: error("cloud.http.401")), .auth)
+        XCTAssertEqual(VoiceFallback.reason(for: error("cloud.api-key-missing")), .auth)
+        XCTAssertEqual(VoiceFallback.reason(for: error("cloud.http.503")), .server)
+        XCTAssertEqual(VoiceFallback.reason(for: error("cloud.request-failed")), .network)
+        XCTAssertEqual(VoiceFallback.reason(for: error("edge.request-failed")), .network)
+        XCTAssertEqual(VoiceFallback.reason(for: error("native-kokoro.failed")), .unavailable)
+        XCTAssertEqual(VoiceFallback.reason(for: AlkiSpeakError.engine(code: "wake-failed", title: "", message: "", recoverySuggestion: "")), .unavailable)
+        XCTAssertEqual(VoiceFallback.reason(for: error(UsageMeter.capReachedCode)), .cap)
+        XCTAssertEqual(VoiceFallback.reason(for: URLError(.timedOut)), .timeout)
+        XCTAssertEqual(VoiceFallback.reason(for: URLError(.notConnectedToInternet)), .network)
+        let timedOut = AlkiSpeakError.generation(
+            code: "cloud.request-failed", title: "", message: "", recoverySuggestion: "",
+            context: ["urlErrorCode": "\(URLError.Code.timedOut.rawValue)"]
+        )
+        XCTAssertEqual(VoiceFallback.reason(for: timedOut), .timeout)
+    }
+
+    func testDoesNotFallBackOnCancellationOrBadInput() {
+        func error(_ code: String) -> AlkiSpeakError {
+            AlkiSpeakError.generation(code: code, title: "", message: "", recoverySuggestion: "")
+        }
+        XCTAssertNil(VoiceFallback.reason(for: CancellationError()))
+        XCTAssertNil(VoiceFallback.reason(for: URLError(.cancelled)))
+        XCTAssertNil(VoiceFallback.reason(for: error("cancelled")))
+        XCTAssertNil(VoiceFallback.reason(for: error("cloud.http.400")), "bad input fails the same anywhere")
+        XCTAssertNil(VoiceFallback.reason(for: error("cloud.voice-missing")))
+        XCTAssertNil(VoiceFallback.reason(for: error("cloud.dialogue.empty")))
+    }
+
+    // MARK: Usage
+
+    private func isolatedDefaults() -> UserDefaults {
+        let name = "usage-\(UUID().uuidString)"
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        return UserDefaults(suiteName: name)!
+    }
+
+    func testProviderKeys() {
+        XCTAssertEqual(UsageMeter.providerKey(forVoice: "edge:en-US-AriaNeural", cloudProviderID: nil), "edge")
+        XCTAssertEqual(UsageMeter.providerKey(forVoice: "kokoro-native:af_heart", cloudProviderID: nil), "kokoro-native")
+        XCTAssertEqual(UsageMeter.providerKey(forVoice: "af_bella*0.60,am_michael*0.40", cloudProviderID: nil), "kokoro")
+        XCTAssertEqual(UsageMeter.providerKey(forVoice: "cloud:x", cloudProviderID: "elevenlabs"), "elevenlabs")
+        XCTAssertTrue(UsageMeter.freeProviders.contains("mlx-audio"))
+        XCTAssertFalse(UsageMeter.freeProviders.contains("elevenlabs"))
+    }
+
+    func testRecordsPerMonthAndComputesSpend() async {
+        var date = ISO8601DateFormatter().date(from: "2026-10-31T12:00:00Z")!
+        let meter = UsageMeter(defaults: isolatedDefaults(), now: { date })
+        await meter.update { $0.pricePerMillion["elevenlabs"] = 300 }
+
+        await meter.record(provider: "elevenlabs", characters: 10_000)
+        await meter.record(provider: "elevenlabs", characters: 5_000)
+        date = ISO8601DateFormatter().date(from: "2026-11-02T12:00:00Z")!
+        await meter.record(provider: "elevenlabs", characters: 1_000)
+
+        let settings = await meter.settings()
+        XCTAssertEqual(settings.characters(forMonth: "2026-10", provider: "elevenlabs"), 15_000)
+        XCTAssertEqual(settings.characters(forMonth: "2026-11", provider: "elevenlabs"), 1_000)
+        XCTAssertEqual(settings.spend(forMonth: "2026-10", provider: "elevenlabs") ?? -1, 4.5, accuracy: 0.0001)
+        XCTAssertNil(settings.spend(forMonth: "2026-10", provider: "edge"), "no price, no spend")
+    }
+
+    func testCapBlocksOnceReached() async throws {
+        let meter = UsageMeter(defaults: isolatedDefaults())
+        await meter.update { $0.monthlyCap["openai"] = 100 }
+        await meter.record(provider: "openai", characters: 80)
+
+        try await meter.checkCap(provider: "openai", adding: 20)
+        do {
+            try await meter.checkCap(provider: "openai", adding: 21)
+            XCTFail("expected the cap to stop this")
+        } catch {
+            XCTAssertEqual(VoiceFallback.reason(for: error), .cap)
+        }
+        try await meter.checkCap(provider: "edge", adding: 1_000_000)
+    }
+
+    // MARK: Generating with fallback
+
+    private final class FakeVoice: SpeechGenerating {
+        var failures: [Error]
+        private(set) var calls = 0
+        let tag: String
+        init(_ tag: String, failures: [Error] = []) { self.tag = tag; self.failures = failures }
+        func checkHealth() async -> Bool { true }
+        func fetchVoices() async throws -> [String] { [] }
+        func synthesize(text: String, voice: String, jobID: UUID?) async throws -> SpeechGenerationResult {
+            calls += 1
+            if !failures.isEmpty { throw failures.removeFirst() }
+            return SpeechGenerationResult(audioData: Data("\(tag):\(text)".utf8), latencyMs: 1, charCount: text.count)
+        }
+    }
+
+    @MainActor
+    private func generator(_ voices: [FakeVoice], meter: UsageMeter, notices: @escaping (String) -> Void) -> FallbackGenerator {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("fallback-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return FallbackGenerator(
+            candidates: voices.map {
+                .init(voice: $0.tag, label: $0.tag.capitalized, service: $0, cacheConfiguration: $0.tag, providerKey: $0.tag, needsPythonEngine: false)
+            },
+            cache: AudioClipCache(directory: directory),
+            usage: meter,
+            prepareEngine: { _ in },
+            onFallback: { from, to, reason in notices("\(from.voice)->\(to.voice):\(reason.rawValue)") }
+        )
+    }
+
+    @MainActor
+    func testMovesToTheNextVoiceAndStaysThere() async throws {
+        let quota = AlkiSpeakError.generation(code: "cloud.http.429", title: "", message: "", recoverySuggestion: "")
+        let primary = FakeVoice("eleven", failures: [quota])
+        let backup = FakeVoice("edge")
+        var notices: [String] = []
+        let gen = generator([primary, backup], meter: UsageMeter(defaults: isolatedDefaults())) { notices.append($0) }
+
+        let first = try await gen.generate(text: "One.", jobID: nil)
+        let second = try await gen.generate(text: "Two.", jobID: nil)
+
+        XCTAssertEqual(String(decoding: first.result.audioData, as: UTF8.self), "edge:One.")
+        XCTAssertEqual(String(decoding: second.result.audioData, as: UTF8.self), "edge:Two.")
+        XCTAssertEqual(primary.calls, 1, "the failed voice isn't retried for later segments")
+        XCTAssertEqual(notices, ["eleven->edge:quota"])
+    }
+
+    @MainActor
+    func testCapReachedFallsBackWithoutCallingThePaidVoice() async throws {
+        let meter = UsageMeter(defaults: isolatedDefaults())
+        await meter.update { $0.monthlyCap["eleven"] = 3 }
+        let primary = FakeVoice("eleven")
+        let backup = FakeVoice("edge")
+        var notices: [String] = []
+        let gen = generator([primary, backup], meter: meter) { notices.append($0) }
+
+        _ = try await gen.generate(text: "Too long.", jobID: nil)
+
+        XCTAssertEqual(primary.calls, 0)
+        XCTAssertEqual(notices, ["eleven->edge:cap"])
+        let settings = await meter.settings()
+        XCTAssertEqual(settings.characters(forMonth: UsageMeter.monthKey(for: Date()), provider: "edge"), 9)
+    }
+
+    @MainActor
+    func testErrorsThatWouldFailAnywhereAreNotRetriedElsewhere() async {
+        let badInput = AlkiSpeakError.generation(code: "cloud.http.400", title: "", message: "", recoverySuggestion: "")
+        let primary = FakeVoice("eleven", failures: [badInput])
+        let backup = FakeVoice("edge")
+        let gen = generator([primary, backup], meter: UsageMeter(defaults: isolatedDefaults())) { _ in }
+
+        do {
+            _ = try await gen.generate(text: "Hi.", jobID: nil)
+            XCTFail("expected the error to surface")
+        } catch {
+            XCTAssertEqual((error as? AlkiSpeakError)?.code, "generation.cloud.http.400")
+        }
+        XCTAssertEqual(backup.calls, 0)
+    }
+
+    @MainActor
+    func testTheLastVoiceFailingSurfacesItsError() async {
+        let down = AlkiSpeakError.generation(code: "cloud.http.503", title: "", message: "", recoverySuggestion: "")
+        let gen = generator([FakeVoice("a", failures: [down]), FakeVoice("b", failures: [down])], meter: UsageMeter(defaults: isolatedDefaults())) { _ in }
+
+        do {
+            _ = try await gen.generate(text: "Hi.", jobID: nil)
+            XCTFail("expected the error to surface")
+        } catch {
+            XCTAssertEqual(VoiceFallback.reason(for: error), .server)
+        }
+    }
+
+    // MARK: Mixed formats in one job
+
+    func testPlayerConvertsAClipToTheJobsFormat() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("convert-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let source = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+        let url = directory.appendingPathComponent("in.caf")
+        do {
+            // The writer finalizes the file when it goes out of scope.
+            let file = try AVAudioFile(forWriting: url, settings: source.settings)
+            let buffer = AVAudioPCMBuffer(pcmFormat: source, frameCapacity: 44_100)!
+            buffer.frameLength = 44_100
+            try file.write(from: buffer)
+        }
+        XCTAssertEqual(try AVAudioFile(forReading: url).length, 44_100)
+
+        let converted = try AVAudioFile(forReading: AVAudioPlaybackCoordinator.convert(AVAudioFile(forReading: url), toSampleRate: 24_000, channels: 1))
+
+        XCTAssertEqual(converted.processingFormat.sampleRate, 24_000)
+        XCTAssertEqual(converted.processingFormat.channelCount, 1)
+        XCTAssertEqual(Double(converted.length) / 24_000, 1.0, accuracy: 0.05, "one second in, one second out")
+    }
+}

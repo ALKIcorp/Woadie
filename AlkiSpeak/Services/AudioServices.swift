@@ -61,18 +61,17 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
 
     @discardableResult
     func append(audioURL: URL, segmentID: UUID, index: Int) throws -> TimeInterval {
-        let file = try AVAudioFile(forReading: audioURL)
-        let format = file.processingFormat
+        var file = try AVAudioFile(forReading: audioURL)
+        var playableURL = audioURL
         if let expectedFormat,
-           abs(expectedFormat.sampleRate - format.sampleRate) > 0.5 || expectedFormat.channels != format.channelCount {
-            throw AlkiSpeakError.playback(
-                code: "inconsistent-audio-format",
-                title: "Audio Format Changed",
-                message: "Kokoro returned segments with inconsistent sample rates or channel layouts.",
-                recoverySuggestion: "Restart the engine and generate the speech again.",
-                context: ["sampleRate": "\(format.sampleRate)", "channels": "\(format.channelCount)"]
-            )
+           abs(expectedFormat.sampleRate - file.processingFormat.sampleRate) > 0.5
+            || expectedFormat.channels != file.processingFormat.channelCount {
+            // A fallback voice can answer at a different sample rate or channel
+            // count than the rest of the job; convert it to match.
+            playableURL = try Self.convert(file, toSampleRate: expectedFormat.sampleRate, channels: expectedFormat.channels)
+            file = try AVAudioFile(forReading: playableURL)
         }
+        let format = file.processingFormat
         expectedFormat = (format.sampleRate, format.channelCount)
         setupGraphIfNeeded(format: format)
 
@@ -80,7 +79,7 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
         timeline.markReady(index: index, duration: duration)
         let entry = QueueEntry(
             id: segmentID,
-            url: audioURL,
+            url: playableURL,
             index: index,
             frameLength: file.length,
             sampleRate: format.sampleRate
@@ -272,6 +271,61 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
     /// while audio is actually playing.
     private func pauseEngine() {
         if engine.isRunning { engine.pause() }
+    }
+
+    /// Rewrites `file` at `sampleRate` and `channels` into a temporary file
+    /// and returns its URL.
+    static func convert(_ file: AVAudioFile, toSampleRate sampleRate: Double, channels: AVAudioChannelCount) throws -> URL {
+        let failure = { (reason: String) in
+            AlkiSpeakError.playback(
+                code: "audio-conversion-failed",
+                title: "Audio Conversion Failed",
+                message: "A clip couldn't be converted to match the rest of the speech: \(reason).",
+                recoverySuggestion: "Generate the speech again."
+            )
+        }
+        guard let target = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channels),
+              let converter = AVAudioConverter(from: file.processingFormat, to: target),
+              let input = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))
+        else { throw failure("unsupported format") }
+        try file.read(into: input)
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("AlkiSpeakConverted", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension("caf")
+        let out = try AVAudioFile(forWriting: url, settings: target.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+
+        // Hand the converter exactly as many frames as it asks for (it drops
+        // the rest of a bigger buffer), and keep pulling after the input runs
+        // out: the resampler holds its last frames until end of stream.
+        let sourceFormat = file.processingFormat
+        var offset: AVAudioFrameCount = 0
+        while true {
+            guard let chunk = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: 8192) else { throw failure("out of memory") }
+            var conversionError: NSError?
+            let status = converter.convert(to: chunk, error: &conversionError) { requested, inputStatus in
+                let count = min(requested, input.frameLength - offset)
+                guard count > 0,
+                      let slice = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: count),
+                      let from = input.floatChannelData,
+                      let to = slice.floatChannelData
+                else {
+                    inputStatus.pointee = .endOfStream
+                    return nil
+                }
+                for channel in 0..<Int(sourceFormat.channelCount) {
+                    (to[channel]).update(from: from[channel] + Int(offset), count: Int(count))
+                }
+                slice.frameLength = count
+                offset += count
+                inputStatus.pointee = .haveData
+                return slice
+            }
+            if status == .error { throw failure(conversionError?.localizedDescription ?? "converter error") }
+            if chunk.frameLength > 0 { try out.write(from: chunk) }
+            if status == .endOfStream { break }
+        }
+        return url
     }
 
     private func setupGraphIfNeeded(format: AVAudioFormat) {

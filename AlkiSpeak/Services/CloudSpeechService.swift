@@ -355,7 +355,8 @@ final class CloudSpeechGenerationService: SpeechGenerating {
                 title: "Cloud Speech Request Failed",
                 message: "The cloud voice request failed after \(elapsedMs) ms: \(error.localizedDescription)",
                 recoverySuggestion: "Check the network connection and the provider's base URL, then retry.",
-                underlyingError: error
+                underlyingError: error,
+                context: (error as? URLError).map { ["urlErrorCode": "\($0.code.rawValue)"] } ?? [:]
             )
         }
     }
