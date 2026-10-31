@@ -66,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         Self.consoleTrace("applicationWillTerminate calling model.stopEngine()")
         model?.savePendingTuning()
+        model?.saveBookPosition()
         model?.stopEngine()
         model?.shutDownLocalVoiceServer()
     }

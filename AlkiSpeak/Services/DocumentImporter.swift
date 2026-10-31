@@ -11,6 +11,8 @@ struct ImportedDocument: Equatable {
     var source: String
     /// The text was cut to `DocumentImporter.maxCharacters` to keep the editor responsive.
     var wasTruncated = false
+    /// Two or more makes it a book, listened to a chapter at a time.
+    var chapters: [BookChapter] = []
 
     var wordCount: Int { text.split(whereSeparator: \.isWhitespace).count }
 }
@@ -58,10 +60,13 @@ enum DocumentImporter {
         let type = UTType(filenameExtension: url.pathExtension.lowercased())
         let fallbackTitle = url.deletingPathExtension().lastPathComponent
         let result: (title: String?, text: String)
+        var chapters: [BookChapter]?
         if type?.conforms(to: .pdf) == true {
             result = try pdf(at: url)
         } else if url.pathExtension.lowercased() == "epub" {
-            result = try epub(at: url)
+            let book = try epub(at: url)
+            result = (book.title, book.chapters.map(\.text).joined(separator: "\n\n"))
+            chapters = book.chapters
         } else if type?.conforms(to: .html) == true {
             let html = try readString(url)
             result = article(fromHTML: html)
@@ -73,7 +78,13 @@ enum DocumentImporter {
         } else {
             throw DocumentImportError.unsupported(name)
         }
-        return try finish(title: result.title ?? fallbackTitle, text: result.text, source: name)
+        let title = result.title ?? fallbackTitle
+        return try finish(
+            title: title,
+            text: result.text,
+            source: name,
+            chapters: chapters ?? ChapterSplitter.chapters(in: result.text, fallbackTitle: title)
+        )
     }
 
     // MARK: Web pages
@@ -174,7 +185,7 @@ enum DocumentImporter {
 
     // MARK: EPUB
 
-    private static func epub(at url: URL) throws -> (title: String?, text: String) {
+    private static func epub(at url: URL) throws -> (title: String?, chapters: [BookChapter]) {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("alkispeak-epub-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: folder) }
         let unzip = Process()
@@ -195,15 +206,19 @@ enum DocumentImporter {
         let opf = try readString(opfURL)
         let chapters = epubChapterPaths(opf: opf)
         let base = opfURL.deletingLastPathComponent()
-        var parts: [String] = []
+        var parts: [BookChapter] = []
         for path in chapters {
             let file = base.appendingPathComponent(path.removingPercentEncoding ?? path)
             guard let html = try? readString(file) else { continue }
             let text = plainText(fromHTML: html).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty { parts.append(text) }
+            // Cover pages are an image with a word or none.
+            guard text.split(whereSeparator: \.isWhitespace).count >= 2 else { continue }
+            let heading = firstMatch(#"<h[1-3][^>]*>([\s\S]*?)</h[1-3]>"#, in: html).map { plainText(fromHTML: $0) }
+            let name = heading.flatMap { $0.isEmpty ? nil : $0 } ?? "Chapter \(parts.count + 1)"
+            parts.append(BookChapter(title: String(name.prefix(80)), text: text))
         }
         let title = firstMatch(#"<dc:title[^>]*>([\s\S]*?)</dc:title>"#, in: opf).map(decodeEntities)
-        return (title, parts.joined(separator: "\n\n"))
+        return (title, parts)
     }
 
     /// The chapter files in reading (spine) order.
@@ -288,9 +303,13 @@ enum DocumentImporter {
 
     // MARK: Helpers
 
-    private static func finish(title: String, text: String, source: String) throws -> ImportedDocument {
+    private static func finish(title: String, text: String, source: String, chapters: [BookChapter] = []) throws -> ImportedDocument {
         var body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { throw DocumentImportError.empty(source) }
+        if chapters.count >= 2 {
+            // A book shows one chapter at a time, so it isn't cut short.
+            return ImportedDocument(title: title.trimmingCharacters(in: .whitespacesAndNewlines), text: body, source: source, chapters: chapters)
+        }
         var truncated = false
         if body.count > maxCharacters {
             let cut = body.index(body.startIndex, offsetBy: maxCharacters)

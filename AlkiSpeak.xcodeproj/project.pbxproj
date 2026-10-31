@@ -52,6 +52,7 @@
 		A1000101 /* GlobalHotKeyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000101 /* GlobalHotKeyService.swift */; };
 		A1000201 /* DocumentImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000201 /* DocumentImporter.swift */; };
 		A1000202 /* TextNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000202 /* TextNormalizer.swift */; };
+		A1000203 /* Audiobook.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000203 /* Audiobook.swift */; };
 		A1000026 /* AlkiComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000026 /* AlkiComponents.swift */; };
 		A1000027 /* SettingsOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000027 /* SettingsOverlayView.swift */; };
 		A1000028 /* EdgeSpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000028 /* EdgeSpeechService.swift */; };
@@ -123,6 +124,7 @@
 		A2000101 /* GlobalHotKeyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalHotKeyService.swift; sourceTree = "<group>"; };
 		A2000201 /* DocumentImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentImporter.swift; sourceTree = "<group>"; };
 		A2000202 /* TextNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextNormalizer.swift; sourceTree = "<group>"; };
+		A2000203 /* Audiobook.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Audiobook.swift; sourceTree = "<group>"; };
 		A2000026 /* AlkiComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlkiComponents.swift; sourceTree = "<group>"; };
 		A2000027 /* SettingsOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsOverlayView.swift; sourceTree = "<group>"; };
 		A2000028 /* EdgeSpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSpeechService.swift; sourceTree = "<group>"; };
@@ -279,6 +281,7 @@
 				A2000101 /* GlobalHotKeyService.swift */,
 				A2000201 /* DocumentImporter.swift */,
 				A2000202 /* TextNormalizer.swift */,
+				A2000203 /* Audiobook.swift */,
 				A2000028 /* EdgeSpeechService.swift */,
 				A2000040 /* CloudSpeechService.swift */,
 				A2000041 /* MLXAudioServerManager.swift */,
@@ -460,6 +463,7 @@
 				A1000101 /* GlobalHotKeyService.swift in Sources */,
 				A1000201 /* DocumentImporter.swift in Sources */,
 				A1000202 /* TextNormalizer.swift in Sources */,
+				A1000203 /* Audiobook.swift in Sources */,
 				A1000026 /* AlkiComponents.swift in Sources */,
 				A1000027 /* SettingsOverlayView.swift in Sources */,
 				A1000028 /* EdgeSpeechService.swift in Sources */,

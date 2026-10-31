@@ -2,6 +2,7 @@ import Combine
 import AVFoundation
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 @MainActor
 @Observable
@@ -733,6 +734,291 @@ final class AppModel {
         seek(to: ReadAlong.time(segment: segmentIndex, offset: offset, segments: segments))
     }
 
+    // MARK: Books
+
+    /// The chapter job that's playing: which chapter, and where in the
+    /// chapter's spoken text the job's text starts (for resuming mid-chapter).
+    @ObservationIgnored private var bookPlayback: (jobID: UUID, chapter: Int, baseOffset: Int)?
+    @ObservationIgnored private var bookProgressTask: Task<Void, Never>?
+    @ObservationIgnored private var bookRenderTask: Task<Void, Never>?
+    @ObservationIgnored private var sleepTimerTask: Task<Void, Never>?
+
+    var currentChapter: BookChapter? {
+        guard let book = store.book, book.chapters.indices.contains(store.bookChapter) else { return nil }
+        return book.chapters[store.bookChapter]
+    }
+
+    /// Where this book was left off, if anywhere.
+    var bookProgress: BookProgress? {
+        store.book.flatMap { BookProgress.all()[$0.id] }
+    }
+
+    func openBook(_ book: Book) {
+        try? book.save()
+        store.book = book
+        store.bookRender = nil
+        if !AppConfig.isRunningUnitTests {
+            UserDefaults.standard.set(book.id, forKey: BookProgress.lastBookKey)
+        }
+        let saved = BookProgress.all()[book.id]
+        store.bookChapter = min(saved?.chapter ?? 0, book.chapters.count - 1)
+        inputText = book.chapters[store.bookChapter].text
+        var message = "Opened “\(book.title)” · \(book.chapters.count) chapters · \(book.wordCount.formatted()) words"
+        if let saved, saved.chapter > 0 || saved.offset > 0 {
+            message += " · Resume where you left off in chapter \(store.bookChapter + 1)"
+        }
+        store.userMessage = message
+    }
+
+    func closeBook() {
+        saveBookPosition()
+        bookRenderTask?.cancel()
+        bookProgressTask?.cancel()
+        bookPlayback = nil
+        store.book = nil
+        store.bookRender = nil
+        if !AppConfig.isRunningUnitTests {
+            UserDefaults.standard.removeObject(forKey: BookProgress.lastBookKey)
+        }
+    }
+
+    /// Reopens the last book at launch.
+    private func restoreLastBook() {
+        guard let id = UserDefaults.standard.string(forKey: BookProgress.lastBookKey),
+              let book = Book.load(id: id)
+        else { return }
+        store.book = book
+        store.bookChapter = min(BookProgress.all()[id]?.chapter ?? 0, book.chapters.count - 1)
+    }
+
+    func selectChapter(_ index: Int) {
+        guard let book = store.book, book.chapters.indices.contains(index) else { return }
+        saveBookPosition()
+        let wasPlaying = bookPlayback != nil && (store.playbackState.state == .playing || store.playbackState.state == .preparing)
+        store.bookChapter = index
+        inputText = book.chapters[index].text
+        saveProgress(chapter: index, offset: 0)
+        if wasPlaying { listenToChapter(resume: false) }
+    }
+
+    /// Plays the current chapter, from where it was left off when `resume`.
+    func listenToChapter(resume: Bool) {
+        guard let chapter = currentChapter, let book = store.book else { return }
+        let spoken = spokenText(for: chapter.text)
+        var start = 0
+        if resume, let saved = BookProgress.all()[book.id], saved.chapter == store.bookChapter, saved.offset > 0 {
+            // Back up to the start of the sentence that was playing.
+            let sentences = ReadAlong.units(in: spoken, mode: .sentence)
+            start = ReadAlong.unit(containing: saved.offset, in: sentences)?.location ?? 0
+        }
+        let text = (spoken as NSString).substring(from: min(start, (spoken as NSString).length))
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if appMode == .quick {
+            pipeline.deleteActiveClips()
+        }
+        interruptForOverride()
+        store.clearErrorMessage()
+        store.appleSpokenRange = nil
+        pipeline.speak(text: text, voice: selectedVoice, dialogueSpeakers: nil, addToHistory: false, targetLogEntryID: nil)
+        guard let jobID = store.playbackState.activeJobID else { return }
+        bookPlayback = (jobID, store.bookChapter, start)
+        trackBookPosition()
+    }
+
+    /// Saves the listening position every few seconds while a chapter plays.
+    private func trackBookPosition() {
+        bookProgressTask?.cancel()
+        guard !AppConfig.isRunningUnitTests else { return }
+        bookProgressTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard let self, self.bookPlayback != nil else { return }
+                self.saveBookPosition()
+            }
+        }
+    }
+
+    /// Records the chapter and character the listener is at.
+    func saveBookPosition() {
+        guard let playing = bookPlayback,
+              store.playbackState.activeJobID == playing.jobID,
+              let job = store.speechJobs.first(where: { $0.id == playing.jobID })
+        else { return }
+        let segments = job.segments.map { ReadAlong.Segment(length: ($0.text as NSString).length, duration: $0.durationSeconds) }
+        guard let position = ReadAlong.position(elapsed: store.playbackState.elapsedTime, segments: segments) else { return }
+        // Segments are consecutive slices of the job's text, separated by a space.
+        let before = job.segments.prefix(position.segment).reduce(0) { $0 + ($1.text as NSString).length + 1 }
+        saveProgress(chapter: playing.chapter, offset: playing.baseOffset + before + position.offset)
+    }
+
+    private func saveProgress(chapter: Int, offset: Int) {
+        guard let book = store.book, !AppConfig.isRunningUnitTests else { return }
+        BookProgress.save(BookProgress(chapter: chapter, offset: offset), for: book.id)
+    }
+
+    /// A chapter finished: continue with the next unless the sleep timer says stop.
+    private func bookChapterFinished(jobID: UUID) {
+        guard let playing = bookPlayback, playing.jobID == jobID, let book = store.book else { return }
+        bookPlayback = nil
+        bookProgressTask?.cancel()
+        let next = playing.chapter + 1
+        if store.sleepTimer == .endOfChapter {
+            setSleepTimer(.off)
+            saveProgress(chapter: min(next, book.chapters.count - 1), offset: 0)
+            store.userMessage = "Sleep timer: stopped at the end of the chapter."
+            return
+        }
+        guard book.chapters.indices.contains(next) else {
+            saveProgress(chapter: 0, offset: 0)
+            store.userMessage = "Finished “\(book.title)”."
+            return
+        }
+        store.bookChapter = next
+        inputText = book.chapters[next].text
+        saveProgress(chapter: next, offset: 0)
+        listenToChapter(resume: false)
+    }
+
+    // MARK: Sleep timer
+
+    func setSleepTimer(_ timer: SleepTimer) {
+        sleepTimerTask?.cancel()
+        store.sleepTimer = timer
+        guard case .at(let date) = timer else { return }
+        sleepTimerTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0, date.timeIntervalSinceNow)))
+            guard !Task.isCancelled, let self else { return }
+            self.saveBookPosition()
+            self.pipeline.stop()
+            self.store.sleepTimer = .off
+            self.store.userMessage = "Sleep timer: playback stopped."
+        }
+    }
+
+    // MARK: Rendering and export
+
+    /// The chapter's audio file for the selected voice and current text
+    /// settings, so a change to either renders afresh.
+    private func renderedChapterURL(_ index: Int, in book: Book, voice: String) -> URL {
+        let spoken = spokenText(for: book.chapters[index].text)
+        let key = AudioClipCache.key(text: spoken, voiceConfiguration: pipeline.cacheConfiguration(forVoice: voice))
+        return book.folder.appendingPathComponent("audio", isDirectory: true)
+            .appendingPathComponent(String(format: "%03d-", index + 1) + key.prefix(16) + ".caf")
+    }
+
+    /// Generates every chapter's audio in the background, caching each piece
+    /// so playback is instant, and saving one file per chapter for export.
+    /// Calls `then` when everything is rendered.
+    func renderBook(then: (@MainActor () -> Void)? = nil) {
+        guard let book = store.book else { return }
+        let voice = selectedVoice
+        guard !voice.hasPrefix("apple:") else {
+            store.userMessage = "Apple voices speak live and can't be rendered ahead. Pick another voice to render or export."
+            return
+        }
+        bookRenderTask?.cancel()
+        let plan = book.chapters.indices.map { index in
+            (index: index, url: renderedChapterURL(index, in: book, voice: voice), segments: pipeline.segmentTexts(for: spokenText(for: book.chapters[index].text), voice: voice))
+        }
+        let total = plan.reduce(0) { $0 + $1.segments.count }
+        store.bookRender = BookRenderState(done: 0, total: total, isRunning: true, message: nil)
+        let renderID = UUID()
+        speechRequestStarted(jobID: renderID)
+        bookRenderTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.speechRequestFinished(jobID: renderID) }
+            var done = 0
+            do {
+                for chapter in plan {
+                    if FileManager.default.fileExists(atPath: chapter.url.path) {
+                        done += chapter.segments.count
+                        self.store.bookRender?.done = done
+                        continue
+                    }
+                    var clips: [Data] = []
+                    for segment in chapter.segments {
+                        // Respect the resource guard: wait while the Mac is busy.
+                        while !(await SystemResourceMonitor.shared.canProceed()) {
+                            self.store.bookRender?.message = "Waiting for the Mac to be less busy…"
+                            try await Task.sleep(for: .seconds(2))
+                        }
+                        self.store.bookRender?.message = nil
+                        try Task.checkCancellation()
+                        clips.append(try await self.pipeline.audio(for: segment, voice: voice).data)
+                        done += 1
+                        self.store.bookRender?.done = done
+                    }
+                    let url = chapter.url
+                    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try await Task.detached(priority: .utility) { try AudiobookExporter.writeChapter(clips: clips, to: url) }.value
+                }
+                self.store.bookRender = BookRenderState(done: total, total: total, isRunning: false, message: "Whole book rendered")
+                then?()
+            } catch is CancellationError {
+                self.store.bookRender?.isRunning = false
+                self.store.bookRender?.message = "Paused"
+            } catch {
+                self.store.bookRender?.isRunning = false
+                self.store.bookRender?.message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            }
+        }
+    }
+
+    func pauseBookRender() {
+        bookRenderTask?.cancel()
+    }
+
+    enum AudiobookExportKind { case m4b, chapterFiles }
+
+    /// Renders anything missing, then writes a .m4b with chapter markers or
+    /// a folder of per-chapter MP3s.
+    func exportBook(_ kind: AudiobookExportKind) {
+        guard let book = store.book else { return }
+        let destination: URL
+        switch kind {
+        case .m4b:
+            let panel = NSSavePanel()
+            panel.title = "Export Audiobook"
+            panel.nameFieldStringValue = book.title + ".m4b"
+            panel.allowedContentTypes = [UTType(filenameExtension: "m4b") ?? .mpeg4Audio]
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            destination = url
+        case .chapterFiles:
+            let panel = NSOpenPanel()
+            panel.title = "Choose a Folder for the Chapter Files"
+            panel.prompt = "Export Here"
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.canCreateDirectories = true
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            destination = url.appendingPathComponent(book.title.replacingOccurrences(of: "/", with: "-"), isDirectory: true)
+        }
+        let voice = selectedVoice
+        renderBook { [weak self] in
+            guard let self else { return }
+            let chapters = book.chapters.indices.map { index -> (title: String, file: URL, duration: TimeInterval) in
+                let url = self.renderedChapterURL(index, in: book, voice: voice)
+                let duration = (try? AVAudioFile(forReading: url)).map { Double($0.length) / $0.processingFormat.sampleRate } ?? 0
+                return (book.chapters[index].title, url, duration)
+            }
+            self.store.bookRender?.message = "Writing the audiobook…"
+            Task {
+                do {
+                    switch kind {
+                    case .m4b: try await AudiobookExporter.exportM4B(chapters: chapters, title: book.title, to: destination)
+                    case .chapterFiles: try await AudiobookExporter.exportChapterFiles(chapters: chapters, to: destination)
+                    }
+                    self.store.bookRender?.message = "Exported"
+                    self.store.userMessage = "Exported “\(book.title)” to \(destination.lastPathComponent)."
+                    NSWorkspace.shared.activateFileViewerSelecting([destination])
+                } catch {
+                    self.store.bookRender?.message = nil
+                    self.store.userMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                }
+            }
+        }
+    }
+
     // MARK: Documents and web pages
 
     /// True while a document or web page is loading.
@@ -788,6 +1074,12 @@ final class AppModel {
             defer { isImporting = false }
             do {
                 let document = try await Task.detached(priority: .userInitiated) { try await load() }.value
+                if document.chapters.count >= 2 {
+                    openBook(Book(title: document.title, source: document.source, chapters: document.chapters))
+                    if speakWhenLoaded { listenToChapter(resume: true) }
+                    return
+                }
+                if store.book != nil { closeBook() }
                 inputText = document.text
                 var message = "Loaded “\(document.title)” · \(document.wordCount.formatted()) words"
                 if document.wasTruncated { message += " (the first part only; it's very long)" }
@@ -999,6 +1291,7 @@ final class AppModel {
     }
 
     func stopPlayback() {
+        saveBookPosition()
         pipeline.stop()
     }
 
@@ -1111,6 +1404,7 @@ final class AppModel {
         store.recentVoiceIDs = UserDefaults.standard.stringArray(forKey: Self.recentVoicesKey) ?? []
         store.textCleanup = TextCleanupOptions.load()
         store.readAlongMode = ReadAlongMode.load()
+        if !AppConfig.isRunningUnitTests { restoreLastBook() }
         store.pronunciations = PronunciationEntry.load()
         store.cloudSettings = dependencies.cloudSpeechSettings.load()
         store.playbackTuning = PlaybackTuning.load()
@@ -1177,6 +1471,10 @@ extension AppModel: SpeechPipelineHost {
     func speechRequestFinished(jobID: UUID) {
         dependencies.engineSupervisor.noteRequestFinished(jobID: jobID)
         schedulePythonEngineIdleStop()
+    }
+
+    func speechPlaybackFinished(jobID: UUID) {
+        bookChapterFinished(jobID: jobID)
     }
 
     func speechJobFinishedGenerating(_ job: SpeechJob) {

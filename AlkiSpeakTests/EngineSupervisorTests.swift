@@ -278,6 +278,106 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertNotEqual(before, after, "The elapsed time and scrubber must redraw when playback ticks")
     }
 
+    // MARK: Audiobook mode (X6)
+
+    func testChapterSplitterFindsHeadingsAndChapterLines() {
+        let markdown = "Some opening words that are short.\n# The Harbor\nBoats and gulls.\n# The Storm\nWind and rain."
+        let chapters = ChapterSplitter.chapters(in: markdown, fallbackTitle: "Book")
+        XCTAssertEqual(chapters.map(\.title), ["The Harbor", "The Storm"])
+        XCTAssertTrue(chapters[0].text.contains("Some opening words"), "A short opening joins the first chapter")
+        XCTAssertTrue(chapters[0].text.hasPrefix("The Harbor."), "Each chapter starts by reading its title")
+
+        let novel = "CHAPTER I\nIt began.\nChapter II: The Storm\nIt rained.\nChapter Three\nIt ended."
+        XCTAssertEqual(ChapterSplitter.chapters(in: novel, fallbackTitle: "Book").map(\.title), ["CHAPTER I", "Chapter II: The Storm", "Chapter Three"])
+
+        let plain = "Just one long piece of text with no chapters at all."
+        XCTAssertEqual(ChapterSplitter.chapters(in: plain, fallbackTitle: "Notes").map(\.title), ["Notes"])
+    }
+
+    func testBookIDIsStableForTheSameDocument() {
+        let chapters = [BookChapter(title: "One", text: "A"), BookChapter(title: "Two", text: "B")]
+        XCTAssertEqual(Book(title: "T", source: "t.epub", chapters: chapters).id, Book(title: "T", source: "t.epub", chapters: chapters).id)
+        XCTAssertNotEqual(Book(title: "T", source: "t.epub", chapters: chapters).id, Book(title: "T", source: "u.epub", chapters: chapters).id)
+    }
+
+    func testFFMetadataListsChaptersInMilliseconds() {
+        let text = AudiobookExporter.ffmetadata(title: "Sea; Stories", chapters: [("One", 1.5), ("Two = 2", 2)])
+        XCTAssertTrue(text.hasPrefix(";FFMETADATA1\ntitle=Sea\\; Stories\n"))
+        XCTAssertTrue(text.contains("START=0\nEND=1500\ntitle=One"))
+        XCTAssertTrue(text.contains("START=1500\nEND=3500\ntitle=Two \\= 2"))
+    }
+
+    func testChapterAudioJoinsClipsAndAudiobookExportHasChapterMarkers() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("book-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        func tone(seconds: Double, rate: Int) -> Data {
+            let count = Int(seconds * Double(rate))
+            return NativeKokoroSpeechService.wavData(samples: (0..<count).map { Float(sin(Double($0) * 0.05)) * 0.3 }, sampleRate: rate)
+        }
+
+        // A 24 kHz clip and a 16 kHz clip become one 24 kHz chapter.
+        let one = folder.appendingPathComponent("one.caf")
+        let duration = try AudiobookExporter.writeChapter(clips: [tone(seconds: 1, rate: 24_000), tone(seconds: 0.5, rate: 16_000)], to: one)
+        XCTAssertEqual(duration, 1.5, accuracy: 0.02)
+        let two = folder.appendingPathComponent("two.caf")
+        try AudiobookExporter.writeChapter(clips: [tone(seconds: 2, rate: 24_000)], to: two)
+
+        guard AudiobookExporter.ffmpegURL != nil else { throw XCTSkip("ffmpeg isn't installed") }
+        let book = folder.appendingPathComponent("Sea Stories.m4b")
+        try await AudiobookExporter.exportM4B(chapters: [("The Harbor", one, 1.5), ("The Storm", two, 2)], title: "Sea Stories", to: book)
+
+        let asset = AVURLAsset(url: book)
+        let length = try await asset.load(.duration).seconds
+        XCTAssertEqual(length, 3.5, accuracy: 0.15)
+        // ffmpeg tags the chapter track's language as undetermined.
+        let locales = try await asset.load(.availableChapterLocales)
+        let groups = try await asset.loadChapterMetadataGroups(withTitleLocale: locales.first ?? Locale(identifier: "und"), containingItemsWithCommonKeys: [])
+        XCTAssertEqual(groups.count, 2)
+        var titles: [String] = []
+        for group in groups {
+            let title = AVMetadataItem.metadataItems(from: group.items, filteredByIdentifier: .commonIdentifierTitle).first
+            titles.append(try await title?.load(.stringValue) ?? "")
+        }
+        XCTAssertEqual(titles, ["The Harbor", "The Storm"])
+
+        let mp3s = folder.appendingPathComponent("chapters")
+        try await AudiobookExporter.exportChapterFiles(chapters: [("The Harbor", one, 1.5), ("The Storm", two, 2)], to: mp3s)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: mp3s.path).sorted(), ["01 The Harbor.mp3", "02 The Storm.mp3"])
+    }
+
+    @MainActor
+    func testBookPlaysChapterByChapterAndHonorsTheSleepTimer() {
+        let store = AppStore()
+        store.activeWorkspace.selectedVoiceID = "edge:en-US-AriaNeural"
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor(), playbackCoordinator: FakePlaybackCoordinating()))
+        let book = Book(title: "Sea", source: "sea.md", chapters: [
+            BookChapter(title: "One", text: "First chapter."),
+            BookChapter(title: "Two", text: "Second chapter."),
+            BookChapter(title: "Three", text: "Third chapter.")
+        ])
+        model.openBook(book)
+        XCTAssertEqual(store.bookChapter, 0)
+        XCTAssertEqual(model.inputText, "First chapter.")
+
+        model.listenToChapter(resume: false)
+        let firstJob = try? XCTUnwrap(store.playbackState.activeJobID)
+        XCTAssertEqual(store.speechJobs.first?.text, "First chapter.")
+
+        // The chapter ends on its own: the next one starts.
+        model.speechPlaybackFinished(jobID: firstJob!)
+        XCTAssertEqual(store.bookChapter, 1)
+        XCTAssertEqual(store.speechJobs.first?.text, "Second chapter.")
+
+        // With "end of chapter" set, the next ending stops instead.
+        model.setSleepTimer(.endOfChapter)
+        model.speechPlaybackFinished(jobID: store.playbackState.activeJobID!)
+        XCTAssertEqual(store.bookChapter, 1)
+        XCTAssertEqual(store.sleepTimer, .off)
+        XCTAssertEqual(store.speechJobs.first?.text, "Second chapter.")
+        try? FileManager.default.removeItem(at: book.folder)
+    }
+
     // MARK: Read-along (X2)
 
     func testReadAlongSplitsWordsAndSentences() {
@@ -549,6 +649,7 @@ final class EngineSupervisorTests: XCTestCase {
         zip.waitUntilExit()
         let epub = try await DocumentImporter.importDocument(at: epubURL)
         XCTAssertEqual(epub.title, "Sea Stories")
+        XCTAssertEqual(epub.chapters.map(\.title), ["One", "Two"], "EPUB chapters keep their headings")
         let first = try XCTUnwrap(epub.text.range(of: "First chapter."))
         let second = try XCTUnwrap(epub.text.range(of: "Second chapter."))
         XCTAssertLessThan(first.lowerBound, second.lowerBound)

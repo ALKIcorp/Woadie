@@ -12,6 +12,8 @@ protocol SpeechPipelineHost: AnyObject {
     func speechRequestFinished(jobID: UUID)
     /// A job finished generating every segment and is still the active one.
     func speechJobFinishedGenerating(_ job: SpeechJob)
+    /// The last clip of a job finished playing on its own (not stopped).
+    func speechPlaybackFinished(jobID: UUID)
 }
 
 /// Turns text into audio and plays it: splits it into segments, generates
@@ -53,11 +55,9 @@ final class SpeechPipeline {
                 .enumerated()
                 .map { SpeechSegment(index: $0.offset, text: $0.element) }
         } else {
-            // mlx-audio models have a large fixed cost per request and run
-            // near real time, so a short opening only moves the wait to a gap
-            // after it. Every other engine starts sooner with one.
-            let isMLXVoice = store.cloudSettings.voice(withID: voice)?.provider == .localMLX
-            segments = requestPolicy.segments(for: text, leadIn: !isMLXVoice)
+            segments = segmentTexts(for: text, voice: voice)
+                .enumerated()
+                .map { SpeechSegment(index: $0.offset, text: $0.element) }
         }
         // A short lead-in alone is routine, not worth a message.
         if segments.count > 2 {
@@ -148,6 +148,30 @@ final class SpeechPipeline {
         for segment in job.segments {
             if let url = segment.audioURL { try? FileManager.default.removeItem(at: url) }
         }
+    }
+
+    /// The requests `text` is split into for `voice`, exactly as `speak` does,
+    /// so audio rendered ahead of time is found in the cache when played.
+    func segmentTexts(for text: String, voice: String) -> [String] {
+        // mlx-audio models have a large fixed cost per request and run
+        // near real time, so a short opening only moves the wait to a gap
+        // after it. Every other engine starts sooner with one.
+        let isMLXVoice = store.cloudSettings.voice(withID: voice)?.provider == .localMLX
+        return requestPolicy.segments(for: text, leadIn: !isMLXVoice).map(\.text)
+    }
+
+    /// Audio for one request without playing it: from the cache, or
+    /// generated and cached. Used to render books ahead and compare voices.
+    func audio(for text: String, voice: String) async throws -> (data: Data, latencyMs: Int, fromCache: Bool) {
+        let key = AudioClipCache.key(text: text, voiceConfiguration: cacheConfiguration(forVoice: voice))
+        if let cached = await cache.audio(forKey: key) {
+            return (cached, 0, true)
+        }
+        try await host?.prepareEngine(forVoice: voice)
+        let started = Date()
+        let result = try await remoteService(for: voice).synthesize(text: text, voice: voice, jobID: nil)
+        await cache.store(result.audioData, forKey: key)
+        return (result.audioData, result.latencyMs ?? Int(Date().timeIntervalSince(started) * 1000), false)
     }
 
     private func remoteService(for voice: String) -> SpeechGenerating {
@@ -293,7 +317,7 @@ final class SpeechPipeline {
     /// Everything besides the text that shapes a voice's audio. A cloud or
     /// local voice's model, instructions and reference clip are included, so
     /// changing any of them never replays stale audio.
-    private func cacheConfiguration(forVoice voice: String) -> String {
+    func cacheConfiguration(forVoice voice: String) -> String {
         guard let cloudVoice = store.cloudSettings.voice(withID: voice) else { return voice }
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
@@ -364,6 +388,8 @@ final class SpeechPipeline {
     }
 
     private func finishPlayback() {
+        let finishedJobID = store.playback.activeJobID
+        defer { finishedJobID.map { host?.speechPlaybackFinished(jobID: $0) } }
         diagnostics.finishResourceSampling()
         diagnostics.finishJob(message: "Playback finished.")
         markActiveJobsCompleted()

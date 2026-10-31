@@ -87,6 +87,11 @@ final class AppStore {
     var cloudSettings = CloudSpeechSettings()
     var textCleanup = TextCleanupOptions()
     var readAlongMode: ReadAlongMode = .sentence
+    /// The open book, listened to a chapter at a time.
+    var book: Book?
+    var bookChapter = 0
+    var bookRender: BookRenderState?
+    var sleepTimer: SleepTimer = .off
     /// The part of the text an Apple voice is about to speak (UTF-16 offsets).
     var appleSpokenRange: NSRange?
     var pronunciations: [PronunciationEntry] = []
