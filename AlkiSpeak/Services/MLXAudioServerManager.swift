@@ -140,6 +140,12 @@ final class MLXAudioServerManager: LocalVoiceServerEnsuring, @unchecked Sendable
             proc.executableURL = executableURL
             proc.arguments = ["--host", "127.0.0.1", "--port", "\(port)"]
             proc.environment = ProcessInfo.processInfo.environment.merging(["PYTHONUNBUFFERED": "1"]) { _, new in new }
+            // mlx_audio.server creates ./logs on startup. An app launched from
+            // Finder runs with cwd "/", which is read-only, so the server
+            // would crash before binding the port.
+            if let workingDirectory = Self.workingDirectoryURL {
+                proc.currentDirectoryURL = workingDirectory
+            }
             if let logURL = Self.logURL, let handle = Self.openLog(at: logURL) {
                 proc.standardOutput = handle
                 proc.standardError = handle
@@ -169,12 +175,24 @@ final class MLXAudioServerManager: LocalVoiceServerEnsuring, @unchecked Sendable
     // MARK: - Logging
 
     static var logURL: URL? {
+        supportDirectory(named: nil)?.appendingPathComponent("mlx-audio-server.log")
+    }
+
+    /// `~/Library/Application Support/Woadie/mlx-audio`, the server's cwd.
+    static var workingDirectoryURL: URL? {
+        supportDirectory(named: "mlx-audio")
+    }
+
+    private static func supportDirectory(named child: String?) -> URL? {
         guard let base = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else {
             return nil
         }
-        let directory = base.appendingPathComponent("Woadie", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory.appendingPathComponent("mlx-audio-server.log")
+        var directory = base.appendingPathComponent("Woadie", isDirectory: true)
+        if let child { directory.appendPathComponent(child, isDirectory: true) }
+        guard (try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)) != nil else {
+            return nil
+        }
+        return directory
     }
 
     private static func openLog(at url: URL) -> FileHandle? {
