@@ -106,17 +106,30 @@ struct CloudVoice: Identifiable, Codable, Hashable {
     /// A designed voice's description (local mlx-audio only). When set, it is
     /// sent as `instruct` in place of `voice`. Absent in older saved settings.
     let instructions: String?
+    /// A Gemini two-speaker dialogue voice's cast. When set, the text is read
+    /// as a `Name: line` script. Absent in older saved settings.
+    let speakers: [DialogueSpeaker]?
 
-    init(id: UUID = UUID(), providerID: String, model: String, voice: String, label: String, instructions: String? = nil) {
+    init(
+        id: UUID = UUID(),
+        providerID: String,
+        model: String,
+        voice: String,
+        label: String,
+        instructions: String? = nil,
+        speakers: [DialogueSpeaker]? = nil
+    ) {
         self.id = id
         self.providerID = providerID
         self.model = model
         self.voice = voice
         self.label = label
         self.instructions = instructions
+        self.speakers = speakers
     }
 
     var isDesigned: Bool { !(instructions ?? "").isEmpty }
+    var isDialogue: Bool { !(speakers ?? []).isEmpty }
 
     var voiceID: String { CloudSpeechGenerationService.idPrefix + id.uuidString }
     var provider: CloudProvider? { CloudProvider.provider(withID: providerID) }
@@ -366,11 +379,32 @@ final class CloudSpeechGenerationService: SpeechGenerating {
             // Unary responses default to a 24 kHz mono WAV with a RIFF header,
             // which the clip pipeline plays as-is.
             request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+            let content: [[String: Any]]
+            let speechConfig: Any
+            if let speakers = cloudVoice.speakers, !speakers.isEmpty {
+                // Each turn is its own text part tagged with its speaker; the
+                // docs warn that inline "Joe:" labels may be read aloud.
+                let turns = DialogueScript.turns(in: text, speakers: speakers.map(\.name))
+                guard !turns.isEmpty else {
+                    throw Self.failure(
+                        code: "cloud.dialogue.empty",
+                        message: "There's no dialogue to read.",
+                        suggestion: "Write lines like \"\(speakers[0].name): Hello\"."
+                    )
+                }
+                content = turns.map { turn in
+                    ["type": "text", "text": turn.text, "annotations": [["type": "speech_metadata", "speaker": turn.speaker]]]
+                }
+                speechConfig = ["speakers": speakers.map { ["speaker": $0.name, "voice": $0.voice] }]
+            } else {
+                content = [["type": "text", "text": text]]
+                speechConfig = [["voice": cloudVoice.voice]]
+            }
             request.httpBody = try JSONSerialization.data(withJSONObject: [
                 "model": cloudVoice.model,
-                "input": [["type": "user_input", "content": [["type": "text", "text": text]]]],
+                "input": [["type": "user_input", "content": content]],
                 "response_format": ["type": "audio"],
-                "generation_config": ["speech_config": [["voice": cloudVoice.voice]]]
+                "generation_config": ["speech_config": speechConfig]
             ] as [String: Any])
         }
         return request
@@ -681,5 +715,90 @@ enum LocalVoiceCatalog {
 extension LocalVoiceCatalog {
     static func model(withID id: String) -> Model? {
         models.first { $0.id == id }
+    }
+}
+
+// MARK: - Dialogue scripts
+
+/// One speaker in a Gemini dialogue voice: the name used in the script and
+/// the prebuilt voice that reads it.
+struct DialogueSpeaker: Codable, Hashable {
+    let name: String
+    let voice: String
+}
+
+/// Reads `Name: line` scripts for two-speaker dialogue voices.
+enum DialogueScript {
+    struct Turn: Hashable {
+        let speaker: String
+        let text: String
+    }
+
+    /// Gemini's single-request limit for multi-speaker audio.
+    static let maxSpeakers = 2
+
+    /// A line starting with a cast name and a colon opens that speaker's turn
+    /// (names match case-insensitively). Any other line continues the current
+    /// turn, or the first speaker's if the script doesn't open with a name.
+    static func turns(in text: String, speakers: [String]) -> [Turn] {
+        guard let firstSpeaker = speakers.first else { return [] }
+        var turns: [Turn] = []
+        var currentSpeaker: String?
+        var currentText = ""
+
+        func flush() {
+            let trimmed = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let currentSpeaker, !trimmed.isEmpty {
+                turns.append(Turn(speaker: currentSpeaker, text: trimmed))
+            }
+            currentText = ""
+        }
+
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty else { continue }
+            if let (speaker, spoken) = labeledLine(line, speakers: speakers) {
+                flush()
+                currentSpeaker = speaker
+                currentText = spoken
+            } else {
+                if currentSpeaker == nil { currentSpeaker = firstSpeaker }
+                currentText += currentText.isEmpty ? line : " " + line
+            }
+        }
+        flush()
+        return turns
+    }
+
+    /// Splits a script into request-sized pieces at turn boundaries. Every
+    /// piece starts with a `Name:` label, so each request knows who speaks;
+    /// a turn too long for one request is split and each part re-labeled.
+    static func segments(for text: String, speakers: [String], maxCharacters: Int = 250) -> [String] {
+        let lines = turns(in: text, speakers: speakers).flatMap { turn -> [String] in
+            let pieces = TextBatcher.segments(for: turn.text)
+            return pieces.map { "\(turn.speaker): \($0)" }
+        }
+        var segments: [String] = []
+        var current = ""
+        for line in lines {
+            if current.isEmpty {
+                current = line
+            } else if current.count + 1 + line.count <= maxCharacters {
+                current += "\n" + line
+            } else {
+                segments.append(current)
+                current = line
+            }
+        }
+        if !current.isEmpty { segments.append(current) }
+        return segments
+    }
+
+    private static func labeledLine(_ line: String, speakers: [String]) -> (String, String)? {
+        guard let colon = line.firstIndex(of: ":") else { return nil }
+        let label = line[..<colon].trimmingCharacters(in: .whitespaces)
+        guard let speaker = speakers.first(where: { $0.caseInsensitiveCompare(label) == .orderedSame }) else { return nil }
+        let spoken = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        return (speaker, spoken)
     }
 }

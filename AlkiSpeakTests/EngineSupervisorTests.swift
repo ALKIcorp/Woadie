@@ -807,6 +807,27 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     @MainActor
+    func testGeminiDialogueVoiceValidatesItsCast() {
+        let settings = InMemoryCloudSpeechSettingsStore()
+        let model = AppModel(store: AppStore(), dependencies: .test(engineSupervisor: FakeEngineSupervisor(), cloudSpeechSettings: settings))
+        let flash = "gemini-3.8-flash-tts"
+
+        model.addGeminiDialogueVoice(model: flash, speakers: [.init(name: "Joe", voice: "Puck"), .init(name: "joe", voice: "Kore")], label: "")
+        model.addGeminiDialogueVoice(model: flash, speakers: [.init(name: "Dr: Anya", voice: "Puck"), .init(name: "Liam", voice: "Kore")], label: "")
+        model.addGeminiDialogueVoice(model: flash, speakers: [.init(name: "Joe", voice: "NotAVoice"), .init(name: "Jane", voice: "Kore")], label: "")
+        model.addGeminiDialogueVoice(model: flash, speakers: [.init(name: "Joe", voice: "Puck")], label: "")
+        XCTAssertTrue(settings.settings.voices.isEmpty, "Duplicate names, colons, unknown voices and a one-person cast are rejected")
+        XCTAssertNil(model.selectedDialogueSpeakers)
+
+        model.addGeminiDialogueVoice(model: flash, speakers: [.init(name: " Joe ", voice: "Puck"), .init(name: "Jane", voice: "Kore")], label: "")
+        let voice = settings.settings.voices[0]
+        XCTAssertEqual(voice.label, "Gemini dialogue · Joe & Jane")
+        XCTAssertEqual(voice.speakers, [.init(name: "Joe", voice: "Puck"), .init(name: "Jane", voice: "Kore")])
+        XCTAssertEqual(model.selectedDialogueSpeakers?.map(\.name), ["Joe", "Jane"])
+        XCTAssertEqual(model.voiceOptions.first { $0.id == voice.voiceID }?.source, .api)
+    }
+
+    @MainActor
     func testCloudAPIKeyRoundTripsThroughSecretStore() {
         let secrets = InMemorySecretStore()
         let model = AppModel(store: AppStore(), dependencies: .test(engineSupervisor: FakeEngineSupervisor(), secretStore: secrets))

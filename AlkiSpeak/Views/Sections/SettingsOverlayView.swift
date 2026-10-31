@@ -195,6 +195,8 @@ private struct CloudVoicesSettings: View {
     @State private var catalogError: String?
     @State private var designDescription = ""
     @State private var designLabel = ""
+    @State private var dialogueNames = ["Joe", "Jane"]
+    @State private var dialogueVoices = ["Puck", "Kore"]
 
     private var provider: CloudProvider {
         CloudProvider.provider(withID: providerID) ?? .openRouter
@@ -254,6 +256,9 @@ private struct CloudVoicesSettings: View {
             }
             if provider == .gemini {
                 geminiPickers
+                if hasKey {
+                    geminiDialogueBuilder
+                }
             }
             if provider == .localMLX {
                 localPresets
@@ -286,7 +291,7 @@ private struct CloudVoicesSettings: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(voice.label)
                                 .font(WoadieTheme.rounded(size: 12, weight: .semibold))
-                            caption("\(voice.provider?.name ?? voice.providerID) · \(voice.model) · \(voice.isDesigned ? "“\(voice.instructions ?? "")”" : voice.voice)")
+                            caption("\(voice.provider?.name ?? voice.providerID) · \(voice.model) · \(voiceSummary(voice))")
                         }
                         Spacer()
                         IconActionButton(systemImage: "trash") {
@@ -421,6 +426,56 @@ private struct CloudVoicesSettings: View {
             }
         }
         .pickerStyle(.menu)
+    }
+
+    private func voiceSummary(_ voice: CloudVoice) -> String {
+        if let speakers = voice.speakers, !speakers.isEmpty {
+            return speakers.map { "\($0.name) (\($0.voice))" }.joined(separator: " & ")
+        }
+        return voice.isDesigned ? "“\(voice.instructions ?? "")”" : voice.voice
+    }
+
+    private var dialogueNamesAreValid: Bool {
+        let names = dialogueNames.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return names.allSatisfy { !$0.isEmpty && !$0.contains(":") }
+            && Set(names.map { $0.lowercased() }).count == names.count
+    }
+
+    /// Two named speakers, each read by a prebuilt voice, in one Gemini voice.
+    private var geminiDialogueBuilder: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Two-speaker dialogue")
+                .font(WoadieTheme.rounded(size: 12, weight: .semibold))
+            ForEach(0..<DialogueScript.maxSpeakers, id: \.self) { index in
+                HStack {
+                    TextField("Speaker \(index + 1)", text: $dialogueNames[index])
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                    Picker("Voice", selection: $dialogueVoices[index]) {
+                        ForEach(GeminiSpeechCatalog.voices) { voice in
+                            Text("\(voice.name) · \(voice.trait)").tag(voice.name)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+            }
+            HStack {
+                caption("Then write lines like “\(dialogueNames[0]): Hi!” and “\(dialogueNames[1]): Hello!”")
+                Spacer()
+                WoadieButton(title: "Add Dialogue", systemImage: "person.2", variant: .default) {
+                    let speakers = zip(dialogueNames, dialogueVoices).map { DialogueSpeaker(name: $0, voice: $1) }
+                    model.addGeminiDialogueVoice(
+                        model: modelID.isEmpty ? (GeminiSpeechCatalog.models.first?.id ?? "") : modelID,
+                        speakers: speakers,
+                        label: ""
+                    )
+                }
+                .disabled(!dialogueNamesAreValid)
+            }
+            if !dialogueNamesAreValid {
+                caption("Give each speaker a different name without a colon.")
+            }
+        }
     }
 
     private func loadCatalog() {

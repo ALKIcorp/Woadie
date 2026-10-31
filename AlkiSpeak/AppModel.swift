@@ -267,6 +267,34 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Adds a Gemini voice that reads `Name: line` scripts with two prebuilt
+    /// voices. Names must be distinct, non-empty and colon-free.
+    func addGeminiDialogueVoice(model: String, speakers: [DialogueSpeaker], label: String) {
+        let cast = speakers.map {
+            DialogueSpeaker(name: $0.name.trimmingCharacters(in: .whitespacesAndNewlines), voice: $0.voice)
+        }
+        let validVoices = Set(GeminiSpeechCatalog.voices.map(\.name))
+        guard !model.isEmpty,
+              cast.count == DialogueScript.maxSpeakers,
+              cast.allSatisfy({ !$0.name.isEmpty && !$0.name.contains(":") && validVoices.contains($0.voice) }),
+              Set(cast.map { $0.name.lowercased() }).count == cast.count
+        else { return }
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        appendCloudVoice(CloudVoice(
+            providerID: CloudProvider.gemini.id,
+            model: model,
+            voice: cast.map(\.voice).joined(separator: "+"),
+            label: trimmedLabel.isEmpty ? "Gemini dialogue · " + cast.map(\.name).joined(separator: " & ") : trimmedLabel,
+            speakers: cast
+        ))
+    }
+
+    /// The cast when the selected voice is a dialogue voice, else `nil`.
+    var selectedDialogueSpeakers: [DialogueSpeaker]? {
+        guard let speakers = store.cloudSettings.voice(withID: selectedVoice)?.speakers, !speakers.isEmpty else { return nil }
+        return speakers
+    }
+
     /// Inline expression cues (e.g. `[Laughter]`) the selected voice's model reads.
     var selectedVoiceExpressionTags: [String] {
         guard let voice = store.cloudSettings.voice(withID: selectedVoice), voice.provider == .localMLX else { return [] }
@@ -910,7 +938,15 @@ final class AppModel: ObservableObject {
         guard !trimmed.isEmpty else { return }
         store.clearErrorMessage()
 
-        let segments = requestPolicy.segments(for: trimmed)
+        let segments: [SpeechSegment]
+        if let speakers = selectedDialogueSpeakers {
+            // Split between turns so every request carries its speaker labels.
+            segments = DialogueScript.segments(for: trimmed, speakers: speakers.map(\.name))
+                .enumerated()
+                .map { SpeechSegment(index: $0.offset, text: $0.element) }
+        } else {
+            segments = requestPolicy.segments(for: trimmed)
+        }
         if segments.count > 1 {
             store.userMessage = "Large text split into \(segments.count) segments. Sending smaller engine requests to avoid request timeouts."
         }

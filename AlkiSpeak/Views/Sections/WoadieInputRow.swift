@@ -15,6 +15,12 @@ struct WoadieInputRow: View {
                     isDisabled: !model.canEditText
                 )
 
+                if let speakers = model.selectedDialogueSpeakers {
+                    Text("DIALOGUE: START EACH LINE WITH " + speakers.map { "\($0.name.uppercased()):" }.joined(separator: " OR "))
+                        .font(WoadieTheme.mono(size: 9, weight: .medium))
+                        .tracking(0.4)
+                        .foregroundStyle(WoadieTheme.foregroundSubtle)
+                }
                 HStack {
                     Text("COMMAND RETURN TO SEND")
                         .font(WoadieTheme.mono(size: 9, weight: .medium))

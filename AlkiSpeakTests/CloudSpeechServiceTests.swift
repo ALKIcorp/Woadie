@@ -419,6 +419,7 @@ final class CloudSpeechServiceTests: XCTestCase {
         let decoded = try JSONDecoder().decode(CloudSpeechSettings.self, from: legacy)
         XCTAssertEqual(decoded.voices.first?.voice, "Ryan")
         XCTAssertNil(decoded.voices.first?.instructions)
+        XCTAssertNil(decoded.voices.first?.speakers)
         XCTAssertFalse(decoded.voices[0].isDesigned)
     }
 
@@ -453,5 +454,68 @@ final class CloudSpeechServiceTests: XCTestCase {
         XCTAssertEqual(TextBatcher.tagSafeCut(open, at: 10), 5)
         let plain = Array("no tags here at all")
         XCTAssertEqual(TextBatcher.tagSafeCut(plain, at: 10), 10)
+    }
+
+    // MARK: Gemini dialogue
+
+    private let cast = [DialogueSpeaker(name: "Joe", voice: "Puck"), DialogueSpeaker(name: "Jane", voice: "Kore")]
+
+    func testDialogueRequestTagsEachTurnAndStripsLabels() throws {
+        let dialogue = CloudVoice(providerID: CloudProvider.gemini.id, model: "gemini-3.8-flash-tts", voice: "Puck+Kore", label: "Dialogue", speakers: cast)
+        settings.settings.voices = [dialogue]
+        try secrets.setSecret("g-test", for: CloudProvider.gemini.id)
+
+        let request = try service.makeRequest(text: "Joe: How's it going today Jane?\nJane: Not too bad, how about you?", voiceID: dialogue.voiceID)
+
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+        let content = try XCTUnwrap((body["input"] as? [[String: Any]])?.first?["content"] as? [[String: Any]])
+        XCTAssertEqual(content.map { $0["text"] as? String }, ["How's it going today Jane?", "Not too bad, how about you?"])
+        let speakersSaid = content.map { (($0["annotations"] as? [[String: String]])?.first)?["speaker"] }
+        XCTAssertEqual(speakersSaid, ["Joe", "Jane"])
+        XCTAssertEqual(content.first.flatMap { ($0["annotations"] as? [[String: String]])?.first?["type"] }, "speech_metadata")
+        let speechConfig = try XCTUnwrap((body["generation_config"] as? [String: Any])?["speech_config"] as? [String: Any])
+        XCTAssertEqual(speechConfig["speakers"] as? [[String: String]], [["speaker": "Joe", "voice": "Puck"], ["speaker": "Jane", "voice": "Kore"]])
+    }
+
+    func testDialogueWithNoSpokenTextFails() throws {
+        let dialogue = CloudVoice(providerID: CloudProvider.gemini.id, model: "gemini-3.8-flash-tts", voice: "Puck+Kore", label: "Dialogue", speakers: cast)
+        settings.settings.voices = [dialogue]
+        try secrets.setSecret("g-test", for: CloudProvider.gemini.id)
+        XCTAssertThrowsError(try service.makeRequest(text: "Joe:\nJane:  ", voiceID: dialogue.voiceID)) { error in
+            XCTAssertEqual((error as? AlkiSpeakError)?.code, "generation.cloud.dialogue.empty")
+        }
+    }
+
+    func testScriptParsingRules() {
+        let script = """
+        Opening line with no label.
+        jane: Lowercase name still counts.
+        And this line continues Jane.
+
+        Joe: Note: colons later in a line are fine.
+        Narrator: Unknown names stay part of the current turn.
+        """
+        let turns = DialogueScript.turns(in: script, speakers: ["Joe", "Jane"])
+        XCTAssertEqual(turns, [
+            .init(speaker: "Joe", text: "Opening line with no label."),
+            .init(speaker: "Jane", text: "Lowercase name still counts. And this line continues Jane."),
+            .init(speaker: "Joe", text: "Note: colons later in a line are fine. Narrator: Unknown names stay part of the current turn.")
+        ])
+    }
+
+    func testScriptSegmentsSplitBetweenTurnsAndRelabelLongTurns() {
+        let longTurn = String(repeating: "This sentence keeps Jane talking for a while. ", count: 12)
+        let script = "Joe: Short opener.\nJane: \(longTurn)\nJoe: Short closer."
+        let segments = DialogueScript.segments(for: script, speakers: ["Joe", "Jane"])
+
+        XCTAssertGreaterThan(segments.count, 2)
+        for segment in segments {
+            let firstLine = segment.components(separatedBy: "\n").first ?? ""
+            XCTAssertTrue(firstLine.hasPrefix("Joe: ") || firstLine.hasPrefix("Jane: "), "Unlabeled segment: \(segment)")
+        }
+        let rebuilt = segments.flatMap { DialogueScript.turns(in: $0, speakers: ["Joe", "Jane"]) }
+        XCTAssertEqual(rebuilt.first, .init(speaker: "Joe", text: "Short opener."))
+        XCTAssertEqual(rebuilt.last, .init(speaker: "Joe", text: "Short closer."))
+        XCTAssertTrue(rebuilt.dropFirst().dropLast().allSatisfy { $0.speaker == "Jane" })
     }
 }
