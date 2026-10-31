@@ -24,6 +24,7 @@ final class AppModel: ObservableObject {
     /// The Python engine was stopped to save memory rather than by the user,
     /// so Generate wakes it instead of being disabled.
     private var pythonEngineSleeping = false
+    private var tuningSaveTask: Task<Void, Never>?
     private var queryStartedAt: ContinuousClock.Instant?
     private var queryResourceBefore: SystemResourceSnapshot = .empty
     private var resourceUsageAccumulator = QueryResourceUsageAccumulator()
@@ -203,8 +204,22 @@ final class AppModel: ObservableObject {
 
     private func applyTuning(_ tuning: PlaybackTuning) {
         store.playbackTuning = tuning
-        tuning.save()
         dependencies.playbackCoordinator.applyTuning(tuning)
+        // A knob drag sends dozens of values a second; save once it settles.
+        tuningSaveTask?.cancel()
+        tuningSaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            self?.savePendingTuning()
+        }
+    }
+
+    /// Writes a tuning change that is still waiting on `applyTuning`'s delay.
+    func savePendingTuning() {
+        guard tuningSaveTask != nil else { return }
+        tuningSaveTask?.cancel()
+        tuningSaveTask = nil
+        store.playbackTuning.save()
     }
 
     // MARK: Cloud voices
