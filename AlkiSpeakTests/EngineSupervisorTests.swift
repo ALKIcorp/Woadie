@@ -1606,3 +1606,57 @@ final class CPULoadTests: XCTestCase {
         XCTAssertNil(CPULoad.percent(from: ticks, to: ticks))
     }
 }
+
+@MainActor
+final class GlobalHotKeyTests: XCTestCase {
+    private func isolatedDefaults() -> UserDefaults {
+        let name = "GlobalHotKeyTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+        return defaults
+    }
+
+    func testDefaultsAreOptionEscapeAndOptionShiftEscape() {
+        let service = GlobalHotKeyService(defaults: isolatedDefaults())
+        XCTAssertEqual(service.shortcut(for: .speakOrStop)?.displayString, "⌥⎋")
+        XCTAssertEqual(service.shortcut(for: .pauseOrResume)?.displayString, "⌥⇧⎋")
+    }
+
+    func testSavedAndClearedShortcutsAreRead() throws {
+        let defaults = isolatedDefaults()
+        let custom = HotKeyShortcut(keyCode: 0x31, carbonModifiers: 0x0100 | 0x0800) // ⌘⌥Space
+        defaults.set(try JSONEncoder().encode(custom), forKey: GlobalHotKeyAction.speakOrStop.defaultsKey)
+        defaults.set(Data(), forKey: GlobalHotKeyAction.pauseOrResume.defaultsKey)
+        let service = GlobalHotKeyService(defaults: defaults)
+
+        XCTAssertEqual(service.shortcut(for: .speakOrStop), custom)
+        XCTAssertEqual(service.shortcut(for: .speakOrStop)?.displayString, "⌥⌘Space")
+        XCTAssertNil(service.shortcut(for: .pauseOrResume), "an empty value means the user turned it off")
+    }
+
+    func testRecorderRejectsKeysWithoutCommandOptionOrControl() throws {
+        func keyDown(_ flags: NSEvent.ModifierFlags) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0,
+                context: nil, characters: "s", charactersIgnoringModifiers: "s", isARepeat: false, keyCode: 1
+            ))
+        }
+        XCTAssertNil(HotKeyShortcut(event: try keyDown([])))
+        XCTAssertNil(HotKeyShortcut(event: try keyDown(.shift)))
+        XCTAssertEqual(HotKeyShortcut(event: try keyDown([.control, .shift]))?.carbonModifiers, 0x1000 | 0x0200)
+    }
+
+    func testSpeakHotKeyStopsWhatIsPlaying() async {
+        let store = AppStore()
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+        store.playback = PlaybackSnapshot(
+            state: .playing, activeJobID: UUID(), activeLogEntryID: nil, currentSegmentID: nil,
+            elapsedTime: 1, duration: 5, bufferedDuration: 5, statusMessage: nil
+        )
+
+        let outcome = await model.handleSpeakHotKey()
+
+        XCTAssertEqual(outcome, .stopped)
+        XCTAssertEqual(store.playbackState.state, .idle)
+    }
+}

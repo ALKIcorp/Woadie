@@ -92,6 +92,15 @@ struct SettingsOverlayView: View {
                     }
 
                     DisclosureSettingRow(
+                        title: "Keyboard Shortcuts",
+                        systemImage: "keyboard",
+                        subtitle: "Speak selected text from any app",
+                        initiallyExpanded: false
+                    ) {
+                        HotKeySettings()
+                    }
+
+                    DisclosureSettingRow(
                         title: "Cloud Voices",
                         systemImage: "cloud",
                         subtitle: model.cloudSettings.voices.isEmpty
@@ -193,6 +202,81 @@ private struct NativeKokoroSettings: View {
                 }
             }
         }
+    }
+}
+
+private struct HotKeySettings: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HotKeyRecorderRow(label: "Speak selection / Stop", action: .speakOrStop)
+            HotKeyRecorderRow(label: "Pause / Resume", action: .pauseOrResume)
+            Text("Works in any app. With nothing selected, it reads new clipboard text; with AlkiSpeak in front, it reads the editor.")
+                .font(WoadieTheme.mono(size: 10, weight: .regular))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+private struct HotKeyRecorderRow: View {
+    let label: String
+    let action: GlobalHotKeyAction
+    @State private var shortcut: HotKeyShortcut?
+    @State private var isRecording = false
+    @State private var monitor: Any?
+    @State private var conflict = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(WoadieTheme.mono(size: 11, weight: .medium))
+            Spacer()
+            if conflict {
+                Text("Couldn't register")
+                    .font(WoadieTheme.mono(size: 10, weight: .regular))
+                    .foregroundStyle(WoadieTheme.warning)
+            }
+            WoadieButton(
+                title: isRecording ? "Press keys…" : (shortcut?.displayString ?? "Off"),
+                systemImage: isRecording ? "record.circle" : "keyboard",
+                variant: isRecording ? .primary : .default
+            ) {
+                isRecording ? stopRecording() : startRecording()
+            }
+            WoadieButton(title: "Reset", variant: .default) {
+                save(action.defaultShortcut)
+            }
+            WoadieButton(title: "Clear", variant: .default) {
+                save(nil)
+            }
+        }
+        .onAppear { shortcut = GlobalHotKeyService.shared.shortcut(for: action) }
+        .onDisappear { stopRecording() }
+    }
+
+    private func startRecording() {
+        isRecording = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 53, event.modifierFlags.intersection([.command, .option, .control]).isEmpty {
+                stopRecording() // a bare Escape cancels
+                return nil
+            }
+            guard let recorded = HotKeyShortcut(event: event) else { return nil }
+            save(recorded)
+            stopRecording()
+            return nil
+        }
+    }
+
+    private func stopRecording() {
+        isRecording = false
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+
+    private func save(_ new: HotKeyShortcut?) {
+        conflict = !GlobalHotKeyService.shared.setShortcut(new, for: action)
+        shortcut = GlobalHotKeyService.shared.shortcut(for: action)
     }
 }
 

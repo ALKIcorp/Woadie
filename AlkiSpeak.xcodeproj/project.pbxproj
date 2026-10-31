@@ -15,6 +15,7 @@
 		A1000006 /* WoadieBackground.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000008 /* WoadieBackground.swift */; };
 		A1000007 /* WoadieButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000009 /* WoadieButton.swift */; };
 		A1000008 /* StatusIndicatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000A /* StatusIndicatorView.swift */; };
+		A1000102 /* SpeechHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000102 /* SpeechHUD.swift */; };
 		A1000009 /* VoicePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000B /* VoicePickerView.swift */; };
 		A100000A /* WoadieTextEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000C /* WoadieTextEditor.swift */; };
 		A100000B /* IconActionButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000D /* IconActionButton.swift */; };
@@ -42,6 +43,7 @@
 		A1000023 /* SpeechEntryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000023 /* SpeechEntryStore.swift */; };
 		A1000024 /* SystemResourceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000024 /* SystemResourceMonitor.swift */; };
 		A1000025 /* SelectedTextServiceProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000025 /* SelectedTextServiceProvider.swift */; };
+		A1000101 /* GlobalHotKeyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000101 /* GlobalHotKeyService.swift */; };
 		A1000026 /* AlkiComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000026 /* AlkiComponents.swift */; };
 		A1000027 /* SettingsOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000027 /* SettingsOverlayView.swift */; };
 		A1000028 /* EdgeSpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000028 /* EdgeSpeechService.swift */; };
@@ -76,6 +78,7 @@
 		A2000008 /* WoadieBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieBackground.swift; sourceTree = "<group>"; };
 		A2000009 /* WoadieButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieButton.swift; sourceTree = "<group>"; };
 		A200000A /* StatusIndicatorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusIndicatorView.swift; sourceTree = "<group>"; };
+		A2000102 /* SpeechHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechHUD.swift; sourceTree = "<group>"; };
 		A200000B /* VoicePickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePickerView.swift; sourceTree = "<group>"; };
 		A200000C /* WoadieTextEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieTextEditor.swift; sourceTree = "<group>"; };
 		A200000D /* IconActionButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IconActionButton.swift; sourceTree = "<group>"; };
@@ -103,6 +106,7 @@
 		A2000023 /* SpeechEntryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechEntryStore.swift; sourceTree = "<group>"; };
 		A2000024 /* SystemResourceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemResourceMonitor.swift; sourceTree = "<group>"; };
 		A2000025 /* SelectedTextServiceProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectedTextServiceProvider.swift; sourceTree = "<group>"; };
+		A2000101 /* GlobalHotKeyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalHotKeyService.swift; sourceTree = "<group>"; };
 		A2000026 /* AlkiComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlkiComponents.swift; sourceTree = "<group>"; };
 		A2000027 /* SettingsOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsOverlayView.swift; sourceTree = "<group>"; };
 		A2000028 /* EdgeSpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSpeechService.swift; sourceTree = "<group>"; };
@@ -195,6 +199,7 @@
 				A2000008 /* WoadieBackground.swift */,
 				A2000009 /* WoadieButton.swift */,
 				A200000A /* StatusIndicatorView.swift */,
+				A2000102 /* SpeechHUD.swift */,
 				A200000B /* VoicePickerView.swift */,
 				A200000C /* WoadieTextEditor.swift */,
 				A200000D /* IconActionButton.swift */,
@@ -249,6 +254,7 @@
 				A200001D /* AudioServices.swift */,
 				A2000024 /* SystemResourceMonitor.swift */,
 				A2000025 /* SelectedTextServiceProvider.swift */,
+				A2000101 /* GlobalHotKeyService.swift */,
 				A2000028 /* EdgeSpeechService.swift */,
 				A2000040 /* CloudSpeechService.swift */,
 				A2000041 /* MLXAudioServerManager.swift */,
@@ -393,6 +399,7 @@
 				A1000006 /* WoadieBackground.swift in Sources */,
 				A1000007 /* WoadieButton.swift in Sources */,
 				A1000008 /* StatusIndicatorView.swift in Sources */,
+				A1000102 /* SpeechHUD.swift in Sources */,
 				A1000009 /* VoicePickerView.swift in Sources */,
 				A100000A /* WoadieTextEditor.swift in Sources */,
 				A100000B /* IconActionButton.swift in Sources */,
@@ -420,6 +427,7 @@
 				A1000023 /* SpeechEntryStore.swift in Sources */,
 				A1000024 /* SystemResourceMonitor.swift in Sources */,
 				A1000025 /* SelectedTextServiceProvider.swift in Sources */,
+				A1000101 /* GlobalHotKeyService.swift in Sources */,
 				A1000026 /* AlkiComponents.swift in Sources */,
 				A1000027 /* SettingsOverlayView.swift in Sources */,
 				A1000028 /* EdgeSpeechService.swift in Sources */,

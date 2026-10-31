@@ -43,6 +43,7 @@ final class AppModel: ObservableObject {
     private var activePerformanceDiagnosticJobID: UUID?
     private var hasRequestedAccessibilityPrompt = false
     private var savedLogsNeedPersisting = false
+    private var lastHotKeyClipboardChangeCount = NSPasteboard.general.changeCount
 
     private func consoleTrace(_ message: String, function: StaticString = #function, line: UInt = #line) {
         guard AppConfig.isVerboseConsoleTracingEnabled else { return }
@@ -927,6 +928,59 @@ final class AppModel: ObservableObject {
                 store.userMessage = "No text is selected in another app. Select text and try again."
             }
         }
+    }
+
+    enum HotKeyOutcome: Equatable {
+        case speakingSelection
+        case speakingClipboard
+        case speakingEditor
+        case stopped
+        case nothingSelected
+        case permissionRequired
+    }
+
+    /// The global speak shortcut: stop if something is playing, otherwise
+    /// speak the other app's selection, then fresh clipboard text, then (when
+    /// AlkiSpeak itself is in front) the editor.
+    func handleSpeakHotKey() async -> HotKeyOutcome {
+        switch store.playbackState.state {
+        case .playing, .preparing, .paused:
+            stopPlayback()
+            return .stopped
+        case .idle, .stopped, .failed:
+            break
+        }
+        if NSApp.isActive {
+            guard !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .nothingSelected }
+            speak()
+            return .speakingEditor
+        }
+        switch await dependencies.selectedTextReader.readFocusedSelection() {
+        case .selected(let text):
+            store.selectedTextPermissionRequired = false
+            speakExternalText(text)
+            return .speakingSelection
+        case .permissionRequired:
+            store.selectedTextPermissionRequired = true
+            requestAccessibilityAccessOnce()
+            return .permissionRequired
+        case .noSelection:
+            // Only clipboard text the shortcut hasn't already spoken, so a
+            // stale clipboard isn't read out by surprise.
+            let pasteboard = NSPasteboard.general
+            guard pasteboard.changeCount != lastHotKeyClipboardChangeCount,
+                  let text = pasteboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty
+            else { return .nothingSelected }
+            lastHotKeyClipboardChangeCount = pasteboard.changeCount
+            speakExternalText(text)
+            return .speakingClipboard
+        }
+    }
+
+    func handlePauseHotKey() {
+        guard store.playbackState.state == .playing || store.playbackState.state == .paused else { return }
+        togglePlayback()
     }
 
     /// Fires the asynchronous macOS Accessibility prompt at most once per app

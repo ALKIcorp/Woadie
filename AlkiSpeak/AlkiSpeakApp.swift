@@ -9,12 +9,14 @@ enum WindowChromePolicy {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var model: AppModel?
     private var selectedTextServiceProvider: SelectedTextServiceProvider?
+    private var speechHUD: SpeechHUDController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.consoleTrace("applicationDidFinishLaunching")
         NSApp.setActivationPolicy(.regular)
         FrontmostAppTracker.shared.start()
         installSelectedTextServiceProvider()
+        installGlobalHotKeys()
         DispatchQueue.main.async {
             self.applyWindowChrome(NSApplication.shared.windows)
         }
@@ -27,6 +29,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.servicesProvider = provider
         NSUpdateDynamicServices()
         Self.consoleTrace("selected text service provider installed")
+    }
+
+    /// System-wide shortcuts that speak the selection (or stop) and pause or
+    /// resume, without opening the window.
+    func installGlobalHotKeys() {
+        guard let model, !AppConfig.isRunningUnitTests else { return }
+        let hud = SpeechHUDController(model: model)
+        speechHUD = hud
+        GlobalHotKeyService.shared.start(handlers: [
+            .speakOrStop: {
+                Task { @MainActor in
+                    hud.show(await model.handleSpeakHotKey())
+                }
+            },
+            .pauseOrResume: {
+                model.handlePauseHotKey()
+            }
+        ])
+        Self.consoleTrace("global hot keys installed")
     }
 
     /// Hidden title bar without SwiftUI `.hiddenTitleBar`, which often spins up ViewBridge remote hosting (noisy teardown + debugger artifacts).
