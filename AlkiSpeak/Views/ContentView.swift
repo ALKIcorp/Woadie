@@ -16,12 +16,13 @@ struct ContentView: View {
                         WoadieHeaderView(
                             model: model,
                             onOpenSettings: { activeOverlay = .settings },
-                            onOpenStorage: { activeOverlay = .storage }
+                            onOpenStorage: { activeOverlay = .storage },
+                            onOpenVoices: { activeOverlay = .voices(.mine) }
                         )
                         topControls
 
                         HStack(alignment: .top, spacing: 12) {
-                            NowSpeakingPanel(model: model)
+                            NowSpeakingPanel(model: model, onNewVoice: { activeOverlay = .voices(.new) })
                             WoadiePlaybackPanel(model: model, onTogglePlayback: model.togglePlayback)
                                 .frame(width: 330)
                         }
@@ -115,6 +116,7 @@ struct ContentView: View {
         .overlay {
             overlayContent
         }
+        .environment(\.openVoices, OpenVoicesAction { activeOverlay = .voices($0) })
     }
 
     @ViewBuilder
@@ -129,6 +131,9 @@ struct ContentView: View {
             .zIndex(10)
         case .storage:
             StorageDashboardView(model: model, onClose: { activeOverlay = nil })
+                .zIndex(10)
+        case .voices(let tab):
+            VoicesOverlayView(model: model, tab: tab, onClose: { activeOverlay = nil })
                 .zIndex(10)
         case .none:
             EmptyView()
@@ -174,6 +179,7 @@ struct ContentView: View {
 /// this panel and not the whole window.
 private struct NowSpeakingPanel: View {
     var model: AppModel
+    var onNewVoice: () -> Void
 
     var body: some View {
         AlkiGlassSurface {
@@ -208,7 +214,9 @@ private struct NowSpeakingPanel: View {
                         selectedLabel: model.selectedVoiceLabel,
                         sections: model.voiceDropdownSections,
                         onStep: model.cycleVoice,
-                        onToggleFavorite: model.toggleFavorite
+                        onToggleFavorite: model.toggleFavorite,
+                        onPreview: model.previewVoice,
+                        onNewVoice: onNewVoice
                     )
                     Spacer()
                     Text("48 KHZ - MONO - FFT LIVE")

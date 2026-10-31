@@ -37,9 +37,22 @@ struct AlkiDropdown: View {
     var onSelect: (String) -> Void
     var onToggleFavorite: ((String) -> Void)?
     var onStep: ((Int) -> Void)?
+    /// Shows a search field over the list when set; the text is its prompt.
+    var searchPrompt: String?
+    /// Adds a play button to each row.
+    var onPreview: ((String) -> Void)?
+    /// A button pinned under the list, e.g. "New Voice".
+    var footer: DropdownFooter?
+
+    struct DropdownFooter {
+        let title: String
+        let systemImage: String
+        let action: () -> Void
+    }
 
     @State private var isPresented = false
     @State private var expandedSectionIDs: Set<String> = []
+    @State private var query = ""
 
     init(
         title: String,
@@ -48,7 +61,10 @@ struct AlkiDropdown: View {
         placeholder: String = "Select",
         onSelect: @escaping (String) -> Void,
         onToggleFavorite: ((String) -> Void)? = nil,
-        onStep: ((Int) -> Void)? = nil
+        onStep: ((Int) -> Void)? = nil,
+        searchPrompt: String? = nil,
+        onPreview: ((String) -> Void)? = nil,
+        footer: DropdownFooter? = nil
     ) {
         self.title = title
         self.sections = sections
@@ -57,6 +73,9 @@ struct AlkiDropdown: View {
         self.onSelect = onSelect
         self.onToggleFavorite = onToggleFavorite
         self.onStep = onStep
+        self.searchPrompt = searchPrompt
+        self.onPreview = onPreview
+        self.footer = footer
     }
 
     var body: some View {
@@ -87,7 +106,10 @@ struct AlkiDropdown: View {
                 optionList
             }
             .onChange(of: isPresented) { _, presented in
-                guard presented else { return }
+                guard presented else {
+                    query = ""
+                    return
+                }
                 if let activeSection = sections.first(where: { section in
                     section.options.contains { $0.id == selectedID }
                 }) {
@@ -111,15 +133,59 @@ struct AlkiDropdown: View {
     }
 
     private var optionList: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 10) {
-                ForEach(sections) { section in
-                    sectionDisclosure(section)
-                }
+        VStack(spacing: 0) {
+            if let searchPrompt {
+                TextField(searchPrompt, text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .padding([.horizontal, .top], 16)
             }
-            .padding(16)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    if query.isEmpty {
+                        ForEach(sections) { section in
+                            sectionDisclosure(section)
+                        }
+                    } else if searchResults.isEmpty {
+                        Text("No matches")
+                            .font(WoadieTheme.mono(size: 10, weight: .medium))
+                            .foregroundStyle(WoadieTheme.foregroundSubtle)
+                    } else {
+                        ForEach(searchResults) { option in
+                            optionRow(option)
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            if let footer {
+                Divider().opacity(0.4)
+                Button {
+                    isPresented = false
+                    footer.action()
+                } label: {
+                    Label(footer.title, systemImage: footer.systemImage)
+                        .font(WoadieTheme.rounded(size: 12, weight: .semibold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
         }
-        .frame(width: 320, height: 360)
+        .frame(width: 340, height: searchPrompt == nil ? 360 : 420)
+    }
+
+    /// Every option once, keeping those whose label or detail contains each
+    /// word of the query.
+    private var searchResults: [AlkiDropdownOption] {
+        let words = query.lowercased().split(separator: " ")
+        var seen = Set<String>()
+        return sections.flatMap(\.options).filter { option in
+            guard seen.insert(option.id).inserted else { return false }
+            let haystack = "\(option.label) \(option.detail ?? "")".lowercased()
+            return words.allSatisfy { haystack.contains($0) }
+        }
     }
 
     private func sectionDisclosure(_ section: AlkiDropdownSection) -> some View {
@@ -188,6 +254,16 @@ struct AlkiDropdown: View {
             .buttonStyle(.plain)
             .disabled(!option.isEnabled)
             .opacity(option.isEnabled ? 1 : 0.45)
+
+            if let onPreview, option.isEnabled {
+                Button { onPreview(option.id) } label: {
+                    Image(systemName: "play.circle")
+                        .font(.system(size: 12))
+                        .foregroundStyle(WoadieTheme.foregroundSubtle)
+                }
+                .buttonStyle(.plain)
+                .help("Hear a short sample")
+            }
 
             if let onToggleFavorite {
                 Button { onToggleFavorite(option.id) } label: {

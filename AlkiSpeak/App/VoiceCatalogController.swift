@@ -264,6 +264,24 @@ final class VoiceCatalogController {
         mergeVoiceOptions(remote: others + native)
     }
 
+    /// A plain name and tag for a voice the user added: "Ryan" with
+    /// "Qwen3-TTS 1.7B", "My voice" with "Cloned", or the provider's name.
+    nonisolated static func naming(for cloudVoice: CloudVoice) -> (name: String, detail: String) {
+        var name = cloudVoice.label
+        if name.hasSuffix(" (local)") { name = String(name.dropLast(" (local)".count)) }
+        guard cloudVoice.provider == .localMLX else {
+            return (name, cloudVoice.provider?.name ?? "Online")
+        }
+        if cloudVoice.isCloned { return (name, "Cloned · On this Mac") }
+        if !(cloudVoice.instructions ?? "").isEmpty { return (name, "Designed · On this Mac") }
+        let model = LocalVoiceCatalog.model(withID: cloudVoice.model)
+        if let preset = model?.voices.first(where: { $0.name == cloudVoice.voice }), preset.label == cloudVoice.label {
+            // Preset labels repeat the model ("Qwen3 Ryan"); the tag already says it.
+            name = preset.name.split(separator: "_").last.map(String.init) ?? preset.name
+        }
+        return (name, model?.name ?? "On this Mac")
+    }
+
     func mergeVoiceOptions(remote: [String]) {
         // On cold start, `refreshLocalVoices()` runs before /voices returns, so `remote` is
         // often empty. Without preserving the workspace Kokoro id here, `selectedVoice`
@@ -281,8 +299,18 @@ final class VoiceCatalogController {
                 return VoiceOption(id: id, label: "Edge - \(name)", source: .edge)
             }
             if CloudSpeechGenerationService.isCloudVoice(id) {
-                let label = store.cloudSettings.voice(withID: id)?.label ?? "Removed voice"
-                return VoiceOption(id: id, label: "Cloud - \(label)", source: .api)
+                guard let cloudVoice = store.cloudSettings.voice(withID: id) else {
+                    return VoiceOption(id: id, label: "Cloud - Removed voice", source: .api)
+                }
+                let naming = Self.naming(for: cloudVoice)
+                return VoiceOption(
+                    id: id,
+                    label: "Cloud - \(cloudVoice.label)",
+                    source: .api,
+                    name: naming.name,
+                    detail: naming.detail,
+                    isOnDevice: cloudVoice.provider == .localMLX
+                )
             }
             if NativeKokoroSpeechService.isNativeKokoroVoice(id) {
                 return VoiceOption(id: id, label: "Kokoro Native - \(NativeKokoroSpeechService.stripPrefix(id))", source: .kokoroNative)

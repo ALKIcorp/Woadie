@@ -75,8 +75,12 @@ final class AppStore {
     var voiceFavorites: Set<String> = [] {
         didSet { rebuildVoiceIndex() }
     }
-    /// The picker's grouped voices and an id → label lookup, rebuilt when the
-    /// voice list or favorites change instead of on every render.
+    /// Most recently picked first.
+    var recentVoiceIDs: [String] = [] {
+        didSet { rebuildVoiceIndex() }
+    }
+    /// The picker's grouped voices and an id → name lookup, rebuilt when the
+    /// voice list, favorites or recent voices change instead of on every render.
     private(set) var voiceSections: [VoiceGrouping.Section] = []
     private(set) var voiceDropdownSections: [AlkiDropdownSection] = []
     private(set) var voiceLabelsByID: [String: String] = [:]
@@ -91,9 +95,9 @@ final class AppStore {
     var portInUsePids: [Int32] = []
 
     private func rebuildVoiceIndex() {
-        voiceSections = VoiceGrouping.sections(voices: voiceOptions, favorites: voiceFavorites)
+        voiceSections = VoiceGrouping.sections(voices: voiceOptions, favorites: voiceFavorites, recent: recentVoiceIDs)
         voiceDropdownSections = VoicePickerView.dropdownSections(voiceSections, favorites: voiceFavorites)
-        voiceLabelsByID = Dictionary(voiceOptions.map { ($0.id, $0.label) }, uniquingKeysWith: { first, _ in first })
+        voiceLabelsByID = Dictionary(voiceOptions.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
     }
 
     var selectedVoiceID: String {

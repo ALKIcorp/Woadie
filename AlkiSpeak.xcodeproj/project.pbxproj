@@ -27,6 +27,7 @@
 		A1000011 /* SpeechLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000013 /* SpeechLogView.swift */; };
 		A1000012 /* SpeechLogItemView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000014 /* SpeechLogItemView.swift */; };
 		A1000013 /* WoadieFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000015 /* WoadieFooter.swift */; };
+		A1000200 /* VoicesOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000200 /* VoicesOverlayView.swift */; };
 		A1000014 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000016 /* AppConfig.swift */; };
 		A1000015 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000017 /* AppStore.swift */; };
 		A1000107 /* KokoroEngineController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000107 /* KokoroEngineController.swift */; };
@@ -95,6 +96,7 @@
 		A2000013 /* SpeechLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechLogView.swift; sourceTree = "<group>"; };
 		A2000014 /* SpeechLogItemView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechLogItemView.swift; sourceTree = "<group>"; };
 		A2000015 /* WoadieFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieFooter.swift; sourceTree = "<group>"; };
+		A2000200 /* VoicesOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicesOverlayView.swift; sourceTree = "<group>"; };
 		A2000016 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		A2000017 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
 		A2000107 /* KokoroEngineController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokoroEngineController.swift; sourceTree = "<group>"; };
@@ -230,6 +232,7 @@
 				A2000013 /* SpeechLogView.swift */,
 				A2000014 /* SpeechLogItemView.swift */,
 				A2000015 /* WoadieFooter.swift */,
+				A2000200 /* VoicesOverlayView.swift */,
 				A2000027 /* SettingsOverlayView.swift */,
 			);
 			path = Sections;
@@ -426,6 +429,7 @@
 				A1000011 /* SpeechLogView.swift in Sources */,
 				A1000012 /* SpeechLogItemView.swift in Sources */,
 				A1000013 /* WoadieFooter.swift in Sources */,
+				A1000200 /* VoicesOverlayView.swift in Sources */,
 				A1000014 /* AppConfig.swift in Sources */,
 				A1000015 /* AppStore.swift in Sources */,
 				A1000107 /* KokoroEngineController.swift in Sources */,

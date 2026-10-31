@@ -6,11 +6,13 @@ import UniformTypeIdentifiers
 enum AppOverlay: Identifiable {
     case settings
     case storage
+    case voices(VoicesTab)
 
-    var id: Int {
+    var id: String {
         switch self {
-        case .settings: return 0
-        case .storage: return 1
+        case .settings: return "settings"
+        case .storage: return "storage"
+        case .voices: return "voices"
         }
     }
 }
@@ -18,6 +20,8 @@ enum AppOverlay: Identifiable {
 /// Dimmed modal container shared by the settings and storage overlays.
 struct OverlayContainer<Content: View>: View {
     let title: String
+    var maxWidth: CGFloat = 640
+    var maxHeight: CGFloat = 560
     let onClose: () -> Void
     @ViewBuilder var content: Content
 
@@ -48,7 +52,7 @@ struct OverlayContainer<Content: View>: View {
                     content
                 }
             }
-            .frame(maxWidth: 640, maxHeight: 560)
+            .frame(maxWidth: maxWidth, maxHeight: maxHeight)
             .padding(40)
         }
         .transition(.opacity)
@@ -337,8 +341,9 @@ private struct PlaybackTuningControls: View {
 
 /// Add/remove cloud voices and manage each provider's Keychain-stored key.
 /// Keys are write-only here: once saved they are never read back into the UI.
-private struct CloudVoicesSettings: View {
+struct CloudVoicesSettings: View {
     var model: AppModel
+    @Environment(\.openVoices) private var openVoices
     @State private var providerID = CloudProvider.openRouter.id
     @State private var apiKey = ""
     @State private var customBaseURL = ""
@@ -567,7 +572,9 @@ private struct CloudVoicesSettings: View {
                         }
                     }
                     if localModel.supportsVoiceCloning {
-                        VoiceCloneBuilder(model: model)
+                        WoadieButton(title: "Clone a Voice…", systemImage: "mic.circle", variant: .default) {
+                            openVoices(.new)
+                        }
                     }
                 }
             }
@@ -890,136 +897,5 @@ struct StorageDashboardView: View {
         }
         .padding(24)
         .frame(width: 360)
-    }
-}
-
-/// Records (or picks) a short clip of a voice and adds it as a cloned local
-/// voice. Recording shows a sentence to read, so the transcript fills itself.
-private struct VoiceCloneBuilder: View {
-    var model: AppModel
-    @StateObject private var recorder = VoiceCloneRecorder()
-    @State private var clipURL: URL?
-    @State private var transcript = ""
-    @State private var label = ""
-    @State private var errorMessage: String?
-    @State private var preview: NSSound?
-
-    static let script = "Hi, this is my voice. I'm recording a short sample so the app can learn how I sound, and then read anything I type back to me."
-
-    private var canAdd: Bool {
-        clipURL != nil && !recorder.isRecording
-            && !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Clone a voice")
-                .font(WoadieTheme.rounded(size: 12, weight: .semibold))
-            caption("Press Record and read this out loud in your normal voice, or choose a 5–20 second recording and type exactly what it says.")
-            Text("“\(Self.script)”")
-                .font(WoadieTheme.rounded(size: 12, weight: .regular))
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(WoadieTheme.surface, in: RoundedRectangle(cornerRadius: 10))
-                .textSelection(.enabled)
-
-            HStack(spacing: 8) {
-                WoadieButton(
-                    title: recorder.isRecording ? String(format: "Stop · %.0fs", recorder.elapsed) : "Record",
-                    systemImage: recorder.isRecording ? "stop.fill" : "mic.fill",
-                    variant: recorder.isRecording ? .primary : .default
-                ) {
-                    toggleRecording()
-                }
-                WoadieButton(title: "Choose File…", systemImage: "folder", variant: .default) {
-                    chooseFile()
-                }
-                .disabled(recorder.isRecording)
-                if let clipURL {
-                    IconActionButton(systemImage: "play.fill") {
-                        preview?.stop()
-                        preview = NSSound(contentsOf: clipURL, byReference: true)
-                        preview?.play()
-                    }
-                    .help("Listen to the recording")
-                    caption(clipURL.lastPathComponent.hasPrefix("woadie-clone-") ? "New recording" : clipURL.lastPathComponent)
-                        .lineLimit(1)
-                }
-            }
-
-            TextField("Exact words spoken in the recording", text: $transcript, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(2...4)
-            HStack {
-                TextField("Name, e.g. My voice", text: $label)
-                    .textFieldStyle(.roundedBorder)
-                WoadieButton(title: "Add Cloned Voice", systemImage: "person.wave.2", variant: .primary) {
-                    add()
-                }
-                .disabled(!canAdd)
-            }
-            if let errorMessage {
-                Text(errorMessage)
-                    .font(WoadieTheme.mono(size: 10, weight: .medium))
-                    .foregroundStyle(WoadieTheme.warning)
-            }
-            caption("Your recording stays on this Mac. Only clone voices you have permission to use.")
-        }
-        .padding(.top, 4)
-        .onDisappear {
-            _ = recorder.stop()
-            preview?.stop()
-        }
-    }
-
-    private func toggleRecording() {
-        errorMessage = nil
-        if recorder.isRecording {
-            clipURL = recorder.stop()
-            if transcript.isEmpty { transcript = Self.script }
-            return
-        }
-        Task {
-            do {
-                try await recorder.start()
-            } catch {
-                errorMessage = (error as? AlkiSpeakError)?.message ?? error.localizedDescription
-            }
-        }
-    }
-
-    private func chooseFile() {
-        errorMessage = nil
-        let panel = NSOpenPanel()
-        panel.title = "Choose a Voice Recording"
-        panel.prompt = "Choose"
-        panel.allowedContentTypes = [.audio]
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        clipURL = url
-        // A chosen file says something else, so the read-aloud script no longer fits.
-        if transcript == Self.script { transcript = "" }
-    }
-
-    private func add() {
-        guard let clipURL else { return }
-        do {
-            try model.addClonedLocalVoice(recording: clipURL, transcript: transcript, label: label)
-            if clipURL.lastPathComponent.hasPrefix("woadie-clone-") {
-                try? FileManager.default.removeItem(at: clipURL)
-            }
-            self.clipURL = nil
-            transcript = ""
-            label = ""
-            errorMessage = nil
-        } catch {
-            errorMessage = (error as? AlkiSpeakError)?.message ?? error.localizedDescription
-        }
-    }
-
-    private func caption(_ text: String) -> some View {
-        Text(text)
-            .font(WoadieTheme.mono(size: 10, weight: .medium))
-            .foregroundStyle(WoadieTheme.foregroundSubtle)
     }
 }

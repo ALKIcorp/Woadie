@@ -54,6 +54,7 @@ final class AppModel {
         set {
             guard newValue != store.selectedVoiceID else { return }
             store.selectedVoiceID = newValue
+            noteRecentVoice(newValue)
             saveWorkspace()
             prepareForSelectedVoice()
         }
@@ -315,6 +316,42 @@ final class AppModel {
 
     /// Downloads and loads a local model in the background with no time limit,
     /// so its first speech request doesn't have to.
+    enum ReadinessTone { case ready, busy, warning, off, problem }
+
+    /// The status pill in plain words, about the voice that's selected:
+    /// "Ready", "Warming up voice…", "Downloading voice (2.7 GB)…".
+    var readiness: (text: String, tone: ReadinessTone) {
+        if let cloud = store.cloudSettings.voice(withID: selectedVoice), cloud.provider == .localMLX {
+            switch localModelStates[cloud.model] {
+            case .preparing?:
+                let size = LocalVoiceCatalog.model(withID: cloud.model).map { String(format: " (%.1f GB)", $0.downloadGB) } ?? ""
+                return ("Downloading voice\(size)…", .busy)
+            case .failed?:
+                return ("Voice download failed", .problem)
+            case nil:
+                return ("Ready", .ready)
+            }
+        }
+        if NativeKokoroSpeechService.isNativeKokoroVoice(selectedVoice) {
+            switch nativeKokoroState {
+            case .loading: return ("Loading voice…", .busy)
+            case .failed: return ("Voice couldn't load", .problem)
+            case .off, .ready: return ("Ready", .ready)
+            }
+        }
+        // Standby wakes the engine on Generate, so it's ready as far as the user is concerned.
+        guard isSelectedVoicePythonKokoro, !isEngineOnStandby else { return ("Ready", .ready) }
+        switch status {
+        case .starting, .retrying: return ("Warming up voice…", .busy)
+        case .running, .idle: return ("Ready", .ready)
+        case .busy: return ("Working…", .busy)
+        case .degraded: return ("Ready · running slowly", .warning)
+        case .timedOut, .stalled: return ("Voice engine not responding", .warning)
+        case .stopped: return ("Voice engine off", .off)
+        case .failed: return ("Voice engine failed", .problem)
+        }
+    }
+
     func prepareLocalModel(_ modelID: String) {
         guard localModelStates[modelID] != .preparing else { return }
         localModelStates[modelID] = .preparing
@@ -573,6 +610,25 @@ final class AppModel {
     /// the same task, which keeps the override race-free.
     private func interruptForOverride() {
         pipeline.interrupt()
+    }
+
+    /// Speaks a short sample in `voiceID`, in its own language, without
+    /// changing the selected voice or adding anything to the log.
+    func previewVoice(_ voiceID: String) {
+        guard let option = store.voiceOptions.first(where: { $0.id == voiceID }) else { return }
+        if appMode == .quick {
+            pipeline.deleteActiveClips()
+        }
+        interruptForOverride()
+        store.clearErrorMessage()
+        let speakers = store.cloudSettings.voice(withID: voiceID)?.speakers?.map(\.name)
+        let text: String
+        if let speakers, speakers.count >= 2 {
+            text = "\(speakers[0]): Hi, I'm \(speakers[0]).\n\(speakers[1]): And I'm \(speakers[1]). This is how we sound."
+        } else {
+            text = VoiceNaming.sampleText(for: option)
+        }
+        pipeline.speak(text: text, voice: voiceID, dialogueSpeakers: speakers, addToHistory: false, targetLogEntryID: nil)
     }
 
     func speakExternalText(_ text: String) {
@@ -845,6 +901,16 @@ final class AppModel {
         }
     }
 
+    private static let recentVoicesKey = "AlkiSpeak.recentVoices"
+
+    private func noteRecentVoice(_ voiceID: String) {
+        var recent = store.recentVoiceIDs.filter { $0 != voiceID }
+        recent.insert(voiceID, at: 0)
+        store.recentVoiceIDs = Array(recent.prefix(VoiceGrouping.recentLimit + 1))
+        guard !AppConfig.isRunningUnitTests else { return }
+        UserDefaults.standard.set(store.recentVoiceIDs, forKey: Self.recentVoicesKey)
+    }
+
     private func loadPreferences() {
         store.appearance = AppAppearance.load()
         if let raw = UserDefaults.standard.string(forKey: "AlkiSpeak.appMode"), let mode = AppMode(rawValue: raw) {
@@ -854,6 +920,7 @@ final class AppModel {
             store.logMode = mode
         }
         store.voiceFavorites = favoritesStore.load()
+        store.recentVoiceIDs = UserDefaults.standard.stringArray(forKey: Self.recentVoicesKey) ?? []
         store.cloudSettings = dependencies.cloudSpeechSettings.load()
         store.playbackTuning = PlaybackTuning.load()
         dependencies.playbackCoordinator.applyTuning(store.playbackTuning)

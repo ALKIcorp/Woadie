@@ -7,7 +7,7 @@ struct StatusIndicatorView: View {
     @State private var breathing = false
     @State private var expanded = false
 
-    private var isStarting: Bool { model.status == .starting || model.status == .retrying }
+    private var isStarting: Bool { model.readiness.tone == .busy }
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
@@ -40,7 +40,7 @@ struct StatusIndicatorView: View {
                             .onAppear { breathing = true }
                     }
 
-                    Text(model.engineStatusLabel.uppercased())
+                    Text(model.readiness.text.uppercased())
                         .font(WoadieTheme.mono(size: 10, weight: .medium))
                         .lineLimit(1)
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
@@ -70,7 +70,7 @@ struct StatusIndicatorView: View {
                             value: Double(model.store.dashboardTelemetry.resourceSnapshot.memoryBytes ?? 0) / 1_048_576,
                             suffix: " MB"
                         )
-                        WoadieButton(title: "Restart Engine", variant: .primary) {
+                        WoadieButton(title: "Restart Kokoro Engine", variant: .primary) {
                             model.restartEngine()
                         }
                     }
@@ -102,16 +102,12 @@ struct StatusIndicatorView: View {
     }
 
     private var dotColor: Color {
-        if model.isEngineOnStandby { return WoadieTheme.foregroundSubtle }
-        switch model.status {
-        case .running, .idle:
-            return WoadieTheme.success
-        case .starting, .busy, .retrying:
-            return WoadieTheme.warning
-        case .degraded, .timedOut, .stalled:
-            return .yellow
-        case .stopped, .failed:
-            return WoadieTheme.destructive
+        switch model.readiness.tone {
+        case .ready: return WoadieTheme.success
+        case .busy: return WoadieTheme.warning
+        case .warning: return .yellow
+        case .off: return WoadieTheme.foregroundSubtle
+        case .problem: return WoadieTheme.destructive
         }
     }
 }

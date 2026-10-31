@@ -512,16 +512,35 @@ struct VoiceOption: Identifiable, Codable, Hashable {
     let source: VoiceSource
     let isAvailable: Bool
     let appleQuality: AppleVoiceQuality?
+    /// What the picker shows: a plain name ("Heart") and a short tag
+    /// ("Kokoro · American English · Female") instead of the raw label.
+    let name: String
+    let detail: String
+    /// Runs on this Mac (free and private) rather than through an online service.
+    let isOnDevice: Bool
 
     /// Apple voices synthesize locally; everything else routes through a server.
     var isLocal: Bool { source == .apple }
 
-    init(id: String, label: String, source: VoiceSource, isAvailable: Bool = true, appleQuality: AppleVoiceQuality? = nil) {
+    init(
+        id: String,
+        label: String,
+        source: VoiceSource,
+        isAvailable: Bool = true,
+        appleQuality: AppleVoiceQuality? = nil,
+        name: String? = nil,
+        detail: String? = nil,
+        isOnDevice: Bool? = nil
+    ) {
         self.id = id
         self.label = label
         self.source = source
         self.isAvailable = isAvailable
         self.appleQuality = appleQuality
+        let derived = VoiceNaming.describe(id: id, label: label, source: source, appleQuality: appleQuality)
+        self.name = name ?? derived.name
+        self.detail = detail ?? derived.detail
+        self.isOnDevice = isOnDevice ?? (source != .edge && source != .api)
     }
 
     /// Convenience initializer preserving the original `isLocal` call sites.
@@ -530,13 +549,123 @@ struct VoiceOption: Identifiable, Codable, Hashable {
     }
 }
 
+/// Turns raw voice IDs and labels ("Apple - Samantha [en-US]", "af_heart",
+/// "edge:en-US-AriaNeural") into a plain name and a short descriptive tag.
+enum VoiceNaming {
+    static func describe(id: String, label: String, source: VoiceSource, appleQuality: AppleVoiceQuality?) -> (name: String, detail: String) {
+        switch source {
+        case .apple:
+            var name = label.removingPrefix("Apple - ")
+            var locale: String?
+            if let open = name.lastIndex(of: "["), name.hasSuffix("]") {
+                locale = String(name[name.index(after: open)..<name.index(before: name.endIndex)])
+                name = String(name[..<open]).trimmingCharacters(in: .whitespaces)
+            }
+            let quality: String? = switch appleQuality {
+            case .highest: "Premium"
+            case .medium: "Enhanced"
+            case .low, nil: nil
+            }
+            return (name, (["Apple", locale, quality].compactMap { $0 }).joined(separator: " · "))
+        case .kokoro, .kokoroNative:
+            let raw = NativeKokoroSpeechService.stripPrefix(id)
+            let base = kokoro(raw)
+            let engine = source == .kokoroNative ? "Kokoro (Neural Engine)" : "Kokoro"
+            return (base.name, ([engine] + base.traits).joined(separator: " · "))
+        case .edge:
+            let raw = EdgeSpeechGenerationService.stripPrefix(id)
+            let parts = raw.split(separator: "-").map(String.init)
+            guard parts.count >= 3 else { return (raw, "Microsoft Edge") }
+            var name = parts[2...].joined(separator: "-")
+            for suffix in ["MultilingualNeural", "Neural"] where name.hasSuffix(suffix) {
+                name = String(name.dropLast(suffix.count))
+                break
+            }
+            return (name, "Microsoft Edge · \(parts[0])-\(parts[1])")
+        case .api:
+            return (label.removingPrefix("Cloud - ").removingSuffix(" (local)"), "Online")
+        }
+    }
+
+    /// A one-line introduction in the voice's own language, for previews.
+    static func sampleText(for voice: VoiceOption) -> String {
+        let name = voice.name
+        switch languageCode(for: voice) {
+        case "es": return "Hola, soy \(name). Así suena mi voz."
+        case "fr": return "Bonjour, je suis \(name). Voici ma voix."
+        case "it": return "Ciao, sono \(name). Questa è la mia voce."
+        case "pt": return "Olá, eu sou \(name). Esta é a minha voz."
+        case "de": return "Hallo, ich bin \(name). So klingt meine Stimme."
+        case "ja": return "こんにちは、\(name)です。これが私の声です。"
+        case "zh": return "你好，我是\(name)。这就是我的声音。"
+        case "hi": return "नमस्ते, मैं \(name) हूँ। मेरी आवाज़ ऐसी है।"
+        default: return "Hi, I'm \(name). This is how I sound."
+        }
+    }
+
+    /// The two-letter language of a voice, when its ID or label says.
+    static func languageCode(for voice: VoiceOption) -> String? {
+        switch voice.source {
+        case .kokoro, .kokoroNative:
+            let raw = NativeKokoroSpeechService.stripPrefix(voice.id)
+            let codes: [Character: String] = ["a": "en", "b": "en", "e": "es", "f": "fr", "h": "hi", "i": "it", "j": "ja", "p": "pt", "z": "zh"]
+            return raw.first.flatMap { codes[$0] }
+        case .edge:
+            return EdgeSpeechGenerationService.stripPrefix(voice.id).split(separator: "-").first.map(String.init)
+        case .apple:
+            guard let open = voice.label.lastIndex(of: "[") else { return nil }
+            return String(voice.label[voice.label.index(after: open)...].prefix(2))
+        case .api:
+            return nil
+        }
+    }
+
+    /// Kokoro IDs are `<language><gender>_<name>`, e.g. `af_heart`, `bm_george`.
+    static func kokoro(_ id: String) -> (name: String, traits: [String]) {
+        let parts = id.split(separator: "_", maxSplits: 1).map(String.init)
+        guard parts.count == 2, parts[0].count == 2 else { return (id, []) }
+        let language: String? = switch parts[0].first {
+        case "a": "American English"
+        case "b": "British English"
+        case "e": "Spanish"
+        case "f": "French"
+        case "h": "Hindi"
+        case "i": "Italian"
+        case "j": "Japanese"
+        case "p": "Portuguese"
+        case "z": "Mandarin"
+        default: nil
+        }
+        let gender: String? = switch parts[0].last {
+        case "f": "Female"
+        case "m": "Male"
+        default: nil
+        }
+        let name = parts[1].split(separator: "_").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
+        return (name, [language, gender].compactMap { $0 })
+    }
+}
+
+private extension String {
+    func removingPrefix(_ prefix: String) -> String {
+        hasPrefix(prefix) ? String(dropFirst(prefix.count)) : self
+    }
+
+    func removingSuffix(_ suffix: String) -> String {
+        hasSuffix(suffix) ? String(dropLast(suffix.count)) : self
+    }
+}
+
+/// Groups voices the way people choose them: favorites and recent first, then
+/// what runs on this Mac (free, private) versus online services. Apple's
+/// novelty and low-quality voices sit in their own section at the end.
 enum VoiceGrouping {
     static let favoritesSectionID = "favorites"
-
-    /// Order in which provider sections appear after the synthetic Favorites group.
-    /// Derived from `VoiceSource.allCases` so a newly added source automatically
-    /// gets its own section without needing a second list kept in sync.
-    static let sourceOrder: [VoiceSource] = VoiceSource.allCases
+    static let recentSectionID = "recent"
+    static let onDeviceSectionID = "on-device"
+    static let onlineSectionID = "online"
+    static let moreAppleSectionID = "apple-more"
+    static let recentLimit = 5
 
     struct Section: Identifiable, Hashable {
         let id: String
@@ -544,48 +673,59 @@ enum VoiceGrouping {
         let voices: [VoiceOption]
     }
 
-    /// Builds the `Favorites`, then per-source sections. Favorited voices appear
-    /// both in the Favorites group and in their own provider section. Empty
-    /// sections are omitted so unsupported providers stay hidden until populated.
-    static func sections(voices: [VoiceOption], favorites: Set<String>) -> [Section] {
+    /// Favorited and recent voices also appear in their own section below.
+    /// Empty sections are omitted.
+    static func sections(voices: [VoiceOption], favorites: Set<String>, recent: [String] = []) -> [Section] {
         var result: [Section] = []
         let favoriteVoices = voices.filter { favorites.contains($0.id) }
         if !favoriteVoices.isEmpty {
             result.append(Section(id: favoritesSectionID, title: "Favorites", voices: favoriteVoices))
         }
-        for source in sourceOrder {
-            if source == .apple {
-                let appleVoices = voices.filter { $0.source == .apple }
-                if !appleVoices.isEmpty {
-                    let highest = appleVoices.filter { $0.appleQuality == .highest }
-                    let medium = appleVoices.filter { $0.appleQuality == .medium }
-                    let low = appleVoices.filter { $0.appleQuality == .low }
-
-                    if !highest.isEmpty {
-                        result.append(Section(id: "apple_highest", title: "Apple - Highest Quality", voices: highest))
-                    }
-                    if !medium.isEmpty {
-                        result.append(Section(id: "apple_medium", title: "Apple - Medium Quality", voices: medium))
-                    }
-                    if !low.isEmpty {
-                        result.append(Section(id: "apple_low", title: "Apple - Low Quality", voices: low))
-                    }
-                    // Voices built without a quality grade (e.g. via the
-                    // `isLocal:` initializer) would otherwise match no tier
-                    // and silently vanish from the picker.
-                    let ungraded = appleVoices.filter { $0.appleQuality == nil }
-                    if !ungraded.isEmpty {
-                        result.append(Section(id: VoiceSource.apple.rawValue, title: VoiceSource.apple.title, voices: ungraded))
-                    }
-                }
-            } else {
-                let group = voices.filter { $0.source == source }
-                if !group.isEmpty {
-                    result.append(Section(id: source.rawValue, title: source.title, voices: group))
-                }
+        let byID = Dictionary(voices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let recentVoices = recent.compactMap { byID[$0] }.prefix(recentLimit)
+        if !recentVoices.isEmpty {
+            result.append(Section(id: recentSectionID, title: "Recent", voices: Array(recentVoices)))
+        }
+        let isMoreApple: (VoiceOption) -> Bool = { $0.source == .apple && $0.appleQuality == .low }
+        // Voices you added yourself, then neural voices, then Apple's best.
+        let rank: (VoiceOption) -> Int = { voice in
+            switch voice.source {
+            case .api: return 0
+            case .kokoroNative: return 1
+            case .kokoro: return 2
+            case .apple: return voice.appleQuality == .highest ? 3 : voice.appleQuality == .medium ? 4 : 5
+            case .edge: return 6
             }
         }
+        let onDevice = voices.filter { $0.isOnDevice && !isMoreApple($0) }
+        if !onDevice.isEmpty {
+            result.append(Section(id: onDeviceSectionID, title: "On this Mac", voices: stableSorted(onDevice, by: rank)))
+        }
+        let online = voices.filter { !$0.isOnDevice }
+        if !online.isEmpty {
+            result.append(Section(id: onlineSectionID, title: "Online", voices: stableSorted(online, by: rank)))
+        }
+        let moreApple = voices.filter(isMoreApple)
+        if !moreApple.isEmpty {
+            result.append(Section(id: moreAppleSectionID, title: "More Apple voices", voices: moreApple))
+        }
         return result
+    }
+
+    private static func stableSorted(_ voices: [VoiceOption], by rank: (VoiceOption) -> Int) -> [VoiceOption] {
+        voices.enumerated()
+            .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }
+            .map(\.element)
+    }
+
+    /// Voices whose name, tag or label contains every word of `query`.
+    static func search(_ voices: [VoiceOption], query: String) -> [VoiceOption] {
+        let words = query.lowercased().split(separator: " ")
+        guard !words.isEmpty else { return voices }
+        return voices.filter { voice in
+            let haystack = "\(voice.name) \(voice.detail) \(voice.label)".lowercased()
+            return words.allSatisfy { haystack.contains($0) }
+        }
     }
 }
 

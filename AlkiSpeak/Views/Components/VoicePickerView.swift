@@ -7,6 +7,8 @@ struct VoicePickerView: View {
     let sections: [AlkiDropdownSection]
     let onStep: (Int) -> Void
     let onToggleFavorite: (String) -> Void
+    let onPreview: (String) -> Void
+    let onNewVoice: () -> Void
 
     var body: some View {
         AlkiDropdown(
@@ -16,7 +18,10 @@ struct VoicePickerView: View {
             placeholder: "Select Voice",
             onSelect: { selection = $0 },
             onToggleFavorite: onToggleFavorite,
-            onStep: onStep
+            onStep: onStep,
+            searchPrompt: "Search voices, languages, accents",
+            onPreview: onPreview,
+            footer: .init(title: "New Voice…", systemImage: "plus.circle", action: onNewVoice)
         )
     }
 
@@ -28,8 +33,8 @@ struct VoicePickerView: View {
                 options: section.voices.map { voice in
                     AlkiDropdownOption(
                         id: voice.id,
-                        label: voice.label,
-                        detail: voice.source.isSynthesisSupported ? nil : "Coming soon",
+                        label: voice.name,
+                        detail: voice.source.isSynthesisSupported ? voice.detail : "Coming soon",
                         isFavorite: favorites.contains(voice.id),
                         isEnabled: voice.isAvailable && voice.source.isSynthesisSupported
                     )

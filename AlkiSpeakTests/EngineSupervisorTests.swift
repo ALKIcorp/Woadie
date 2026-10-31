@@ -361,7 +361,7 @@ final class EngineSupervisorTests: XCTestCase {
             VoiceOption(id: "af_sky", label: "Kokoro Sky", source: .kokoro)
         ]
 
-        XCTAssertEqual(model.selectedVoiceLabel, "Kokoro Sky")
+        XCTAssertEqual(model.selectedVoiceLabel, "Sky")
         XCTAssertFalse(model.voiceDropdownSections.map(\.title).contains("Favorites"))
 
         store.voiceFavorites.insert("af_sky")
@@ -849,21 +849,24 @@ final class EngineSupervisorTests: XCTestCase {
 
     // MARK: Voice grouping, favorites, availability
 
-    func testVoiceGroupingProducesFavoritesAppleAndKokoroSections() {
+    func testVoiceGroupingPutsFavoritesAndRecentFirstThenOnDeviceAndOnline() {
         let voices = [
-            VoiceOption(id: "apple:a", label: "Apple A", source: .apple),
-            VoiceOption(id: "af_heart", label: "Kokoro Heart", source: .kokoro),
-            VoiceOption(id: "af_sky", label: "Kokoro Sky", source: .kokoro),
+            VoiceOption(id: "apple:a", label: "Apple - Alex [en-US]", source: .apple, appleQuality: .highest),
+            VoiceOption(id: "af_heart", label: "Kokoro - af_heart", source: .kokoro),
+            VoiceOption(id: "af_sky", label: "Kokoro - af_sky", source: .kokoro),
+            VoiceOption(id: "edge:en-US-AriaNeural", label: "Edge - en-US-AriaNeural", source: .edge),
         ]
 
-        let sections = VoiceGrouping.sections(voices: voices, favorites: ["af_heart"])
+        let sections = VoiceGrouping.sections(voices: voices, favorites: ["af_heart"], recent: ["af_sky", "missing"])
 
-        XCTAssertEqual(sections.map(\.title), ["Favorites", "Apple", "Kokoro"])
-        XCTAssertEqual(sections.first?.voices.map(\.id), ["af_heart"])
-        XCTAssertEqual(sections.last?.voices.map(\.id), ["af_heart", "af_sky"])
+        XCTAssertEqual(sections.map(\.title), ["Favorites", "Recent", "On this Mac", "Online"])
+        XCTAssertEqual(sections[0].voices.map(\.id), ["af_heart"])
+        XCTAssertEqual(sections[1].voices.map(\.id), ["af_sky"], "Unknown recent IDs are skipped")
+        XCTAssertEqual(sections[2].voices.map(\.id), ["af_heart", "af_sky", "apple:a"], "Neural voices before Apple's")
+        XCTAssertEqual(sections[3].voices.map(\.id), ["edge:en-US-AriaNeural"])
     }
 
-    func testVoiceGroupingKeepsUngradedAppleVoicesAfterQualityTiers() {
+    func testVoiceGroupingMovesLowQualityAppleVoicesToTheEnd() {
         let voices = [
             VoiceOption(id: "apple:p", label: "Premium", source: .apple, appleQuality: .highest),
             VoiceOption(id: "apple:c", label: "Compact", source: .apple, appleQuality: .low),
@@ -872,14 +875,72 @@ final class EngineSupervisorTests: XCTestCase {
 
         let sections = VoiceGrouping.sections(voices: voices, favorites: [])
 
-        XCTAssertEqual(sections.map(\.title), ["Apple - Highest Quality", "Apple - Low Quality", "Apple"])
-        XCTAssertEqual(sections.flatMap(\.voices).map(\.id).sorted(), ["apple:c", "apple:p", "apple:u"])
+        XCTAssertEqual(sections.map(\.title), ["On this Mac", "More Apple voices"])
+        XCTAssertEqual(sections[0].voices.map(\.id), ["apple:p", "apple:u"])
+        XCTAssertEqual(sections[1].voices.map(\.id), ["apple:c"])
     }
 
-    func testVoiceGroupingOmitsFavoritesSectionWhenEmpty() {
+    func testVoiceGroupingOmitsEmptySections() {
         let voices = [VoiceOption(id: "af_heart", label: "Heart", source: .kokoro)]
 
-        XCTAssertEqual(VoiceGrouping.sections(voices: voices, favorites: []).map(\.title), ["Kokoro"])
+        XCTAssertEqual(VoiceGrouping.sections(voices: voices, favorites: []).map(\.title), ["On this Mac"])
+    }
+
+    func testVoicesGetPlainNamesAndTags() {
+        let apple = VoiceOption(id: "apple:x", label: "Apple - Samantha [en-US]", source: .apple, appleQuality: .highest)
+        XCTAssertEqual(apple.name, "Samantha")
+        XCTAssertEqual(apple.detail, "Apple · en-US · Premium")
+        XCTAssertTrue(apple.isOnDevice)
+
+        let kokoro = VoiceOption(id: "bm_george", label: "Kokoro - bm_george", source: .kokoro)
+        XCTAssertEqual(kokoro.name, "George")
+        XCTAssertEqual(kokoro.detail, "Kokoro · British English · Male")
+
+        let edge = VoiceOption(id: "edge:en-US-AndrewMultilingualNeural", label: "Edge - x", source: .edge)
+        XCTAssertEqual(edge.name, "Andrew")
+        XCTAssertEqual(edge.detail, "Microsoft Edge · en-US")
+        XCTAssertFalse(edge.isOnDevice)
+
+        XCTAssertEqual(VoiceNaming.sampleText(for: VoiceOption(id: "ef_dora", label: "", source: .kokoro)), "Hola, soy Dora. Así suena mi voz.")
+        XCTAssertEqual(VoiceNaming.sampleText(for: kokoro), "Hi, I'm George. This is how I sound.")
+    }
+
+    func testAddedVoicesGetPlainNames() {
+        let preset = CloudVoice(providerID: CloudProvider.localMLX.id, model: "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit", voice: "Ryan", label: "Qwen3 Ryan (local)")
+        XCTAssertEqual(VoiceCatalogController.naming(for: preset).name, "Ryan")
+        XCTAssertEqual(VoiceCatalogController.naming(for: preset).detail, "Qwen3-TTS 1.7B")
+
+        let clone = CloudVoice(providerID: CloudProvider.localMLX.id, model: LocalVoiceCatalog.cloningModelID, voice: "", label: "My voice (local)", referenceAudioPath: "/tmp/r.wav", referenceText: "Hi")
+        XCTAssertEqual(VoiceCatalogController.naming(for: clone).name, "My voice")
+        XCTAssertEqual(VoiceCatalogController.naming(for: clone).detail, "Cloned · On this Mac")
+    }
+
+    func testVoiceSearchMatchesEveryWordAcrossNameAndTag() {
+        let voices = [
+            VoiceOption(id: "bf_emma", label: "Kokoro - bf_emma", source: .kokoro),
+            VoiceOption(id: "af_bella", label: "Kokoro - af_bella", source: .kokoro),
+        ]
+
+        XCTAssertEqual(VoiceGrouping.search(voices, query: "british female").map(\.id), ["bf_emma"])
+        XCTAssertEqual(VoiceGrouping.search(voices, query: "BELLA").map(\.id), ["af_bella"])
+        XCTAssertEqual(VoiceGrouping.search(voices, query: "").count, 2)
+    }
+
+    @MainActor
+    func testPickingAVoiceAddsItToRecent() {
+        let store = AppStore()
+        store.activeWorkspace.selectedVoiceID = "apple:start"
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+        store.voiceOptions = [
+            VoiceOption(id: "af_heart", label: "Kokoro - af_heart", source: .kokoro),
+            VoiceOption(id: "af_sky", label: "Kokoro - af_sky", source: .kokoro)
+        ]
+
+        model.selectedVoice = "af_heart"
+        model.selectedVoice = "af_sky"
+
+        XCTAssertEqual(Array(store.recentVoiceIDs.prefix(2)), ["af_sky", "af_heart"])
+        XCTAssertEqual(model.voiceSections.first { $0.id == VoiceGrouping.recentSectionID }?.voices.map(\.id).prefix(2), ["af_sky", "af_heart"])
     }
 
     func testEveryVoiceSourceIsSynthesisReady() {
@@ -905,7 +966,9 @@ final class EngineSupervisorTests: XCTestCase {
         let option = model.voiceOptions.first { $0.id == added.voiceID }
         XCTAssertEqual(option?.source, .api)
         XCTAssertEqual(option?.label, "Cloud - Local mlx-audio · af_heart")
-        XCTAssertTrue(model.voiceSections.map(\.title).contains("Cloud"))
+        XCTAssertEqual(option?.isOnDevice, true, "A local mlx-audio voice runs on this Mac")
+        XCTAssertEqual(option?.name, "Local mlx-audio · af_heart")
+        XCTAssertTrue(model.voiceSections.first { $0.title == "On this Mac" }?.voices.contains { $0.id == added.voiceID } ?? false)
 
         model.inputText = "Hello"
         XCTAssertFalse(model.isEngineRunning)
@@ -1026,7 +1089,10 @@ final class EngineSupervisorTests: XCTestCase {
         let heart = model.voiceOptions.first { $0.id == "kokoro-native:af_heart" }
         XCTAssertEqual(heart?.label, "Kokoro Native - af_heart")
         XCTAssertEqual(heart?.source, .kokoroNative)
-        XCTAssertTrue(model.voiceSections.map(\.title).contains("Kokoro (Native)"))
+        XCTAssertEqual(heart?.name, "Heart")
+        XCTAssertEqual(heart?.detail, "Kokoro (Neural Engine) · American English · Female")
+        let onDevice = model.voiceSections.first { $0.id == VoiceGrouping.onDeviceSectionID }
+        XCTAssertTrue(onDevice?.voices.contains { $0.id == "kokoro-native:af_heart" } ?? false)
 
         model.selectedVoice = "kokoro-native:af_heart"
         model.inputText = "Hello"
