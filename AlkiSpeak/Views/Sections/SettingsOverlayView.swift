@@ -100,6 +100,14 @@ struct SettingsOverlayView: View {
                     }
 
                     DisclosureSettingRow(
+                        title: "Native Kokoro",
+                        systemImage: "cpu",
+                        subtitle: nativeKokoroSubtitle
+                    ) {
+                        NativeKokoroSettings(model: model)
+                    }
+
+                    DisclosureSettingRow(
                         title: "Storage",
                         systemImage: "internaldrive",
                         subtitle: ByteCountFormatter.string(fromByteCount: model.totalStorageBytes, countStyle: .file) + " across \(model.clipInventory.count) clips"
@@ -120,6 +128,60 @@ struct SettingsOverlayView: View {
                     }
                 }
                 .padding(20)
+            }
+        }
+    }
+}
+
+extension SettingsOverlayView {
+    var nativeKokoroSubtitle: String {
+        switch model.nativeKokoroState {
+        case .off: return "Kokoro on the Neural Engine, without the Python engine"
+        case .loading: return "Loading…"
+        case .ready(let count): return "On · \(count) voices"
+        case .failed: return "Couldn't load"
+        }
+    }
+}
+
+/// Turns the in-process CoreML Kokoro on or off. It sits beside the Python
+/// Kokoro engine rather than replacing it.
+private struct NativeKokoroSettings: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Runs Kokoro-82M inside AlkiSpeak on the Neural Engine via speech-swift (Apache-2.0). Its voices appear under Kokoro (Native) and work even when the Python Kokoro engine is stopped.")
+                .font(WoadieTheme.mono(size: 10, weight: .medium))
+                .foregroundStyle(WoadieTheme.foregroundSubtle)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                switch model.nativeKokoroState {
+                case .off:
+                    WoadieButton(title: "Turn On (~170 MB download)", systemImage: "arrow.down.circle", variant: .primary) {
+                        model.enableNativeKokoro()
+                    }
+                case .loading:
+                    ProgressView().controlSize(.small)
+                    Text("Downloading and loading the model…")
+                        .font(WoadieTheme.mono(size: 10, weight: .medium))
+                        .foregroundStyle(WoadieTheme.foregroundSubtle)
+                case .ready:
+                    WoadieButton(title: "Turn Off", systemImage: "power", variant: .default) {
+                        model.disableNativeKokoro()
+                    }
+                case .failed(let message):
+                    WoadieButton(title: "Retry", systemImage: "arrow.clockwise", variant: .default) {
+                        model.enableNativeKokoro()
+                    }
+                    WoadieButton(title: "Turn Off", systemImage: "power", variant: .default) {
+                        model.disableNativeKokoro()
+                    }
+                    Text(message)
+                        .font(WoadieTheme.mono(size: 10, weight: .medium))
+                        .foregroundStyle(WoadieTheme.destructive)
+                        .lineLimit(2)
+                }
             }
         }
     }

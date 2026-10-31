@@ -477,6 +477,7 @@ struct SavedLogEntry: Identifiable, Codable, Hashable {
 enum VoiceSource: String, Codable, Hashable, CaseIterable {
     case apple
     case kokoro
+    case kokoroNative
     case edge
     case api
 
@@ -484,6 +485,7 @@ enum VoiceSource: String, Codable, Hashable, CaseIterable {
         switch self {
         case .apple: return "Apple"
         case .kokoro: return "Kokoro"
+        case .kokoroNative: return "Kokoro (Native)"
         case .edge: return "Edge"
         case .api: return "Cloud"
         }
@@ -491,7 +493,7 @@ enum VoiceSource: String, Codable, Hashable, CaseIterable {
 
     var isSynthesisSupported: Bool {
         switch self {
-        case .apple, .kokoro, .edge, .api: return true
+        case .apple, .kokoro, .kokoroNative, .edge, .api: return true
         }
     }
 }

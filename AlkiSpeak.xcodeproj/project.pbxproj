@@ -47,10 +47,12 @@
 		A1000028 /* EdgeSpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000028 /* EdgeSpeechService.swift */; };
 		A1000040 /* CloudSpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000040 /* CloudSpeechService.swift */; };
 		A1000041 /* MLXAudioServerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000041 /* MLXAudioServerManager.swift */; };
+		A1000042 /* NativeKokoroSpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000042 /* NativeKokoroSpeechService.swift */; };
 		A1000029 /* WoadieLiquidGlassKnob.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000029 /* WoadieLiquidGlassKnob.swift */; };
 		B1000001 /* EngineSupervisorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000001 /* EngineSupervisorTests.swift */; };
 		B1000002 /* EdgeSpeechServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000003 /* EdgeSpeechServiceTests.swift */; };
 		B1000010 /* CloudSpeechServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2000010 /* CloudSpeechServiceTests.swift */; };
+		C1000003 /* KokoroTTS in Frameworks */ = {isa = PBXBuildFile; productRef = C1000002 /* KokoroTTS */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -106,6 +108,7 @@
 		A2000028 /* EdgeSpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSpeechService.swift; sourceTree = "<group>"; };
 		A2000040 /* CloudSpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSpeechService.swift; sourceTree = "<group>"; };
 		A2000041 /* MLXAudioServerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXAudioServerManager.swift; sourceTree = "<group>"; };
+		A2000042 /* NativeKokoroSpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeKokoroSpeechService.swift; sourceTree = "<group>"; };
 		A2000029 /* WoadieLiquidGlassKnob.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieLiquidGlassKnob.swift; sourceTree = "<group>"; };
 		B2000001 /* EngineSupervisorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineSupervisorTests.swift; sourceTree = "<group>"; };
 		B2000002 /* WoadieTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WoadieTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -118,6 +121,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C1000003 /* KokoroTTS in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -248,6 +252,7 @@
 				A2000028 /* EdgeSpeechService.swift */,
 				A2000040 /* CloudSpeechService.swift */,
 				A2000041 /* MLXAudioServerManager.swift */,
+				A2000042 /* NativeKokoroSpeechService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -296,6 +301,9 @@
 			dependencies = (
 			);
 			name = Woadie;
+			packageProductDependencies = (
+				C1000002 /* KokoroTTS */,
+			);
 			productName = Woadie;
 			productReference = A2000006 /* Woadie.app */;
 			productType = "com.apple.product-type.application";
@@ -341,6 +349,10 @@
 				Base,
 			);
 			mainGroup = A3000000;
+			packageReferences = (
+				C1000001 /* XCRemoteSwiftPackageReference "speech-swift" */,
+				C1000004 /* XCRemoteSwiftPackageReference "swift-collections" */,
+			);
 			productRefGroup = A3000002 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -413,6 +425,7 @@
 				A1000028 /* EdgeSpeechService.swift in Sources */,
 				A1000040 /* CloudSpeechService.swift in Sources */,
 				A1000041 /* MLXAudioServerManager.swift in Sources */,
+				A1000042 /* NativeKokoroSpeechService.swift in Sources */,
 				A1000029 /* WoadieLiquidGlassKnob.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -489,7 +502,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.6;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.alki.Woadie;
 				PRODUCT_NAME = Woadie;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -511,7 +524,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.6;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.alki.Woadie;
 				PRODUCT_NAME = Woadie;
 				SWIFT_VERSION = 5.0;
@@ -530,7 +543,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.6;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.alki.WoadieTests;
 				PRODUCT_NAME = WoadieTests;
 				SWIFT_VERSION = 5.0;
@@ -550,7 +563,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.6;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.alki.WoadieTests;
 				PRODUCT_NAME = WoadieTests;
 				SWIFT_VERSION = 5.0;
@@ -589,6 +602,33 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		C1000001 /* XCRemoteSwiftPackageReference "speech-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/soniqo/speech-swift";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.0.29;
+			};
+		};
+		C1000004 /* XCRemoteSwiftPackageReference "swift-collections" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-collections.git";
+			requirement = {
+				kind = exactVersion;
+				version = 1.6.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C1000002 /* KokoroTTS */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C1000001 /* XCRemoteSwiftPackageReference "speech-swift" */;
+			productName = KokoroTTS;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = A4000000 /* Project object */;
 }

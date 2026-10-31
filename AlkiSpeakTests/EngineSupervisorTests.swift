@@ -828,6 +828,31 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     @MainActor
+    func testNativeKokoroTurnsOnAndOffInTheVoicePicker() async {
+        let model = AppModel(store: AppStore(), dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+        XCTAssertEqual(model.nativeKokoroState, .off)
+        XCTAssertFalse(model.voiceOptions.contains { $0.source == .kokoroNative })
+
+        model.enableNativeKokoro()
+        for _ in 0..<200 where model.nativeKokoroState != .ready(voiceCount: 2) { await Task.yield() }
+        XCTAssertEqual(model.nativeKokoroState, .ready(voiceCount: 2))
+        let heart = model.voiceOptions.first { $0.id == "kokoro-native:af_heart" }
+        XCTAssertEqual(heart?.label, "Kokoro Native - af_heart")
+        XCTAssertEqual(heart?.source, .kokoroNative)
+        XCTAssertTrue(model.voiceSections.map(\.title).contains("Kokoro (Native)"))
+
+        model.selectedVoice = "kokoro-native:af_heart"
+        model.inputText = "Hello"
+        XCTAssertFalse(model.isEngineRunning)
+        XCTAssertTrue(model.canSpeak, "Native Kokoro must not wait on the Python engine")
+
+        model.disableNativeKokoro()
+        XCTAssertEqual(model.nativeKokoroState, .off)
+        XCTAssertFalse(model.voiceOptions.contains { $0.source == .kokoroNative })
+        XCTAssertNotEqual(model.selectedVoice, "kokoro-native:af_heart")
+    }
+
+    @MainActor
     func testCloudAPIKeyRoundTripsThroughSecretStore() {
         let secrets = InMemorySecretStore()
         let model = AppModel(store: AppStore(), dependencies: .test(engineSupervisor: FakeEngineSupervisor(), secretStore: secrets))
@@ -1345,7 +1370,11 @@ private extension AppDependencies {
         secretStore: SecretStoring = InMemorySecretStore(),
         localVoiceServer: LocalVoiceServerEnsuring = FakeLocalVoiceServer(),
         elevenLabsCatalog: ElevenLabsCatalogFetching = FakeElevenLabsCatalog(),
-        cartesiaVoices: CartesiaVoiceFetching = FakeCartesiaVoices()
+        cartesiaVoices: CartesiaVoiceFetching = FakeCartesiaVoices(),
+        nativeKokoroService: NativeKokoroSpeechService = NativeKokoroSpeechService(
+            defaults: UserDefaults(suiteName: "WoadieTests.native.\(UUID().uuidString)")!,
+            loadModel: { FakeKokoroModel() }
+        )
     ) -> AppDependencies {
         AppDependencies(
             engineSupervisor: engineSupervisor,
@@ -1357,6 +1386,7 @@ private extension AppDependencies {
             localVoiceServer: localVoiceServer,
             elevenLabsCatalog: elevenLabsCatalog,
             cartesiaVoices: cartesiaVoices,
+            nativeKokoroService: nativeKokoroService,
             playbackCoordinator: playbackCoordinator,
             localSpeechService: localSpeechService,
             selectedTextReader: selectedTextReader ?? FakeSelectedTextReader(result: .noSelection),

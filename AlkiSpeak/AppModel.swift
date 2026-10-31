@@ -333,6 +333,59 @@ final class AppModel: ObservableObject {
         addCloudVoice(provider: .localMLX, model: model.id, voice: voice.name, label: voice.label)
     }
 
+    // MARK: Native Kokoro (CoreML)
+
+    enum NativeKokoroState: Equatable {
+        case off
+        case loading
+        case ready(voiceCount: Int)
+        case failed(String)
+    }
+
+    @Published private(set) var nativeKokoroState: NativeKokoroState = .off
+
+    var isNativeKokoroEnabled: Bool { dependencies.nativeKokoroService.isEnabled }
+
+    /// Turns native Kokoro on, downloading the CoreML model (~170 MB) on first
+    /// use, then lists its voices under "Kokoro (Native)".
+    func enableNativeKokoro() {
+        dependencies.nativeKokoroService.isEnabled = true
+        loadNativeKokoro()
+    }
+
+    func disableNativeKokoro() {
+        dependencies.nativeKokoroService.isEnabled = false
+        nativeKokoroState = .off
+        if NativeKokoroSpeechService.isNativeKokoroVoice(selectedVoice) {
+            // `mergeVoiceOptions` keeps the selected ID alive on purpose.
+            selectedVoice = AppConfig.defaultVoice
+        }
+        mergeVoiceOptions(remote: store.voiceOptions
+            .filter { !$0.isLocal && $0.source != .kokoroNative }
+            .map(\.id))
+    }
+
+    private func loadNativeKokoro() {
+        nativeKokoroState = .loading
+        Task {
+            do {
+                let count = try await dependencies.nativeKokoroService.prepare()
+                let native = try await dependencies.nativeKokoroService.fetchVoices()
+                guard dependencies.nativeKokoroService.isEnabled else { return }
+                let others = store.voiceOptions
+                    .filter { !$0.isLocal && $0.source != .kokoroNative }
+                    .map(\.id)
+                mergeVoiceOptions(remote: others + native)
+                // Report ready only once the voices are in the picker.
+                nativeKokoroState = .ready(voiceCount: count)
+            } catch {
+                let message = (error as? AlkiSpeakError)?.message ?? error.localizedDescription
+                nativeKokoroState = .failed(message)
+                consoleTrace("native Kokoro load failed error=\(String(describing: error))")
+            }
+        }
+    }
+
     /// The account's Cartesia voices, for the Settings picker.
     func loadCartesiaVoices() async throws -> [CartesiaCatalog.Voice] {
         try await dependencies.cartesiaVoices.fetchVoices()
@@ -385,11 +438,13 @@ final class AppModel: ObservableObject {
     private var isSelectedVoiceEngineIndependent: Bool {
         selectedVoice.hasPrefix(EdgeSpeechGenerationService.idPrefix)
             || CloudSpeechGenerationService.isCloudVoice(selectedVoice)
+            || NativeKokoroSpeechService.isNativeKokoroVoice(selectedVoice)
     }
 
     private func remoteService(for voice: String) -> SpeechGenerating {
         if voice.hasPrefix(EdgeSpeechGenerationService.idPrefix) { return dependencies.edgeSpeechService }
         if CloudSpeechGenerationService.isCloudVoice(voice) { return dependencies.cloudSpeechService }
+        if NativeKokoroSpeechService.isNativeKokoroVoice(voice) { return dependencies.nativeKokoroService }
         return dependencies.generationService
     }
 
@@ -430,6 +485,9 @@ final class AppModel: ObservableObject {
             Task { await fetchVoices() }
             if store.cloudSettings.voices.contains(where: { $0.providerID == CloudProvider.localMLX.id }) {
                 warmUpLocalVoiceServer()
+            }
+            if dependencies.nativeKokoroService.isEnabled {
+                loadNativeKokoro()
             }
         } else {
             consoleTrace("unit test mode detected; skipping auto-start")
@@ -1183,10 +1241,12 @@ final class AppModel: ObservableObject {
         async let kokoroResult = fetchVoicesResult(from: dependencies.generationService, label: "kokoro")
         async let edgeResult = fetchVoicesResult(from: dependencies.edgeSpeechService, label: "edge")
         async let cloudResult = fetchVoicesResult(from: dependencies.cloudSpeechService, label: "cloud")
-        let (kokoro, edge, cloud) = await (kokoroResult, edgeResult, cloudResult)
+        async let nativeResult = fetchVoicesResult(from: dependencies.nativeKokoroService, label: "kokoro-native")
+        let (kokoro, edge, cloud, native) = await (kokoroResult, edgeResult, cloudResult, nativeResult)
 
         var combined: [String] = []
         if let kokoro { combined += kokoro }
+        if let native { combined += native }
         if let edge { combined += edge }
         if let cloud { combined += cloud }
 
@@ -1232,6 +1292,9 @@ final class AppModel: ObservableObject {
             if CloudSpeechGenerationService.isCloudVoice(id) {
                 let label = store.cloudSettings.voice(withID: id)?.label ?? "Removed voice"
                 return VoiceOption(id: id, label: "Cloud - \(label)", source: .api)
+            }
+            if NativeKokoroSpeechService.isNativeKokoroVoice(id) {
+                return VoiceOption(id: id, label: "Kokoro Native - \(NativeKokoroSpeechService.stripPrefix(id))", source: .kokoroNative)
             }
             return VoiceOption(id: id, label: "Kokoro - \(id)", source: .kokoro)
         }
@@ -1529,6 +1592,7 @@ final class AppModel: ObservableObject {
         if voiceID.hasPrefix("apple:") { return "apple" }
         if voiceID.hasPrefix(EdgeSpeechGenerationService.idPrefix) { return "edge" }
         if CloudSpeechGenerationService.isCloudVoice(voiceID) { return "cloud" }
+        if NativeKokoroSpeechService.isNativeKokoroVoice(voiceID) { return "kokoro-native" }
         return "kokoro"
     }
 

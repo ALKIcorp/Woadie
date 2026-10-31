@@ -44,6 +44,17 @@ final class FakeCartesiaVoices: CartesiaVoiceFetching {
     func fetchVoices() async throws -> [CartesiaCatalog.Voice] { voices }
 }
 
+final class FakeKokoroModel: NativeKokoroSynthesizing {
+    var availableVoices = ["ff_siwis", "af_heart"]
+    var calls: [(text: String, voice: String, language: String)] = []
+    var samples: [Float] = [0, 0.5, -0.5, 1.5]
+
+    func synthesize(text: String, voice: String, language: String, speed: Float) throws -> [Float] {
+        calls.append((text, voice, language))
+        return samples
+    }
+}
+
 /// Captures the outgoing request and replies with a canned response.
 private final class StubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var handler: ((URLRequest) -> (Int, Data))?
@@ -614,5 +625,126 @@ final class CloudSpeechServiceTests: XCTestCase {
     func testCartesiaErrorMessageIsReadable() {
         let body = Data(#"{"error_code":"quota_exceeded","title":"Quota exceeded","message":"You have run out of credits.","request_id":"550e8400"}"#.utf8)
         XCTAssertEqual(CloudSpeechGenerationService.providerMessage(from: body), "You have run out of credits.")
+    }
+
+    // MARK: Native Kokoro
+
+    private func nativeService(loadModel: @escaping @Sendable () async throws -> NativeKokoroSynthesizing) -> NativeKokoroSpeechService {
+        NativeKokoroSpeechService(defaults: UserDefaults(suiteName: "WoadieTests.native.\(UUID().uuidString)")!, loadModel: loadModel)
+    }
+
+    func testNativeKokoroListsNothingUntilEnabled() async throws {
+        let fake = FakeKokoroModel()
+        let service = nativeService { fake }
+
+        let disabledVoices = try await service.fetchVoices()
+        XCTAssertEqual(disabledVoices, [])
+        let disabledHealth = await service.checkHealth()
+        XCTAssertFalse(disabledHealth, "Nothing should load or download before the user turns it on")
+
+        service.isEnabled = true
+        let voices = try await service.fetchVoices()
+        XCTAssertEqual(voices, ["kokoro-native:af_heart", "kokoro-native:ff_siwis"])
+        let health = await service.checkHealth()
+        XCTAssertTrue(health)
+    }
+
+    func testNativeKokoroLoadsOnceAndPicksLanguageFromTheVoice() async throws {
+        let fake = FakeKokoroModel()
+        let loads = LoadCounter()
+        let service = nativeService { await loads.increment(); return fake }
+        service.isEnabled = true
+
+        async let first = service.synthesize(text: "Bonjour", voice: "kokoro-native:ff_siwis", jobID: nil)
+        async let second = service.synthesize(text: "Hello", voice: "kokoro-native:af_heart", jobID: nil)
+        let results = try await [first, second]
+
+        let loadCount = await loads.count
+        XCTAssertEqual(loadCount, 1, "Concurrent first requests must share one model load")
+        XCTAssertEqual(Set(fake.calls.map { "\($0.voice)/\($0.language)" }), ["ff_siwis/fr", "af_heart/en"])
+        XCTAssertTrue(results.allSatisfy { $0.audioData.starts(with: Data("RIFF".utf8)) })
+    }
+
+    func testNativeKokoroLanguageMapping() {
+        let cases = ["af_heart": "en", "bm_george": "en", "ef_dora": "es", "ff_siwis": "fr", "hf_alpha": "hi",
+                     "if_sara": "it", "jf_alpha": "ja", "pf_dora": "pt", "zf_xiaobei": "zh"]
+        for (voice, language) in cases {
+            XCTAssertEqual(NativeKokoroSpeechService.language(forVoice: voice), language, voice)
+        }
+    }
+
+    func testNativeKokoroWAVIsValidPCM16() {
+        let wav = NativeKokoroSpeechService.wavData(samples: [0, 0.5, -0.5, 1.5], sampleRate: 24_000)
+        XCTAssertEqual(wav.count, 44 + 8)
+        XCTAssertEqual(String(decoding: wav.prefix(4), as: UTF8.self), "RIFF")
+        XCTAssertEqual(String(decoding: wav[8..<16], as: UTF8.self), "WAVEfmt ")
+        func u32(_ offset: Int) -> UInt32 { wav[offset..<offset + 4].reversed().reduce(0) { $0 << 8 | UInt32($1) } }
+        func i16(_ offset: Int) -> Int16 { Int16(bitPattern: UInt16(wav[offset]) | UInt16(wav[offset + 1]) << 8) }
+        XCTAssertEqual(u32(24), 24_000, "sample rate")
+        XCTAssertEqual(u32(40), 8, "data size")
+        XCTAssertEqual([i16(44), i16(46), i16(48), i16(50)], [0, 16383, -16383, 32767], "clamped samples")
+    }
+
+    func testNativeKokoroUnknownVoiceAndFailedLoadAreClear() async throws {
+        let service = nativeService { FakeKokoroModel() }
+        service.isEnabled = true
+        do {
+            _ = try await service.synthesize(text: "Hi", voice: "kokoro-native:zz_nobody", jobID: nil)
+            XCTFail("Expected a missing-voice error")
+        } catch let error as AlkiSpeakError {
+            XCTAssertEqual(error.code, "generation.native-kokoro.voice-missing")
+        }
+
+        let attempts = LoadCounter()
+        let flaky = nativeService {
+            await attempts.increment()
+            if await attempts.count == 1 { throw URLError(.notConnectedToInternet) }
+            return FakeKokoroModel()
+        }
+        flaky.isEnabled = true
+        do {
+            _ = try await flaky.synthesize(text: "Hi", voice: "kokoro-native:af_heart", jobID: nil)
+            XCTFail("Expected the first load to fail")
+        } catch let error as AlkiSpeakError {
+            XCTAssertEqual(error.code, "generation.native-kokoro.failed")
+        }
+        let retried = try await flaky.synthesize(text: "Hi", voice: "kokoro-native:af_heart", jobID: nil)
+        XCTAssertFalse(retried.audioData.isEmpty, "A failed load is retried on the next request")
+    }
+}
+
+actor LoadCounter {
+    private(set) var count = 0
+    func increment() { count += 1 }
+}
+
+extension CloudSpeechServiceTests {
+    // MARK: Native Kokoro, live (opt-in)
+
+    /// Downloads the real CoreML model (~170 MB) and speaks with it. Skipped
+    /// unless ALKISPEAK_LIVE_NATIVE_KOKORO=1 (pass TEST_RUNNER_ALKISPEAK_LIVE_NATIVE_KOKORO=1 to xcodebuild).
+    func testLiveNativeKokoroSpeaks() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["ALKISPEAK_LIVE_NATIVE_KOKORO"] == "1", "Live native Kokoro test is opt-in")
+        let service = NativeKokoroSpeechService(defaults: UserDefaults(suiteName: "WoadieTests.native.live")!)
+        service.isEnabled = true
+
+        let loadStart = Date()
+        let voiceCount = try await service.prepare()
+        let loadSeconds = Date().timeIntervalSince(loadStart)
+        let voices = try await service.fetchVoices()
+        XCTAssertTrue(voices.contains("kokoro-native:af_heart"))
+
+        for (voice, text) in [("kokoro-native:af_heart", "Hello from AlkiSpeak, running Kokoro natively on the Neural Engine."),
+                              ("kokoro-native:ff_siwis", "Bonjour, ceci est Kokoro en français.")] {
+            let start = Date()
+            let result = try await service.synthesize(text: text, voice: voice, jobID: nil)
+            let seconds = Date().timeIntervalSince(start)
+            let audioSeconds = Double(result.audioData.count - 44) / 2 / Double(NativeKokoroSpeechService.sampleRate)
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("native-\(NativeKokoroSpeechService.stripPrefix(voice)).wav")
+            try result.audioData.write(to: url)
+            print("LIVE native Kokoro \(voice): \(String(format: "%.2f", audioSeconds)) s audio in \(String(format: "%.2f", seconds)) s -> \(url.path)")
+            XCTAssertGreaterThan(audioSeconds, 1.0)
+        }
+        print("LIVE native Kokoro: \(voiceCount) voices, load \(String(format: "%.1f", loadSeconds)) s")
     }
 }
