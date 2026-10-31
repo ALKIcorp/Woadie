@@ -193,6 +193,8 @@ private struct CloudVoicesSettings: View {
     @State private var elevenLabsCatalog: ElevenLabsCatalog?
     @State private var isLoadingCatalog = false
     @State private var catalogError: String?
+    @State private var designDescription = ""
+    @State private var designLabel = ""
 
     private var provider: CloudProvider {
         CloudProvider.provider(withID: providerID) ?? .openRouter
@@ -284,7 +286,7 @@ private struct CloudVoicesSettings: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(voice.label)
                                 .font(WoadieTheme.rounded(size: 12, weight: .semibold))
-                            caption("\(voice.provider?.name ?? voice.providerID) · \(voice.model) · \(voice.voice)")
+                            caption("\(voice.provider?.name ?? voice.providerID) · \(voice.model) · \(voice.isDesigned ? "“\(voice.instructions ?? "")”" : voice.voice)")
                         }
                         Spacer()
                         IconActionButton(systemImage: "trash") {
@@ -361,6 +363,21 @@ private struct CloudVoicesSettings: View {
                             }
                             .disabled(added)
                             .help(added ? "Already in your voices" : "Add \(voice.label)")
+                        }
+                    }
+                    if localModel.supportsVoiceDesign {
+                        HStack {
+                            TextField("Or describe a voice, e.g. a warm, gentle storyteller", text: $designDescription)
+                                .textFieldStyle(.roundedBorder)
+                            TextField("Label", text: $designLabel)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 120)
+                            WoadieButton(title: "Design", systemImage: "wand.and.stars", variant: .default) {
+                                model.addDesignedLocalVoice(model: localModel, description: designDescription, label: designLabel)
+                                designDescription = ""
+                                designLabel = ""
+                            }
+                            .disabled(designDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                     }
                 }

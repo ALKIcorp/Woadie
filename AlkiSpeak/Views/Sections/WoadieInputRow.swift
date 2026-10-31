@@ -21,6 +21,18 @@ struct WoadieInputRow: View {
                         .tracking(0.4)
                         .foregroundStyle(WoadieTheme.foregroundSubtle)
                     Spacer()
+                    if !model.selectedVoiceExpressionTags.isEmpty {
+                        Menu {
+                            ForEach(model.selectedVoiceExpressionTags, id: \.self) { tag in
+                                Button("[\(tag)]") { model.insertExpressionTag(tag) }
+                            }
+                        } label: {
+                            Label("Expression", systemImage: "face.smiling")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .help("Insert a cue like [Laughter] that this voice performs")
+                    }
                     if model.showAddToLog {
                         WoadieButton(
                             title: "Add to Log",

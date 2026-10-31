@@ -397,4 +397,61 @@ final class CloudSpeechServiceTests: XCTestCase {
         XCTAssertEqual(Set(labels).count, labels.count, "Every preset needs its own label")
         XCTAssertEqual(models.first?.id, "mlx-community/Ming-3.0-tts-0.5B-bf16", "Best-quality model listed first")
     }
+
+    // MARK: Ming voice design and expression tags
+
+    func testDesignedLocalVoiceSendsInstructInsteadOfVoice() throws {
+        let designed = CloudVoice(providerID: CloudProvider.localMLX.id, model: "mlx-community/Ming-3.0-tts-0.5B-bf16", voice: "", label: "Narrator", instructions: "A deep, slow documentary narrator.")
+        let builtIn = CloudVoice(providerID: CloudProvider.localMLX.id, model: "mlx-community/Ming-3.0-tts-0.5B-bf16", voice: "US_Emma", label: "Emma")
+        settings.settings.voices = [designed, builtIn]
+
+        let designedBody = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(service.makeRequest(text: "Hi", voiceID: designed.voiceID).httpBody)) as? [String: String])
+        XCTAssertEqual(designedBody["instruct"], "A deep, slow documentary narrator.")
+        XCTAssertNil(designedBody["voice"], "Ming rejects voice and instruct together")
+
+        let builtInBody = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(service.makeRequest(text: "Hi", voiceID: builtIn.voiceID).httpBody)) as? [String: String])
+        XCTAssertEqual(builtInBody["voice"], "US_Emma")
+        XCTAssertNil(builtInBody["instruct"])
+    }
+
+    func testSettingsSavedBeforeInstructionsStillLoad() throws {
+        let legacy = Data(#"{"voices":[{"id":"41297353-7EC3-4BA4-952C-DAE6B0689DA2","providerID":"mlx-audio","model":"m","voice":"Ryan","label":"Qwen3 Ryan (local)"}],"customBaseURL":""}"#.utf8)
+        let decoded = try JSONDecoder().decode(CloudSpeechSettings.self, from: legacy)
+        XCTAssertEqual(decoded.voices.first?.voice, "Ryan")
+        XCTAssertNil(decoded.voices.first?.instructions)
+        XCTAssertFalse(decoded.voices[0].isDesigned)
+    }
+
+    func testOnlyMingAdvertisesTagsAndVoiceDesign() {
+        let ming = LocalVoiceCatalog.model(withID: "mlx-community/Ming-3.0-tts-0.5B-bf16")
+        let qwen = LocalVoiceCatalog.model(withID: "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit")
+        XCTAssertEqual(ming?.supportsVoiceDesign, true)
+        XCTAssertTrue(ming?.expressionTags.contains("Laughter") ?? false)
+        XCTAssertEqual(ming?.expressionTags.count, 14)
+        XCTAssertEqual(qwen?.supportsVoiceDesign, false)
+        XCTAssertEqual(qwen?.expressionTags, [])
+    }
+
+    func testHardCutNeverSplitsAnExpressionTag() {
+        // No sentence ends, so the batcher must hard-cut near 250 characters;
+        // place a tag so it straddles that cut.
+        let lead = String(repeating: "word ", count: 49) + "and"   // 248 characters
+        let text = lead + " [Laughter] " + String(repeating: "more words ", count: 30)
+        let segments = TextBatcher.segments(for: text)
+
+        XCTAssertGreaterThan(segments.count, 1)
+        for segment in segments {
+            XCTAssertEqual(segment.filter { $0 == "[" }.count, segment.filter { $0 == "]" }.count, "Split tag in: \(segment)")
+        }
+        XCTAssertTrue(segments.contains { $0.contains("[Laughter]") })
+    }
+
+    func testTagSafeCutLeavesClosedTagsAndPlainTextAlone() {
+        let closed = Array("aaaa [Sigh] bbbbbbbb")
+        XCTAssertEqual(TextBatcher.tagSafeCut(closed, at: 15), 15)
+        let open = Array("aaaa [Surprise-oh] bbbb")
+        XCTAssertEqual(TextBatcher.tagSafeCut(open, at: 10), 5)
+        let plain = Array("no tags here at all")
+        XCTAssertEqual(TextBatcher.tagSafeCut(plain, at: 10), 10)
+    }
 }

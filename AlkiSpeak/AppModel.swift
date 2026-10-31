@@ -231,19 +231,55 @@ final class AppModel: ObservableObject {
         let voice = voice.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !model.isEmpty, !voice.isEmpty else { return }
         let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cloudVoice = CloudVoice(
+        appendCloudVoice(CloudVoice(
             providerID: provider.id,
             model: model,
             voice: voice,
             label: trimmedLabel.isEmpty ? "\(provider.name) · \(voice)" : trimmedLabel
-        )
+        ))
+    }
+
+    /// Adds a local voice built from a description instead of a built-in name.
+    func addDesignedLocalVoice(model localModel: LocalVoiceCatalog.Model, description: String, label: String) {
+        let description = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard localModel.supportsVoiceDesign, !description.isEmpty else { return }
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shortened = description.count > 32
+            ? String(description.prefix(32)).trimmingCharacters(in: .whitespaces) + "…"
+            : description
+        let fallbackLabel = "Designed · " + shortened
+        appendCloudVoice(CloudVoice(
+            providerID: CloudProvider.localMLX.id,
+            model: localModel.id,
+            voice: "",
+            label: trimmedLabel.isEmpty ? fallbackLabel : trimmedLabel,
+            instructions: description
+        ))
+    }
+
+    private func appendCloudVoice(_ cloudVoice: CloudVoice) {
         store.cloudSettings.voices.append(cloudVoice)
         dependencies.cloudSpeechSettings.save(store.cloudSettings)
         refreshCloudVoices()
         selectedVoice = cloudVoice.voiceID
-        if provider == .localMLX {
+        if cloudVoice.provider == .localMLX {
             warmUpLocalVoiceServer()
         }
+    }
+
+    /// Inline expression cues (e.g. `[Laughter]`) the selected voice's model reads.
+    var selectedVoiceExpressionTags: [String] {
+        guard let voice = store.cloudSettings.voice(withID: selectedVoice), voice.provider == .localMLX else { return [] }
+        return LocalVoiceCatalog.model(withID: voice.model)?.expressionTags ?? []
+    }
+
+    /// Appends `[tag] ` to the composer, separated from any existing text.
+    func insertExpressionTag(_ tag: String) {
+        var text = inputText
+        if let last = text.last, !last.isWhitespace {
+            text += " "
+        }
+        inputText = text + "[\(tag)] "
     }
 
     /// Starts the local mlx-audio server in the background so the first local

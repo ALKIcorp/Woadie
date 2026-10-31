@@ -103,14 +103,20 @@ struct CloudVoice: Identifiable, Codable, Hashable {
     let model: String
     let voice: String
     let label: String
+    /// A designed voice's description (local mlx-audio only). When set, it is
+    /// sent as `instruct` in place of `voice`. Absent in older saved settings.
+    let instructions: String?
 
-    init(id: UUID = UUID(), providerID: String, model: String, voice: String, label: String) {
+    init(id: UUID = UUID(), providerID: String, model: String, voice: String, label: String, instructions: String? = nil) {
         self.id = id
         self.providerID = providerID
         self.model = model
         self.voice = voice
         self.label = label
+        self.instructions = instructions
     }
+
+    var isDesigned: Bool { !(instructions ?? "").isEmpty }
 
     var voiceID: String { CloudSpeechGenerationService.idPrefix + id.uuidString }
     var provider: CloudProvider? { CloudProvider.provider(withID: providerID) }
@@ -335,12 +341,20 @@ final class CloudSpeechGenerationService: SpeechGenerating {
             if let apiKey, !apiKey.isEmpty {
                 request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             }
-            request.httpBody = try JSONSerialization.data(withJSONObject: [
+            var body: [String: Any] = [
                 "model": cloudVoice.model,
                 "input": text,
-                "voice": cloudVoice.voice,
                 "response_format": "mp3"
-            ])
+            ]
+            if provider == .localMLX, let instructions = cloudVoice.instructions, !instructions.isEmpty {
+                // Ming rejects `voice` and `instruct` together (the server then
+                // answers 200 with an empty body), so a designed voice sends
+                // only its description.
+                body["instruct"] = instructions
+            } else {
+                body["voice"] = cloudVoice.voice
+            }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
         case .elevenLabs:
             request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
             request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
@@ -617,6 +631,10 @@ enum LocalVoiceCatalog {
         let downloadGB: Double
         let summary: String
         let voices: [Voice]
+        /// Inline cues the model reads from the text itself, e.g. `[Laughter]`.
+        var expressionTags: [String] = []
+        /// Accepts a free-text voice description (`instruct`) instead of a voice.
+        var supportsVoiceDesign = false
     }
 
     struct Voice: Identifiable, Hashable {
@@ -638,7 +656,13 @@ enum LocalVoiceCatalog {
                 Voice(name: "US_Stella", label: "Ming US Stella (local)"),
                 Voice(name: "UK_George", label: "Ming UK George (local)"),
                 Voice(name: "UK_Charlotte", label: "Ming UK Charlotte (local)")
-            ]
+            ],
+            expressionTags: [
+                "Laughter", "Sigh", "Breathing", "Cough", "Uhm",
+                "Surprise-ah", "Surprise-oh", "Dissatisfaction-hnn", "Confirmation-en",
+                "Question-ei", "Question-ah", "Question-en", "Question-oh", "Question-huh"
+            ],
+            supportsVoiceDesign: true
         ),
         Model(
             id: "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit",
@@ -652,4 +676,10 @@ enum LocalVoiceCatalog {
             ]
         )
     ]
+}
+
+extension LocalVoiceCatalog {
+    static func model(withID id: String) -> Model? {
+        models.first { $0.id == id }
+    }
 }

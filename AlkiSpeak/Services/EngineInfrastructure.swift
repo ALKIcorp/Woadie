@@ -70,7 +70,7 @@ enum TextBatcher {
                 }
             }
 
-            let cut = boundary ?? min(hardCutCharacters, characters.count)
+            let cut = boundary ?? tagSafeCut(characters, at: min(hardCutCharacters, characters.count))
             let segment = String(characters[..<cut]).trimmingCharacters(in: .whitespacesAndNewlines)
             if !segment.isEmpty {
                 result.append(segment)
@@ -82,6 +82,18 @@ enum TextBatcher {
             result.append(remaining)
         }
         return result
+    }
+
+    /// Longest inline expression cue a hard cut steps back over, e.g. `[Dissatisfaction-hnn]`.
+    private static let maxTagLength = 32
+
+    /// Moves a hard cut back to just before an unclosed `[` so inline cues
+    /// like `[Laughter]` never get split across two requests.
+    static func tagSafeCut(_ characters: [Character], at cut: Int) -> Int {
+        let floor = max(0, cut - maxTagLength)
+        guard let open = characters[floor..<cut].lastIndex(of: "["), open > 0 else { return cut }
+        let isClosed = characters[open..<cut].contains("]")
+        return isClosed ? cut : open
     }
 
     private static func isSentenceBoundary(_ characters: [Character], at index: Int) -> Bool {

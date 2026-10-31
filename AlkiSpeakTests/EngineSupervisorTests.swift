@@ -780,6 +780,33 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     @MainActor
+    func testDesignedVoiceAndExpressionTagsFollowTheSelectedModel() {
+        let settings = InMemoryCloudSpeechSettingsStore()
+        let model = AppModel(store: AppStore(), dependencies: .test(engineSupervisor: FakeEngineSupervisor(), cloudSpeechSettings: settings))
+        let ming = LocalVoiceCatalog.models.first { $0.supportsVoiceDesign }!
+        let qwen = LocalVoiceCatalog.models.first { !$0.supportsVoiceDesign }!
+
+        model.addDesignedLocalVoice(model: qwen, description: "A pirate", label: "")
+        XCTAssertTrue(settings.settings.voices.isEmpty, "Models without voice design must refuse a description")
+
+        model.addDesignedLocalVoice(model: ming, description: "  A warm, gentle storyteller with a slow pace  ", label: "")
+        let designed = settings.settings.voices[0]
+        XCTAssertEqual(designed.instructions, "A warm, gentle storyteller with a slow pace")
+        XCTAssertEqual(designed.label, "Designed · A warm, gentle storyteller with…")
+        XCTAssertEqual(model.selectedVoice, designed.voiceID)
+        XCTAssertEqual(model.selectedVoiceExpressionTags.count, 14)
+
+        model.inputText = "Well"
+        model.insertExpressionTag("Laughter")
+        XCTAssertEqual(model.inputText, "Well [Laughter] ")
+        model.insertExpressionTag("Sigh")
+        XCTAssertEqual(model.inputText, "Well [Laughter] [Sigh] ")
+
+        model.addLocalPreset(model: qwen, voice: qwen.voices[0])
+        XCTAssertEqual(model.selectedVoiceExpressionTags, [], "Qwen has no inline cues")
+    }
+
+    @MainActor
     func testCloudAPIKeyRoundTripsThroughSecretStore() {
         let secrets = InMemorySecretStore()
         let model = AppModel(store: AppStore(), dependencies: .test(engineSupervisor: FakeEngineSupervisor(), secretStore: secrets))
