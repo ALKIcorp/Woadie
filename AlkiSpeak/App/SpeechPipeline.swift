@@ -23,6 +23,7 @@ final class SpeechPipeline {
     private let store: AppStore
     private let dependencies: AppDependencies
     private let diagnostics: SpeechDiagnostics
+    private let cache: AudioClipCache
     private let requestPolicy = EngineRequestPolicy.live
     private let ttsQueue = TTSQueue()
     weak var host: SpeechPipelineHost?
@@ -32,10 +33,11 @@ final class SpeechPipeline {
     private let playbackSnapshotMinimumInterval: TimeInterval = 1.0 / 30.0
     private var lastPlaybackSnapshotAppliedAt: TimeInterval = 0
 
-    init(store: AppStore, dependencies: AppDependencies, diagnostics: SpeechDiagnostics) {
+    init(store: AppStore, dependencies: AppDependencies, diagnostics: SpeechDiagnostics, cache: AudioClipCache = .shared) {
         self.store = store
         self.dependencies = dependencies
         self.diagnostics = diagnostics
+        self.cache = cache
         wirePlaybackCallbacks()
     }
 
@@ -192,7 +194,7 @@ final class SpeechPipeline {
                         )
                     }
                 }
-            }) { [generationService = remoteService(for: voice), clipStore = dependencies.clipStore, workspaceID = store.activeWorkspace.id] segment in
+            }) { [generationService = remoteService(for: voice), clipStore = dependencies.clipStore, workspaceID = store.activeWorkspace.id, cache, cacheConfiguration = cacheConfiguration(forVoice: voice)] segment in
                 await MainActor.run {
                     self.diagnostics.setPhase(
                         .remoteGeneration,
@@ -204,11 +206,26 @@ final class SpeechPipeline {
                         ]
                     )
                 }
-                let result = try await generationService.synthesize(
-                    text: segment.text,
-                    voice: voice,
-                    jobID: jobID
-                )
+                let cacheKey = AudioClipCache.key(text: segment.text, voiceConfiguration: cacheConfiguration)
+                let result: SpeechGenerationResult
+                if let cached = await cache.audio(forKey: cacheKey) {
+                    // Same words, same voice: replay the earlier audio with no
+                    // network call or engine work.
+                    result = SpeechGenerationResult(audioData: cached, latencyMs: 0, charCount: segment.text.count)
+                    await MainActor.run {
+                        self.diagnostics.recordMarkerForActiveJob(
+                            message: "Segment served from cache.",
+                            context: ["segmentIndex": "\(segment.index)"]
+                        )
+                    }
+                } else {
+                    result = try await generationService.synthesize(
+                        text: segment.text,
+                        voice: voice,
+                        jobID: jobID
+                    )
+                    await cache.store(result.audioData, forKey: cacheKey)
+                }
                 let url = try clipStore.writeClip(data: result.audioData, segmentID: segment.id, workspaceID: workspaceID)
                 await MainActor.run {
                     self.store.dashboardTelemetry.lastLatencyMs = result.latencyMs
@@ -271,6 +288,17 @@ final class SpeechPipeline {
         } catch {
             failPlayback(jobID: jobID, logEntryID: logEntryID, error: Self.normalizeGenerationError(error))
         }
+    }
+
+    /// Everything besides the text that shapes a voice's audio. A cloud or
+    /// local voice's model, instructions and reference clip are included, so
+    /// changing any of them never replays stale audio.
+    private func cacheConfiguration(forVoice voice: String) -> String {
+        guard let cloudVoice = store.cloudSettings.voice(withID: voice) else { return voice }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let settings = (try? encoder.encode(cloudVoice)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        return voice + "|" + settings
     }
 
     private func speakLocal(text: String, voice: String, jobID: UUID, logEntryID: UUID) {

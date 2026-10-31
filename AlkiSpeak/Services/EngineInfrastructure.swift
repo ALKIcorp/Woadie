@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import os
 
@@ -334,6 +335,93 @@ actor TTSQueue {
                     nextToDeliver += 1
                 }
             }
+        }
+    }
+}
+
+/// Generated audio kept on disk by what was said and how, so replaying the
+/// same text with the same voice is instant, free on paid voices and works
+/// offline. Least recently used clips are dropped past `capacityBytes`.
+actor AudioClipCache {
+    static let shared = AudioClipCache()
+    static let defaultCapacityBytes: Int64 = 1 << 30
+    /// Bumped when the cache's contents change meaning, so old entries miss.
+    private static let formatVersion = "1"
+
+    private let directory: URL
+    private let capacityBytes: Int64
+    private let fileManager = FileManager.default
+
+    init(directory: URL? = nil, capacityBytes: Int64 = AudioClipCache.defaultCapacityBytes) {
+        self.directory = directory ?? Self.defaultDirectory
+        self.capacityBytes = capacityBytes
+    }
+
+    private static var defaultDirectory: URL {
+        let base = (try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+        )) ?? FileManager.default.temporaryDirectory
+        return base
+            .appendingPathComponent("Woadie", isDirectory: true)
+            .appendingPathComponent("AudioCache", isDirectory: true)
+    }
+
+    /// `voiceConfiguration` is everything besides the text that shapes the
+    /// audio: the voice ID, plus a cloud or local voice's model and settings.
+    nonisolated static func key(text: String, voiceConfiguration: String) -> String {
+        let material = [formatVersion, voiceConfiguration, text].joined(separator: "\u{1F}")
+        return SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func url(forKey key: String) -> URL {
+        directory.appendingPathComponent(key).appendingPathExtension("audio")
+    }
+
+    /// The cached audio for `key`, marking it as recently used.
+    func audio(forKey key: String) -> Data? {
+        let url = url(forKey: key)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        try? fileManager.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+        return data
+    }
+
+    func store(_ data: Data, forKey key: String) {
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try data.write(to: url(forKey: key), options: .atomic)
+        } catch {
+            return
+        }
+        trimToCapacity()
+    }
+
+    func totalBytes() -> Int64 {
+        entries().reduce(0) { $0 + $1.size }
+    }
+
+    func removeAll() {
+        for entry in entries() {
+            try? fileManager.removeItem(at: entry.url)
+        }
+    }
+
+    private func trimToCapacity() {
+        var all = entries()
+        var total = all.reduce(0) { $0 + $1.size }
+        guard total > capacityBytes else { return }
+        all.sort { $0.lastUsed < $1.lastUsed }
+        for entry in all where total > capacityBytes {
+            try? fileManager.removeItem(at: entry.url)
+            total -= entry.size
+        }
+    }
+
+    private func entries() -> [(url: URL, size: Int64, lastUsed: Date)] {
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+        guard let urls = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: keys) else { return [] }
+        return urls.filter { $0.pathExtension == "audio" }.map { url in
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            return (url, Int64(values?.fileSize ?? 0), values?.contentModificationDate ?? .distantPast)
         }
     }
 }

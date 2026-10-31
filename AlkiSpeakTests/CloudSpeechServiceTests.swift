@@ -1271,3 +1271,74 @@ private actor FirstSoundGauge {
     func enter() { current += 1; peak = max(peak, current) }
     func leave() { current -= 1 }
 }
+
+final class AudioClipCacheTests: XCTestCase {
+    private func makeCache(capacity: Int64 = AudioClipCache.defaultCapacityBytes) -> (AudioClipCache, URL) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("clip-cache-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return (AudioClipCache(directory: directory, capacityBytes: capacity), directory)
+    }
+
+    func testKeyIsStableAndChangesWithTextOrVoiceSetup() {
+        let key = AudioClipCache.key(text: "Hello there.", voiceConfiguration: "edge:en-US-AriaNeural")
+
+        XCTAssertEqual(key, AudioClipCache.key(text: "Hello there.", voiceConfiguration: "edge:en-US-AriaNeural"))
+        XCTAssertEqual(key.count, 64)
+        XCTAssertNotEqual(key, AudioClipCache.key(text: "Hello there!", voiceConfiguration: "edge:en-US-AriaNeural"))
+        XCTAssertNotEqual(key, AudioClipCache.key(text: "Hello there.", voiceConfiguration: "edge:en-US-GuyNeural"))
+        XCTAssertNotEqual(
+            AudioClipCache.key(text: "Hi", voiceConfiguration: "cloud:1|{\"model\":\"a\"}"),
+            AudioClipCache.key(text: "Hi", voiceConfiguration: "cloud:1|{\"model\":\"b\"}"),
+            "editing a cloud voice's model must not replay old audio"
+        )
+    }
+
+    func testStoredAudioComesBackAndMissesAreNil() async {
+        let (cache, _) = makeCache()
+        let audio = Data("RIFF-fake-audio".utf8)
+
+        let missBefore = await cache.audio(forKey: "abc")
+        XCTAssertNil(missBefore)
+        await cache.store(audio, forKey: "abc")
+        let hit = await cache.audio(forKey: "abc")
+        XCTAssertEqual(hit, audio)
+        let total = await cache.totalBytes()
+        XCTAssertEqual(total, Int64(audio.count))
+    }
+
+    func testEvictsLeastRecentlyUsedPastCapacity() async throws {
+        let (cache, directory) = makeCache(capacity: 250)
+        let clip = Data(repeating: 1, count: 100)
+        await cache.store(clip, forKey: "old")
+        await cache.store(clip, forKey: "middle")
+        // Make the order unambiguous, then use "old" so "middle" is the stalest.
+        let fm = FileManager.default
+        try fm.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -300)], ofItemAtPath: directory.appendingPathComponent("old.audio").path)
+        try fm.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -200)], ofItemAtPath: directory.appendingPathComponent("middle.audio").path)
+        _ = await cache.audio(forKey: "old")
+
+        await cache.store(clip, forKey: "new")
+
+        let old = await cache.audio(forKey: "old")
+        let middle = await cache.audio(forKey: "middle")
+        let new = await cache.audio(forKey: "new")
+        XCTAssertNotNil(old, "recently used, so kept")
+        XCTAssertNil(middle, "least recently used, so evicted")
+        XCTAssertNotNil(new)
+        let total = await cache.totalBytes()
+        XCTAssertLessThanOrEqual(total, 250)
+    }
+
+    func testRemoveAllEmptiesTheCache() async {
+        let (cache, _) = makeCache()
+        await cache.store(Data(repeating: 2, count: 10), forKey: "a")
+        await cache.store(Data(repeating: 3, count: 10), forKey: "b")
+
+        await cache.removeAll()
+
+        let total = await cache.totalBytes()
+        let gone = await cache.audio(forKey: "a")
+        XCTAssertEqual(total, 0)
+        XCTAssertNil(gone)
+    }
+}
