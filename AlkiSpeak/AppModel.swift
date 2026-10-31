@@ -51,8 +51,12 @@ final class AppModel: ObservableObject {
     var selectedVoice: String {
         get { store.selectedVoiceID }
         set {
+            let changed = newValue != store.selectedVoiceID
             store.selectedVoiceID = newValue
             saveWorkspace()
+            if changed {
+                prepareForSelectedVoice()
+            }
         }
     }
     var message: String { store.userMessage }
@@ -62,7 +66,8 @@ final class AppModel: ObservableObject {
         return "\(issue.title): \(issue.description) Probable cause: \(issue.probableCause)"
     }
     var engineStatusLabel: String {
-        dependencies.engineSupervisor.engineState.statusText
+        if isEngineOnStandby { return "Kokoro Standby" }
+        return dependencies.engineSupervisor.engineState.statusText
     }
     var chatItems: [SpeechEntry] { store.speechEntries }
     var playingId: UUID? { store.playback.activeLogEntryID }
@@ -485,6 +490,52 @@ final class AppModel: ObservableObject {
             || NativeKokoroSpeechService.isNativeKokoroVoice(selectedVoice)
     }
 
+    /// Only the Python Kokoro voices need the engine on port 7777.
+    private var isSelectedVoicePythonKokoro: Bool {
+        !selectedVoice.isEmpty && !isSelectedVoiceLocal && !isSelectedVoiceEngineIndependent
+    }
+
+    private var isSelectedVoiceLocalMLX: Bool {
+        store.cloudSettings.voice(withID: selectedVoice)?.provider == .localMLX
+    }
+
+    /// The engine is off because the selected voice doesn't use it; it starts
+    /// as soon as a Kokoro voice is picked.
+    var isEngineOnStandby: Bool {
+        status == .stopped && engineStartTask == nil && !isSelectedVoicePythonKokoro
+    }
+
+    /// Starts the Python Kokoro engine only when the selected voice needs it.
+    /// With no cached Kokoro voice list yet, it starts once anyway so the
+    /// picker can offer Kokoro voices.
+    func startEngineIfNeeded() {
+        guard isSelectedVoicePythonKokoro || cachedKokoroVoices.isEmpty else {
+            consoleTrace("startEngineIfNeeded skipped; selected voice doesn't use the Kokoro engine")
+            return
+        }
+        startEngine()
+    }
+
+    /// Starts whatever background server a newly picked voice needs, so it is
+    /// warm by the time the user presses Generate.
+    private func prepareForSelectedVoice() {
+        guard !AppConfig.isRunningUnitTests else { return }
+        if isSelectedVoicePythonKokoro {
+            startEngine()
+        } else if isSelectedVoiceLocalMLX {
+            warmUpLocalVoiceServer()
+        }
+    }
+
+    private static let kokoroVoiceCacheKey = "AlkiSpeak.kokoroVoiceCache"
+
+    /// The Kokoro voice list from the last time the engine answered, so the
+    /// picker still lists Kokoro voices while the engine is off.
+    private var cachedKokoroVoices: [String] {
+        get { UserDefaults.standard.stringArray(forKey: Self.kokoroVoiceCacheKey) ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: Self.kokoroVoiceCacheKey) }
+    }
+
     private func remoteService(for voice: String) -> SpeechGenerating {
         if voice.hasPrefix(EdgeSpeechGenerationService.idPrefix) { return dependencies.edgeSpeechService }
         if CloudSpeechGenerationService.isCloudVoice(voice) { return dependencies.cloudSpeechService }
@@ -522,18 +573,18 @@ final class AppModel: ObservableObject {
         refreshLocalVoices()
         if !AppConfig.isRunningUnitTests {
             startPerformanceDiagnosticSampling()
-            consoleTrace("auto-starting engine from AppModel.init")
-            startEngine()
+            consoleTrace("starting engine from AppModel.init if the selected voice needs it")
+            startEngineIfNeeded()
             // Edge voices don't depend on the Kokoro engine, so fetch them right
             // away instead of waiting on waitForEngineReady().
             Task { await fetchVoices() }
-            let localModels = Set(store.cloudSettings.voices.filter { $0.provider == .localMLX }.map(\.model))
-            if !localModels.isEmpty {
+            if isSelectedVoiceLocalMLX {
                 warmUpLocalVoiceServer()
-                // Fetch anything not on disk yet; downloaded models load on first use.
-                for model in localModels where !MLXAudioServerManager.isModelDownloaded(model) {
-                    prepareLocalModel(model)
-                }
+            }
+            // Fetch anything not on disk yet; downloaded models load on first use.
+            let localModels = Set(store.cloudSettings.voices.filter { $0.provider == .localMLX }.map(\.model))
+            for model in localModels where !MLXAudioServerManager.isModelDownloaded(model) {
+                prepareLocalModel(model)
             }
             if dependencies.nativeKokoroService.isEnabled {
                 loadNativeKokoro()
@@ -1289,7 +1340,13 @@ final class AppModel: ObservableObject {
         let (kokoro, edge, cloud, native) = await (kokoroResult, edgeResult, cloudResult, nativeResult)
 
         var combined: [String] = []
-        if let kokoro { combined += kokoro }
+        if let kokoro, !kokoro.isEmpty {
+            cachedKokoroVoices = kokoro
+            combined += kokoro
+        } else {
+            // The engine only runs while a Kokoro voice is selected.
+            combined += cachedKokoroVoices
+        }
         if let native { combined += native }
         if let edge { combined += edge }
         if let cloud { combined += cloud }

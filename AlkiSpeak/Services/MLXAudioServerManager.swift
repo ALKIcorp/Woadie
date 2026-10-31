@@ -12,6 +12,14 @@ protocol LocalVoiceServerEnsuring: AnyObject {
     /// Stops the server only if this app launched it (this run or, via the
     /// PID file, a run that was force-quit); a server started by hand is left alone.
     func stopOwnedServer()
+    /// Brackets a request so the idle timer can't stop the server mid-request.
+    func beginUse()
+    func endUse()
+}
+
+extension LocalVoiceServerEnsuring {
+    func beginUse() {}
+    func endUse() {}
 }
 
 /// Launches and supervises `mlx_audio.server` for the "Local mlx-audio" preset,
@@ -40,12 +48,19 @@ final class MLXAudioServerManager: LocalVoiceServerEnsuring, @unchecked Sendable
     private var launchTask: Task<Void, Error>?
     private var preparedModels: Set<String> = []
     private var prepareTasks: [String: Task<Void, Error>] = [:]
+    /// A loaded model can hold several GB, so an owned server that sees no
+    /// requests for this long is stopped; the next request relaunches it.
+    private let idleTimeout: TimeInterval
+    private var activeUses = 0
+    private var lastActivity = Date()
+    private var idleTask: Task<Void, Never>?
 
     init(
         executableURL: URL = MLXAudioServerManager.defaultExecutableURL,
         port: Int = MLXAudioServerManager.port,
         session: URLSession = .shared,
         startupTimeout: TimeInterval = 90,
+        idleTimeout: TimeInterval = 10 * 60,
         pidFileURL: URL? = MLXAudioServerManager.defaultPIDFileURL,
         isServerProcess: @escaping (pid_t) -> Bool = MLXAudioServerManager.isMLXAudioServerProcess
     ) {
@@ -53,6 +68,7 @@ final class MLXAudioServerManager: LocalVoiceServerEnsuring, @unchecked Sendable
         self.port = port
         self.session = session
         self.startupTimeout = startupTimeout
+        self.idleTimeout = idleTimeout
         self.pidFileURL = pidFileURL
         self.isServerProcess = isServerProcess
     }
@@ -74,6 +90,7 @@ final class MLXAudioServerManager: LocalVoiceServerEnsuring, @unchecked Sendable
     func ensureRunning() async throws {
         if await isResponding() {
             reclaimOrphanIfNeeded()
+            noteActivity()
             return
         }
         let task = lock.withLock { () -> Task<Void, Error> in
@@ -85,13 +102,60 @@ final class MLXAudioServerManager: LocalVoiceServerEnsuring, @unchecked Sendable
         do {
             try await task.value
             clearLaunchTask(task)
+            noteActivity()
         } catch {
             clearLaunchTask(task)
             throw error
         }
     }
 
+    func beginUse() {
+        lock.withLock {
+            activeUses += 1
+            lastActivity = Date()
+            idleTask?.cancel()
+            idleTask = nil
+        }
+    }
+
+    func endUse() {
+        lock.withLock { activeUses = max(0, activeUses - 1) }
+        noteActivity()
+    }
+
+    // MARK: - Idle stop
+
+    /// Restarts the idle countdown unless a request is in flight.
+    private func noteActivity() {
+        lock.withLock {
+            lastActivity = Date()
+            idleTask?.cancel()
+            idleTask = nil
+            guard idleTimeout > 0, activeUses == 0 else { return }
+            let timeout = idleTimeout
+            idleTask = Task.detached(priority: .utility) { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                self?.stopIfIdle()
+            }
+        }
+    }
+
+    private func stopIfIdle() {
+        let idle = lock.withLock {
+            activeUses == 0
+                && launchTask == nil
+                && prepareTasks.isEmpty
+                && Date().timeIntervalSince(lastActivity) >= idleTimeout
+        }
+        guard idle, isOwnedServerRunning else { return }
+        logger.info("Stopping mlx-audio server after \(Int(self.idleTimeout)) s idle")
+        stopOwnedServer()
+    }
+
     func prepareModel(_ modelID: String) async throws {
+        beginUse()
+        defer { endUse() }
         try await ensureRunning()
         let task = lock.withLock { () -> Task<Void, Error>? in
             if preparedModels.contains(modelID) { return nil }
@@ -119,6 +183,8 @@ final class MLXAudioServerManager: LocalVoiceServerEnsuring, @unchecked Sendable
                 process = nil
                 reclaimedPID = nil
                 preparedModels = []
+                idleTask?.cancel()
+                idleTask = nil
             }
             return (process, reclaimedPID)
         }

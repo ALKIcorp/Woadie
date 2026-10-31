@@ -294,6 +294,8 @@ final class CloudSpeechGenerationService: SpeechGenerating {
         let startedAt = Date()
         let request = try makeRequest(text: text, voiceID: voice)
         let provider = settings.load().voice(withID: voice)?.provider
+        if provider == .localMLX { localServer?.beginUse() }
+        defer { if provider == .localMLX { localServer?.endUse() } }
         do {
             if provider == .localMLX {
                 try await localServer?.ensureRunning()

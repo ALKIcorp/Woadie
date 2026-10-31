@@ -102,6 +102,7 @@ struct StatusIndicatorView: View {
     }
 
     private var dotColor: Color {
+        if model.isEngineOnStandby { return WoadieTheme.foregroundSubtle }
         switch model.status {
         case .running, .idle:
             return WoadieTheme.success

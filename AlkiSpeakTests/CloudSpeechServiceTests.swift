@@ -793,6 +793,48 @@ extension CloudSpeechServiceTests {
         XCTAssertFalse(FileManager.default.fileExists(atPath: pidFile.path))
     }
 
+    func testOwnedServerStopsAfterIdleTimeout() async throws {
+        let dir = try temporaryDirectory()
+        let pidFile = dir.appendingPathComponent("server.pid")
+        let server = try spawnSleeper()
+        defer { if server.isRunning { server.terminate() } }
+        try "\(server.processIdentifier)\n".write(to: pidFile, atomically: true, encoding: .utf8)
+        StubURLProtocol.handler = { _ in (200, Data(#"{"object":"list","data":[]}"#.utf8)) }
+        let manager = MLXAudioServerManager(
+            executableURL: URL(fileURLWithPath: "/nonexistent"), session: stubSession, idleTimeout: 0.2,
+            pidFileURL: pidFile, isServerProcess: { $0 == server.processIdentifier }
+        )
+
+        try await manager.ensureRunning()
+        XCTAssertTrue(manager.isOwnedServerRunning)
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+
+        XCTAssertFalse(server.isRunning, "An owned server with no requests is stopped to free its memory")
+        XCTAssertFalse(manager.isOwnedServerRunning)
+    }
+
+    func testServerInUseIsNotStoppedForIdle() async throws {
+        let dir = try temporaryDirectory()
+        let pidFile = dir.appendingPathComponent("server.pid")
+        let server = try spawnSleeper()
+        defer { if server.isRunning { server.terminate() } }
+        try "\(server.processIdentifier)\n".write(to: pidFile, atomically: true, encoding: .utf8)
+        StubURLProtocol.handler = { _ in (200, Data(#"{"object":"list","data":[]}"#.utf8)) }
+        let manager = MLXAudioServerManager(
+            executableURL: URL(fileURLWithPath: "/nonexistent"), session: stubSession, idleTimeout: 0.2,
+            pidFileURL: pidFile, isServerProcess: { $0 == server.processIdentifier }
+        )
+
+        manager.beginUse()
+        try await manager.ensureRunning()
+        try await Task.sleep(nanoseconds: 600_000_000)
+        XCTAssertTrue(server.isRunning, "A long request must not be cut off by the idle timer")
+
+        manager.endUse()
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        XCTAssertFalse(server.isRunning)
+    }
+
     func testServerStartedByHandIsNeverStopped() async throws {
         let dir = try temporaryDirectory()
         let pidFile = dir.appendingPathComponent("server.pid")

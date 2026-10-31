@@ -94,7 +94,7 @@ struct AlkiSpeakApp: App {
                 guard !AppConfig.isRunningUnitTests else { return }
                 switch phase {
                 case .active:
-                    model.startEngine()
+                    model.startEngineIfNeeded()
                 case .inactive, .background:
                     break
                 @unknown default:
