@@ -72,8 +72,10 @@ struct ContentView: View {
             let mainWindow = NSApp.windows.first { $0.styleMask.contains(.titled) }
             guard let window = mainWindow ?? NSApp.keyWindow else { return }
 
-            window.contentMinSize = NSSize(width: 900, height: height)
-
+            // Never ask for more than the screen holds; past that the content
+            // scrolls. Asking for more made macOS shrink the window again, which
+            // moved the content by a few points and re-fired this, looping for
+            // up to a minute at launch.
             let currentContentSize = window.contentLayoutRect.size
             let topEdge = window.frame.maxY
             let contentRect = NSRect(
@@ -81,8 +83,20 @@ struct ContentView: View {
                 size: NSSize(width: currentContentSize.width, height: height)
             )
             var fittedFrame = window.frameRect(forContentRect: contentRect)
+            if let screenFrame = window.screen?.visibleFrame {
+                fittedFrame.size.height = min(fittedFrame.height, screenFrame.height)
+            }
+            window.contentMinSize = NSSize(
+                width: 900,
+                height: window.contentRect(forFrameRect: fittedFrame).height
+            )
             fittedFrame.origin.x = window.frame.origin.x
             fittedFrame.origin.y = topEdge - fittedFrame.height
+            // Compare whole frames: the layout rect excludes the title bar, so
+            // it never matches the requested content height.
+            guard abs(fittedFrame.height - window.frame.height) > 0.5
+                    || abs(fittedFrame.origin.y - window.frame.origin.y) > 0.5
+            else { return }
             window.setFrame(fittedFrame, display: true, animate: false)
         }
         .tint(WoadieTheme.primary)
