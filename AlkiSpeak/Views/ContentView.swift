@@ -86,12 +86,6 @@ struct ContentView: View {
             window.setFrame(fittedFrame, display: true, animate: false)
         }
         .tint(WoadieTheme.primary)
-        .task {
-            while !Task.isCancelled {
-                model.refreshResourceStats()
-                try? await Task.sleep(for: .seconds(10))
-            }
-        }
         .alert("Port In Use", isPresented: Binding(
             get: { model.showPortInUseAlert },
             set: { model.showPortInUseAlert = $0 }

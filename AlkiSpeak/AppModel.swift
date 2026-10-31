@@ -1367,9 +1367,16 @@ final class AppModel: ObservableObject {
                     return
                 }
                 let wasReady = self.store.engineStatus == .idle || self.store.engineStatus == .running
-                self.store.engineHealth = summary
-                self.store.engineStatus = summary.status
-                self.refreshTelemetry()
+                // Each 5 s health check only bumps its timestamps, which no
+                // view shows; assigning the summary anyway would republish
+                // the store and redraw the window every check.
+                if !summary.matchesIgnoringCheckTimes(self.store.engineHealth) {
+                    self.store.engineHealth = summary
+                }
+                if summary.status != self.store.engineStatus {
+                    self.store.engineStatus = summary.status
+                    self.refreshTelemetry()
+                }
                 if summary.status == .idle || summary.status == .running {
                     if self.store.lastError?.code.hasPrefix("engine.") == true {
                         self.store.clearErrorMessage()
@@ -1886,5 +1893,19 @@ final class AppModel: ObservableObject {
         let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return hasText
             && (status.isAvailableForRemoteSpeech || isSelectedVoiceLocal || isSelectedVoiceEngineIndependent)
+    }
+}
+
+private extension EngineHealthSummary {
+    /// Equal apart from the health-check timestamps, which change on every
+    /// check but aren't shown anywhere.
+    func matchesIgnoringCheckTimes(_ other: EngineHealthSummary) -> Bool {
+        var lhs = self
+        var rhs = other
+        lhs.lastHealthCheckAt = nil
+        lhs.lastSuccessfulHealthCheckAt = nil
+        rhs.lastHealthCheckAt = nil
+        rhs.lastSuccessfulHealthCheckAt = nil
+        return lhs == rhs
     }
 }
