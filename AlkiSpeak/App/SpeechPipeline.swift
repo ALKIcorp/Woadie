@@ -51,9 +51,14 @@ final class SpeechPipeline {
                 .enumerated()
                 .map { SpeechSegment(index: $0.offset, text: $0.element) }
         } else {
-            segments = requestPolicy.segments(for: text)
+            // mlx-audio models have a large fixed cost per request and run
+            // near real time, so a short opening only moves the wait to a gap
+            // after it. Every other engine starts sooner with one.
+            let isMLXVoice = store.cloudSettings.voice(withID: voice)?.provider == .localMLX
+            segments = requestPolicy.segments(for: text, leadIn: !isMLXVoice)
         }
-        if segments.count > 1 {
+        // A short lead-in alone is routine, not worth a message.
+        if segments.count > 2 {
             store.userMessage = "Large text split into \(segments.count) segments. Sending smaller engine requests to avoid request timeouts."
         }
         let jobID = UUID()
@@ -162,12 +167,18 @@ final class SpeechPipeline {
             try await host?.prepareEngine(forVoice: voice)
             if segments.count > 1 {
                 updateJob(jobID, status: .queued, error: nil)
+            }
+            if segments.count > 2 {
                 store.userMessage = "Speaking \(segments.count) segments in order…"
             }
 
             await ttsQueue.enqueue(segments)
             dependencies.playbackCoordinator.prepare(characterCounts: segments.map { $0.text.count })
-            await ttsQueue.process(canGenerate: {
+            // Network voices generate a segment ahead; engines on this Mac
+            // go one at a time.
+            let runsOnThisMac = store.cloudSettings.voice(withID: voice)?.provider == .localMLX
+            let lookahead = EngineRequestPolicy.generationConcurrency(forVoice: voice, runsOnThisMac: runsOnThisMac)
+            await ttsQueue.process(maxConcurrent: lookahead, canGenerate: {
                 await SystemResourceMonitor.shared.canProceed()
             }, onWaiting: { waiting in
                 await MainActor.run {
@@ -211,7 +222,9 @@ final class SpeechPipeline {
                         .playback,
                         jobID: jobID,
                         message: "Segment ready for playback.",
-                        context: ["segmentIndex": "\(segment.index)"]
+                        context: segment.index == 0
+                            ? ["segmentIndex": "0", "timeToFirstAudioMs": "\(Int(self.diagnostics.generationSeconds * 1000))"]
+                            : ["segmentIndex": "\(segment.index)"]
                     )
                     self.store.playback.currentSegmentID = segment.id
                     self.updateJobSegment(jobID, segmentID: segment.id, status: .ready, audioURL: segment.audioURL, error: nil)

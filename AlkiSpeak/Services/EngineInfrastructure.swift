@@ -84,6 +84,49 @@ enum TextBatcher {
         return result
     }
 
+    /// Longest opening chunk `leadIn` aims for. Synthesis time grows with
+    /// length, so a short first request is what makes speech start quickly;
+    /// later chunks are generated while it plays.
+    static let leadInLimit = 100
+    /// Openings shorter than these sound clipped, so they aren't used.
+    private static let minimumLeadInSentence = 20
+    private static let minimumLeadInClause = 25
+
+    /// Splits a short opening off `text` so the first request finishes fast:
+    /// the first sentence of at least 20 characters ending within
+    /// `leadInLimit`, else the first clause break (`,` `;` `:` or a dash) of
+    /// at least 25. Returns nil when `text` is already short or has no break
+    /// that early.
+    static func leadIn(of text: String) -> (lead: String, rest: String)? {
+        let characters = Array(text)
+        guard characters.count > leadInLimit else { return nil }
+        let window = min(leadInLimit, characters.count - 1)
+
+        var sentenceCut: Int?
+        var clauseCut: Int?
+        for index in 0..<window {
+            if isSentenceBoundary(characters, at: index), index + 1 >= minimumLeadInSentence {
+                sentenceCut = index + 1
+                break
+            } else if clauseCut == nil, isClauseBoundary(characters, at: index), index + 1 >= minimumLeadInClause {
+                clauseCut = index + 1
+            }
+        }
+        guard let cut = sentenceCut ?? clauseCut, tagSafeCut(characters, at: cut) == cut else { return nil }
+        let lead = String(characters[..<cut]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let rest = String(characters[cut...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !lead.isEmpty, !rest.isEmpty else { return nil }
+        return (lead, rest)
+    }
+
+    private static func isClauseBoundary(_ characters: [Character], at index: Int) -> Bool {
+        let mark = characters[index]
+        guard mark == "," || mark == ";" || mark == ":" || mark == "—" || mark == "–" else { return false }
+        guard index + 1 < characters.count, characters[index + 1].isWhitespace else { return false }
+        // "1,000" and "3:30" are numbers, not pauses.
+        return !(index > 0 && characters[index - 1].isNumber && characters[index + 1].isNumber)
+    }
+
     /// Longest inline expression cue a hard cut steps back over, e.g. `[Dissatisfaction-hnn]`.
     private static let maxTagLength = 32
 
@@ -208,7 +251,12 @@ actor TTSQueue {
         logger.debug("Queue cancellation requested generation=\(self.generation)")
     }
 
+    /// Generates every queued segment and hands each to `onReady` strictly in
+    /// order. Up to `maxConcurrent` segments generate at once, so later ones
+    /// are ready by the time playback reaches them; 1 generates one at a time.
+    /// A failure stops the run after the segments before it are delivered.
     func process(
+        maxConcurrent: Int = 1,
         canGenerate: @escaping () async -> Bool = { true },
         onWaiting: @escaping (Bool) async -> Void = { _ in },
         generate: @escaping (TTSSegment) async throws -> GeneratedSegment,
@@ -222,33 +270,69 @@ actor TTSQueue {
         let myGeneration = generation
         isProcessing = true
         defer { if myGeneration == generation { isProcessing = false } }
-        logger.info("Queue processing started segments=\(self.segments.count) generation=\(myGeneration)")
+        let limit = max(1, maxConcurrent)
+        logger.info("Queue processing started segments=\(self.segments.count) generation=\(myGeneration) maxConcurrent=\(limit)")
 
-        for index in segments.indices {
-            guard myGeneration == generation, !Task.isCancelled else { return }
-            while !(await canGenerate()) {
-                guard myGeneration == generation, !Task.isCancelled else { return }
-                await onWaiting(true)
-                try? await Task.sleep(for: .seconds(2))
-            }
-            await onWaiting(false)
-            guard myGeneration == generation, segments.indices.contains(index) else { return }
-            segments[index].status = .generating
-            let segment = segments[index]
-            logger.debug("Generating segment index=\(segment.index) chars=\(segment.text.count)")
+        let count = segments.count
+        await withTaskGroup(of: (Int, Result<GeneratedSegment, Error>).self) { group in
+            var nextToStart = 0
+            var nextToDeliver = 0
+            var finished: [Int: Result<GeneratedSegment, Error>] = [:]
 
-            do {
-                let generated = try await generate(segment)
-                guard myGeneration == generation, !Task.isCancelled, segments.indices.contains(index) else { return }
-                segments[index].audioURL = generated.audioURL
-                segments[index].durationSeconds = generated.durationSeconds
-                segments[index].status = .ready(generated.audioURL)
-                try await onReady(segments[index])
-            } catch {
-                guard myGeneration == generation, segments.indices.contains(index) else { return }
-                segments[index].status = .failed(error)
-                logger.error("Segment failed index=\(segment.index) error=\(error.localizedDescription, privacy: .public)")
-                return
+            while nextToDeliver < count {
+                // Keep up to `limit` segments generating ahead of playback.
+                while nextToStart < count, nextToStart - nextToDeliver < limit {
+                    guard myGeneration == generation, !Task.isCancelled else { group.cancelAll(); return }
+                    while !(await canGenerate()) {
+                        guard myGeneration == generation, !Task.isCancelled else { group.cancelAll(); return }
+                        await onWaiting(true)
+                        try? await Task.sleep(for: .seconds(2))
+                    }
+                    await onWaiting(false)
+                    guard myGeneration == generation, segments.indices.contains(nextToStart) else { group.cancelAll(); return }
+                    segments[nextToStart].status = .generating
+                    let segment = segments[nextToStart]
+                    logger.debug("Generating segment index=\(segment.index) chars=\(segment.text.count)")
+                    group.addTask {
+                        do {
+                            return (segment.index, .success(try await generate(segment)))
+                        } catch {
+                            return (segment.index, .failure(error))
+                        }
+                    }
+                    nextToStart += 1
+                }
+
+                guard let (index, result) = await group.next() else { return }
+                guard myGeneration == generation, !Task.isCancelled else { group.cancelAll(); return }
+                finished[index] = result
+
+                // Deliver whatever is now ready in order.
+                while let result = finished.removeValue(forKey: nextToDeliver) {
+                    guard segments.indices.contains(nextToDeliver) else { group.cancelAll(); return }
+                    switch result {
+                    case .success(let generated):
+                        segments[nextToDeliver].audioURL = generated.audioURL
+                        segments[nextToDeliver].durationSeconds = generated.durationSeconds
+                        segments[nextToDeliver].status = .ready(generated.audioURL)
+                        do {
+                            try await onReady(segments[nextToDeliver])
+                        } catch {
+                            guard myGeneration == generation, segments.indices.contains(nextToDeliver) else { group.cancelAll(); return }
+                            segments[nextToDeliver].status = .failed(error)
+                            logger.error("Segment failed index=\(nextToDeliver) error=\(error.localizedDescription, privacy: .public)")
+                            group.cancelAll()
+                            return
+                        }
+                        guard myGeneration == generation, !Task.isCancelled else { group.cancelAll(); return }
+                    case .failure(let error):
+                        segments[nextToDeliver].status = .failed(error)
+                        logger.error("Segment failed index=\(nextToDeliver) error=\(error.localizedDescription, privacy: .public)")
+                        group.cancelAll()
+                        return
+                    }
+                    nextToDeliver += 1
+                }
             }
         }
     }

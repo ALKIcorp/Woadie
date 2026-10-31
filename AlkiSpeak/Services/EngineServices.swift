@@ -25,21 +25,39 @@ struct EngineRequestPolicy: Hashable {
         maxSegmentCharacters: AppConfig.maxSegmentCharacters
     )
 
-    func segments(for text: String) -> [SpeechSegment] {
+    /// `leadIn` splits a short opening off so the first request returns sooner.
+    func segments(for text: String, leadIn: Bool = true) -> [SpeechSegment] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count > maxDirectCharacters else {
-            return [SpeechSegment(index: 0, text: trimmed)]
-        }
-
         let texts: [String]
         if maxDirectCharacters < 200 {
+            guard trimmed.count > maxDirectCharacters else {
+                return [SpeechSegment(index: 0, text: trimmed)]
+            }
             texts = Self.fixedSegments(for: trimmed, maxCharacters: min(maxSegmentCharacters, 250))
-        } else {
+        } else if leadIn, let (lead, rest) = TextBatcher.leadIn(of: trimmed) {
+            // A short opening request gets sound out sooner; the rest is
+            // batched as usual and generated while the opening plays.
+            texts = [lead] + TextBatcher.segments(for: rest)
+        } else if trimmed.count > maxDirectCharacters {
             texts = TextBatcher.segments(for: trimmed)
+        } else {
+            return [SpeechSegment(index: 0, text: trimmed)]
         }
         return texts.enumerated().map { index, segment in
             SpeechSegment(index: index, text: segment)
         }
+    }
+
+    /// How many segments may generate at once for a voice. Network voices
+    /// generate ahead of playback so a slow response doesn't leave a gap.
+    /// Engines on this Mac (Python Kokoro, native Kokoro, mlx-audio) already
+    /// use the whole CPU/GPU for one request, so they go one at a time.
+    static func generationConcurrency(forVoice voice: String, runsOnThisMac: Bool) -> Int {
+        if runsOnThisMac { return 1 }
+        if voice.hasPrefix(EdgeSpeechGenerationService.idPrefix) || CloudSpeechGenerationService.isCloudVoice(voice) {
+            return 2
+        }
+        return 1
     }
 
     private static func fixedSegments(for text: String, maxCharacters: Int) -> [String] {

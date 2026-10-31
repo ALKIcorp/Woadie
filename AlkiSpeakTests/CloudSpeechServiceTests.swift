@@ -1110,3 +1110,164 @@ extension CloudSpeechServiceTests {
         XCTAssertFalse(CloudProvider.elevenLabs.isRetired(asOf: date(2030, 1, 1)), "Other providers never retire")
     }
 }
+
+final class FirstSoundTests: XCTestCase {
+    // MARK: Lead-in segment
+
+    func testLeadInIsTheFirstSentenceLongEnoughToSoundNatural() throws {
+        let text = "This opening sentence is short. So is this one. " + String(repeating: "Then a much longer stretch follows. ", count: 10)
+        let split = try XCTUnwrap(TextBatcher.leadIn(of: text))
+
+        XCTAssertEqual(split.lead, "This opening sentence is short.")
+        XCTAssertTrue(split.rest.hasPrefix("So is this one."))
+
+        // "Hi there." is too short to stand alone, so the lead runs to the next sentence.
+        let greeting = try XCTUnwrap(TextBatcher.leadIn(of: "Hi there. Thanks for listening today. " + String(repeating: "More words follow. ", count: 8)))
+        XCTAssertEqual(greeting.lead, "Hi there. Thanks for listening today.")
+    }
+
+    func testLeadInFallsBackToAClauseWhenTheFirstSentenceIsLong() throws {
+        let text = "AlkiSpeak reads whatever you give it, and the first thing anyone notices is how long it takes before the voice starts. More text."
+        let split = try XCTUnwrap(TextBatcher.leadIn(of: text))
+
+        XCTAssertEqual(split.lead, "AlkiSpeak reads whatever you give it,")
+    }
+
+    func testLeadInLeavesShortTextAndUnbrokenTextAlone() {
+        XCTAssertNil(TextBatcher.leadIn(of: "Short text that fits in one request."))
+        XCTAssertNil(TextBatcher.leadIn(of: String(repeating: "word ", count: 60)), "no sentence or clause break to cut at")
+        XCTAssertNil(TextBatcher.leadIn(of: "Hi, " + String(repeating: "word ", count: 60)), "a clause this short would sound clipped")
+    }
+
+    func testLeadInIgnoresNumbersAndNeverSplitsATag() {
+        // The only "clause" marks are inside a number and a time.
+        XCTAssertNil(TextBatcher.leadIn(of: "It costs 1,000 dollars at 3:30 in the afternoon " + String(repeating: "and more words ", count: 10)))
+        // A clause break that sits inside an open tag isn't used.
+        let tagged = "[Laughter, warm and long] " + String(repeating: "word ", count: 30)
+        XCTAssertNil(TextBatcher.leadIn(of: tagged))
+    }
+
+    func testRequestPolicyStartsWithTheLeadInThenBatchesTheRest() {
+        let text = "A quick first sentence. " + String(repeating: "Then a much longer stretch follows here. ", count: 15)
+        let segments = EngineRequestPolicy.live.segments(for: text).map(\.text)
+
+        XCTAssertEqual(segments.first, "A quick first sentence.")
+        XCTAssertTrue(segments.allSatisfy { $0.count <= 250 })
+        XCTAssertEqual(segments.joined(separator: " "), text.trimmingCharacters(in: .whitespaces))
+    }
+
+    func testRequestPolicySplitsAMediumParagraphSoSoundStartsSooner() {
+        let text = "One short sentence comes first. " + String(repeating: "Another clause keeps going on. ", count: 4)
+        XCTAssertLessThanOrEqual(text.count, 250)
+
+        let segments = EngineRequestPolicy.live.segments(for: text)
+        XCTAssertEqual(segments.count, 2)
+        XCTAssertEqual(segments[0].text, "One short sentence comes first.")
+    }
+
+    func testRequestPolicyCanSkipTheLeadInForSlowEngines() {
+        let text = "One short sentence comes first. " + String(repeating: "Another clause keeps going on. ", count: 4)
+
+        XCTAssertEqual(EngineRequestPolicy.live.segments(for: text, leadIn: false).count, 1)
+    }
+
+    func testGenerationConcurrencyPerVoice() {
+        XCTAssertEqual(EngineRequestPolicy.generationConcurrency(forVoice: "edge:en-US-AriaNeural", runsOnThisMac: false), 2)
+        XCTAssertEqual(EngineRequestPolicy.generationConcurrency(forVoice: "cloud:\(UUID())", runsOnThisMac: false), 2)
+        XCTAssertEqual(EngineRequestPolicy.generationConcurrency(forVoice: "cloud:\(UUID())", runsOnThisMac: true), 1, "mlx-audio voices")
+        XCTAssertEqual(EngineRequestPolicy.generationConcurrency(forVoice: "af_heart", runsOnThisMac: false), 1)
+        XCTAssertEqual(EngineRequestPolicy.generationConcurrency(forVoice: "kokoro-native:af_heart", runsOnThisMac: false), 1)
+    }
+
+    // MARK: Lookahead
+
+    func testLookaheadDeliversInOrderEvenWhenLaterSegmentsFinishFirst() async {
+        let queue = TTSQueue()
+        await queue.enqueue(["Slow first.", "Fast second.", "Fast third."])
+        let log = FirstSoundLog()
+
+        await queue.process(maxConcurrent: 3, generate: { segment in
+            // The first segment is the slowest, so it finishes last.
+            try await Task.sleep(nanoseconds: segment.index == 0 ? 60_000_000 : 5_000_000)
+            await log.add("done-\(segment.index)")
+            return GeneratedSegment(audioURL: URL(fileURLWithPath: "/tmp/\(segment.index).wav"), durationSeconds: nil)
+        }, onReady: { segment in
+            await log.add("ready-\(segment.index)")
+        })
+
+        let events = await log.events
+        XCTAssertEqual(events.filter { $0.hasPrefix("ready") }, ["ready-0", "ready-1", "ready-2"])
+        XCTAssertLessThan(events.firstIndex(of: "done-1")!, events.firstIndex(of: "done-0")!, "segment 1 generated while 0 was still going")
+    }
+
+    func testLookaheadNeverRunsMoreThanTheLimitAtOnce() async {
+        let queue = TTSQueue()
+        await queue.enqueue((0..<6).map { "Segment \($0)." })
+        let gauge = FirstSoundGauge()
+
+        await queue.process(maxConcurrent: 2, generate: { segment in
+            await gauge.enter()
+            try await Task.sleep(nanoseconds: 10_000_000)
+            await gauge.leave()
+            return GeneratedSegment(audioURL: URL(fileURLWithPath: "/tmp/\(segment.index).wav"), durationSeconds: nil)
+        }, onReady: { _ in })
+
+        let peak = await gauge.peak
+        XCTAssertEqual(peak, 2)
+    }
+
+    func testLookaheadStopsAtAFailureAfterDeliveringEarlierSegments() async {
+        struct Boom: Error {}
+        let queue = TTSQueue()
+        await queue.enqueue(["Fine.", "Broken.", "Never played."])
+        let log = FirstSoundLog()
+
+        await queue.process(maxConcurrent: 3, generate: { segment in
+            if segment.index == 1 { throw Boom() }
+            try await Task.sleep(nanoseconds: 5_000_000)
+            return GeneratedSegment(audioURL: URL(fileURLWithPath: "/tmp/\(segment.index).wav"), durationSeconds: nil)
+        }, onReady: { segment in
+            await log.add("ready-\(segment.index)")
+        })
+
+        let events = await log.events
+        XCTAssertEqual(events, ["ready-0"])
+        let snapshot = await queue.snapshot()
+        guard case .failed = snapshot[1].status else { return XCTFail("segment 1 should be marked failed") }
+    }
+
+    func testCancellingStopsALookaheadRun() async {
+        let queue = TTSQueue()
+        await queue.enqueue(["One.", "Two.", "Three.", "Four."])
+        let log = FirstSoundLog()
+
+        let run = Task {
+            await queue.process(maxConcurrent: 2, generate: { segment in
+                try await Task.sleep(nanoseconds: 30_000_000)
+                return GeneratedSegment(audioURL: URL(fileURLWithPath: "/tmp/\(segment.index).wav"), durationSeconds: nil)
+            }, onReady: { segment in
+                await log.add("ready-\(segment.index)")
+            })
+        }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        await queue.cancel()
+        await run.value
+
+        let events = await log.events
+        XCTAssertTrue(events.isEmpty, "nothing should play after cancel, got \(events)")
+        let isProcessing = await queue.processing
+        XCTAssertFalse(isProcessing)
+    }
+}
+
+private actor FirstSoundLog {
+    var events: [String] = []
+    func add(_ event: String) { events.append(event) }
+}
+
+private actor FirstSoundGauge {
+    private var current = 0
+    private(set) var peak = 0
+    func enter() { current += 1; peak = max(peak, current) }
+    func leave() { current -= 1 }
+}
