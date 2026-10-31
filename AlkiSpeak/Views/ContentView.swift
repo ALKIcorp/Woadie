@@ -72,31 +72,32 @@ struct ContentView: View {
             let mainWindow = NSApp.windows.first { $0.styleMask.contains(.titled) }
             guard let window = mainWindow ?? NSApp.keyWindow else { return }
 
-            // Never ask for more than the screen holds; past that the content
-            // scrolls. Asking for more made macOS shrink the window again, which
-            // moved the content by a few points and re-fired this, looping for
-            // up to a minute at launch.
             let currentContentSize = window.contentLayoutRect.size
             let topEdge = window.frame.maxY
             let contentRect = NSRect(
                 origin: .zero,
-                size: NSSize(width: currentContentSize.width, height: height)
+                size: NSSize(width: currentContentSize.width, height: ceil(height))
             )
             var fittedFrame = window.frameRect(forContentRect: contentRect)
+            // Never ask for more than the screen holds; past that the content scrolls.
             if let screenFrame = window.screen?.visibleFrame {
                 fittedFrame.size.height = min(fittedFrame.height, screenFrame.height)
             }
+            // The measured content height shifts by a few points with the
+            // window's own height (892.5 at 896 tall, 895.5 at 893), so fitting
+            // it exactly made the two chase each other at 80% CPU for up to a
+            // minute after launch. Grow whenever the content needs more room;
+            // shrink only for a real change.
+            let grows = fittedFrame.height > window.frame.height + 0.5
+            let shrinks = fittedFrame.height < window.frame.height - 4
+            guard grows || shrinks else { return }
+
             window.contentMinSize = NSSize(
                 width: 900,
                 height: window.contentRect(forFrameRect: fittedFrame).height
             )
             fittedFrame.origin.x = window.frame.origin.x
             fittedFrame.origin.y = topEdge - fittedFrame.height
-            // Compare whole frames: the layout rect excludes the title bar, so
-            // it never matches the requested content height.
-            guard abs(fittedFrame.height - window.frame.height) > 0.5
-                    || abs(fittedFrame.origin.y - window.frame.origin.y) > 0.5
-            else { return }
             window.setFrame(fittedFrame, display: true, animate: false)
         }
         .tint(WoadieTheme.primary)
