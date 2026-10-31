@@ -521,10 +521,30 @@ final class AppModel: ObservableObject {
     private func prepareForSelectedVoice() {
         guard !AppConfig.isRunningUnitTests else { return }
         if isSelectedVoicePythonKokoro {
+            // Only one Kokoro runtime at a time: the CoreML model and the
+            // Python engine hold the same weights.
+            Task { [nativeKokoro = dependencies.nativeKokoroService] in await nativeKokoro.release() }
             startEngine()
+        } else if NativeKokoroSpeechService.isNativeKokoroVoice(selectedVoice) {
+            stopPythonKokoroEngineIfIdle()
         } else if isSelectedVoiceLocalMLX {
             warmUpLocalVoiceServer()
         }
+    }
+
+    /// Stops the Python Kokoro engine when a native Kokoro voice takes over,
+    /// unless it is still generating. Finished clips play without it.
+    private func stopPythonKokoroEngineIfIdle() {
+        let supervisor = dependencies.engineSupervisor
+        guard status.isProcessExpectedAlive || supervisor.isRunning,
+              supervisor.healthSummary.activeJobID == nil
+        else { return }
+        consoleTrace("stopping Python Kokoro engine; a native Kokoro voice was selected")
+        engineStartGeneration &+= 1
+        engineStartTask?.cancel()
+        engineStartTask = nil
+        supervisor.stop()
+        store.engineStatus = .stopped
     }
 
     private static let kokoroVoiceCacheKey = "AlkiSpeak.kokoroVoiceCache"
@@ -587,7 +607,14 @@ final class AppModel: ObservableObject {
                 prepareLocalModel(model)
             }
             if dependencies.nativeKokoroService.isEnabled {
-                loadNativeKokoro()
+                let cachedNative = dependencies.nativeKokoroService.cachedVoices
+                if cachedNative.isEmpty {
+                    loadNativeKokoro()
+                } else {
+                    // fetchVoices lists these from the cache; the model loads
+                    // on the first native request instead of at launch.
+                    nativeKokoroState = .ready(voiceCount: cachedNative.count)
+                }
             }
         } else {
             consoleTrace("unit test mode detected; skipping auto-start")

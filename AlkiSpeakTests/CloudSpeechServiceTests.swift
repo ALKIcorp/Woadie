@@ -671,6 +671,39 @@ final class CloudSpeechServiceTests: XCTestCase {
         XCTAssertTrue(results.allSatisfy { $0.audioData.starts(with: Data("RIFF".utf8)) })
     }
 
+    func testNativeKokoroListsCachedVoicesWithoutLoadingTheModel() async throws {
+        let fake = FakeKokoroModel()
+        let loads = LoadCounter()
+        let service = nativeService { await loads.increment(); return fake }
+        service.isEnabled = true
+        _ = try await service.prepare()
+        await service.release()
+
+        let voices = try await service.fetchVoices()
+
+        XCTAssertEqual(voices, ["kokoro-native:af_heart", "kokoro-native:ff_siwis"])
+        let loaded = await service.checkHealth()
+        XCTAssertFalse(loaded, "Listing voices from the cache must not load the model")
+        let loadCount = await loads.count
+        XCTAssertEqual(loadCount, 1)
+    }
+
+    func testNativeKokoroReloadsAfterRelease() async throws {
+        let fake = FakeKokoroModel()
+        let loads = LoadCounter()
+        let service = nativeService { await loads.increment(); return fake }
+        service.isEnabled = true
+
+        _ = try await service.synthesize(text: "Hello", voice: "kokoro-native:af_heart", jobID: nil)
+        await service.release()
+        let releasedHealth = await service.checkHealth()
+        XCTAssertFalse(releasedHealth)
+        _ = try await service.synthesize(text: "Hello", voice: "kokoro-native:af_heart", jobID: nil)
+
+        let loadCount = await loads.count
+        XCTAssertEqual(loadCount, 2, "A released model loads again on the next request")
+    }
+
     func testNativeKokoroLanguageMapping() {
         let cases = ["af_heart": "en", "bm_george": "en", "ef_dora": "es", "ff_siwis": "fr", "hf_alpha": "hi",
                      "if_sara": "it", "jf_alpha": "ja", "pf_dora": "pt", "zf_xiaobei": "zh"]

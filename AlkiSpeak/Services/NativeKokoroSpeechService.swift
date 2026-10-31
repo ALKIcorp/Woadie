@@ -45,9 +45,20 @@ final class NativeKokoroSpeechService: SpeechGenerating {
         set { defaults.set(newValue, forKey: Self.enabledDefaultsKey) }
     }
 
+    static let voiceCacheKey = "AlkiSpeak.nativeKokoroVoiceCache"
+
+    /// Voice names from the last time the model was loaded, so listing voices
+    /// doesn't load the model into memory.
+    var cachedVoices: [String] {
+        get { defaults.stringArray(forKey: Self.voiceCacheKey) ?? [] }
+        set { defaults.set(newValue, forKey: Self.voiceCacheKey) }
+    }
+
     /// Loads (downloading on first use) and returns the voice count.
     func prepare() async throws -> Int {
-        try await engine.voices().count
+        let voices = try await engine.voices()
+        cachedVoices = voices
+        return voices.count
     }
 
     func checkHealth() async -> Bool {
@@ -57,7 +68,18 @@ final class NativeKokoroSpeechService: SpeechGenerating {
 
     func fetchVoices() async throws -> [String] {
         guard isEnabled else { return [] }
-        return try await engine.voices().map { Self.idPrefix + $0 }
+        let cached = cachedVoices
+        if !cached.isEmpty, !(await engine.isLoaded) {
+            return cached.map { Self.idPrefix + $0 }
+        }
+        let voices = try await engine.voices()
+        cachedVoices = voices
+        return voices.map { Self.idPrefix + $0 }
+    }
+
+    /// Frees the model's memory; the next request loads it again.
+    func release() async {
+        await engine.unload()
     }
 
     func synthesize(text: String, voice: String, jobID: UUID?) async throws -> SpeechGenerationResult {
@@ -155,20 +177,49 @@ final class NativeKokoroSpeechService: SpeechGenerating {
 /// is synchronous and its model type isn't thread-safe.
 private actor NativeKokoroEngine {
     private let loadModel: @Sendable () async throws -> NativeKokoroSynthesizing
+    private let idleTimeout: TimeInterval
     private var model: NativeKokoroSynthesizing?
     private var loading: Task<NativeKokoroSynthesizing, Error>?
+    private var idleTask: Task<Void, Never>?
 
-    init(loadModel: @escaping @Sendable () async throws -> NativeKokoroSynthesizing) {
+    init(
+        loadModel: @escaping @Sendable () async throws -> NativeKokoroSynthesizing,
+        idleTimeout: TimeInterval = 10 * 60
+    ) {
         self.loadModel = loadModel
+        self.idleTimeout = idleTimeout
     }
 
     var isLoaded: Bool { model != nil }
 
     func voices() async throws -> [String] {
-        try await loadedModel().availableVoices.sorted()
+        defer { scheduleIdleUnload() }
+        return try await loadedModel().availableVoices.sorted()
+    }
+
+    /// Drops the model unless a load is in progress.
+    func unload() {
+        idleTask?.cancel()
+        idleTask = nil
+        guard loading == nil else { return }
+        model = nil
+    }
+
+    /// The loaded model holds a few hundred MB; free it when unused for a while.
+    private func scheduleIdleUnload() {
+        idleTask?.cancel()
+        guard idleTimeout > 0 else { return }
+        let timeout = idleTimeout
+        idleTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self?.unload()
+        }
     }
 
     func synthesize(text: String, voice: String, language: String) async throws -> [Float] {
+        idleTask?.cancel()
+        defer { scheduleIdleUnload() }
         let model = try await loadedModel()
         guard model.availableVoices.contains(voice) else {
             throw AlkiSpeakError.generation(
