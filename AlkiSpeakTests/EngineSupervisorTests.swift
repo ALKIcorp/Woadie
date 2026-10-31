@@ -853,6 +853,38 @@ final class EngineSupervisorTests: XCTestCase {
     }
 
     @MainActor
+    func testAddingLocalVoicePreparesItsModelInTheBackground() async {
+        let server = FakeLocalVoiceServer()
+        let model = AppModel(store: AppStore(), dependencies: .test(engineSupervisor: FakeEngineSupervisor(), localVoiceServer: server))
+        let ming = LocalVoiceCatalog.models[0]
+
+        model.addLocalPreset(model: ming, voice: ming.voices[0])
+        XCTAssertEqual(model.localModelStates[ming.id], .preparing)
+        for _ in 0..<100 where model.localModelStates[ming.id] != nil { await Task.yield() }
+
+        XCTAssertEqual(server.preparedModels, [ming.id])
+        XCTAssertNil(model.localModelStates[ming.id], "Cleared once the model is ready")
+    }
+
+    @MainActor
+    func testExpressionTagsGoAtTheCursor() {
+        let model = AppModel(store: AppStore(), dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+        model.inputText = "Hello there"
+
+        var cursor = model.insertExpressionTag("Laughter", replacing: 5..<5)
+        XCTAssertEqual(model.inputText, "Hello [Laughter] there")
+        XCTAssertEqual(cursor, 16, "Cursor lands after the tag and its space")
+
+        cursor = model.insertExpressionTag("Sigh", replacing: 0..<5)
+        XCTAssertEqual(model.inputText, "[Sigh] [Laughter] there", "A selection is replaced")
+        XCTAssertEqual(cursor, 6)
+
+        model.inputText = "Hi"
+        model.insertExpressionTag("Cough", replacing: 99..<120)
+        XCTAssertEqual(model.inputText, "Hi [Cough] ", "Out-of-range positions clamp to the end")
+    }
+
+    @MainActor
     func testCloudAPIKeyRoundTripsThroughSecretStore() {
         let secrets = InMemorySecretStore()
         let model = AppModel(store: AppStore(), dependencies: .test(engineSupervisor: FakeEngineSupervisor(), secretStore: secrets))

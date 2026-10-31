@@ -277,12 +277,16 @@ private struct CloudVoicesSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Picker("Provider", selection: $providerID) {
-                ForEach(CloudProvider.all) { provider in
+                ForEach(CloudProvider.selectable()) { provider in
                     Text(provider.name).tag(provider.id)
                 }
             }
             .pickerStyle(.menu)
             .labelsHidden()
+
+            if let notice = provider.notice {
+                caption("⚠︎ " + notice)
+            }
 
             if provider.defaultBaseURL == nil {
                 HStack {
@@ -419,7 +423,7 @@ private struct CloudVoicesSettings: View {
                         Text(localModel.name)
                             .font(WoadieTheme.rounded(size: 12, weight: .semibold))
                         badge(localModel.license)
-                        badge(String(format: "%.1f GB download", localModel.downloadGB))
+                        modelStatus(localModel)
                     }
                     caption(localModel.summary)
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 6, alignment: .leading)], alignment: .leading, spacing: 6) {
@@ -454,6 +458,29 @@ private struct CloudVoicesSettings: View {
                 }
             }
             caption("Or enter any other mlx-audio model below.")
+        }
+    }
+
+    @ViewBuilder
+    private func modelStatus(_ localModel: LocalVoiceCatalog.Model) -> some View {
+        switch model.localModelStates[localModel.id] {
+        case .preparing:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                badge(String(format: "Downloading %.1f GB…", localModel.downloadGB))
+            }
+        case .failed(let message):
+            badge("Download failed")
+                .help(message)
+            Button("Retry") { model.prepareLocalModel(localModel.id) }
+                .buttonStyle(.plain)
+                .font(WoadieTheme.mono(size: 9, weight: .semibold))
+        case nil:
+            if MLXAudioServerManager.isModelDownloaded(localModel.id) {
+                badge("Downloaded")
+            } else {
+                badge(String(format: "%.1f GB download", localModel.downloadGB))
+            }
         }
     }
 

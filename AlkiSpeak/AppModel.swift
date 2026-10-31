@@ -264,6 +264,7 @@ final class AppModel: ObservableObject {
         selectedVoice = cloudVoice.voiceID
         if cloudVoice.provider == .localMLX {
             warmUpLocalVoiceServer()
+            prepareLocalModel(cloudVoice.model)
         }
     }
 
@@ -301,13 +302,30 @@ final class AppModel: ObservableObject {
         return LocalVoiceCatalog.model(withID: voice.model)?.expressionTags ?? []
     }
 
-    /// Appends `[tag] ` to the composer, separated from any existing text.
-    func insertExpressionTag(_ tag: String) {
-        var text = inputText
-        if let last = text.last, !last.isWhitespace {
-            text += " "
+    /// Inserts `[tag]` at the cursor, replacing any selected text, or at the
+    /// end without one. Spaces are added only where the tag would otherwise
+    /// touch a word. Returns the character offset just after the insertion,
+    /// for the editor to put the cursor back.
+    @discardableResult
+    func insertExpressionTag(_ tag: String, replacing range: Range<Int>? = nil) -> Int {
+        let text = inputText
+        let count = text.count
+        let lower = min(max(range?.lowerBound ?? count, 0), count)
+        let upper = min(max(range?.upperBound ?? count, lower), count)
+        let start = text.index(text.startIndex, offsetBy: lower)
+        let end = text.index(text.startIndex, offsetBy: upper)
+        let before = text[..<start]
+        let after = text[end...]
+
+        var insertion = "[\(tag)]"
+        if let previous = before.last, !previous.isWhitespace {
+            insertion = " " + insertion
         }
-        inputText = text + "[\(tag)] "
+        if after.first.map({ !$0.isWhitespace }) ?? true {
+            insertion += " "
+        }
+        inputText = String(before) + insertion + String(after)
+        return lower + insertion.count
     }
 
     /// Starts the local mlx-audio server in the background so the first local
@@ -319,6 +337,32 @@ final class AppModel: ObservableObject {
                 try await localVoiceServer.ensureRunning()
             } catch {
                 self.consoleTrace("local voice server warm-up failed error=\(String(describing: error))")
+            }
+        }
+    }
+
+    enum LocalModelState: Equatable {
+        case preparing
+        case failed(String)
+    }
+
+    /// Local models currently downloading/loading, or whose preparation failed.
+    /// Absent means idle; Settings checks the disk for "downloaded".
+    @Published private(set) var localModelStates: [String: LocalModelState] = [:]
+
+    /// Downloads and loads a local model in the background with no time limit,
+    /// so its first speech request doesn't have to.
+    func prepareLocalModel(_ modelID: String) {
+        guard localModelStates[modelID] != .preparing else { return }
+        localModelStates[modelID] = .preparing
+        Task { [localVoiceServer = dependencies.localVoiceServer] in
+            do {
+                try await localVoiceServer.prepareModel(modelID)
+                self.localModelStates[modelID] = nil
+            } catch {
+                let message = (error as? AlkiSpeakError)?.message ?? error.localizedDescription
+                self.localModelStates[modelID] = .failed(message)
+                self.consoleTrace("local model prepare failed model=\(modelID) error=\(String(describing: error))")
             }
         }
     }
@@ -483,8 +527,13 @@ final class AppModel: ObservableObject {
             // Edge voices don't depend on the Kokoro engine, so fetch them right
             // away instead of waiting on waitForEngineReady().
             Task { await fetchVoices() }
-            if store.cloudSettings.voices.contains(where: { $0.providerID == CloudProvider.localMLX.id }) {
+            let localModels = Set(store.cloudSettings.voices.filter { $0.provider == .localMLX }.map(\.model))
+            if !localModels.isEmpty {
                 warmUpLocalVoiceServer()
+                // Fetch anything not on disk yet; downloaded models load on first use.
+                for model in localModels where !MLXAudioServerManager.isModelDownloaded(model) {
+                    prepareLocalModel(model)
+                }
             }
             if dependencies.nativeKokoroService.isEnabled {
                 loadNativeKokoro()
@@ -949,12 +998,7 @@ final class AppModel: ObservableObject {
         if FileManager.default.fileExists(atPath: outputURL.path) {
             try FileManager.default.removeItem(at: outputURL)
         }
-        exportSession.outputURL = outputURL
-        exportSession.outputFileType = .m4a
-        await exportSession.export()
-        if let error = exportSession.error {
-            throw error
-        }
+        try await exportSession.export(to: outputURL, as: .m4a)
         return outputURL
     }
 

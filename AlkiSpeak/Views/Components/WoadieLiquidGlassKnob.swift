@@ -39,8 +39,6 @@ struct WoadieLiquidGlassKnob: View {
         
         VStack(spacing: 8) {
             GeometryReader { geometry in
-                let center = CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
-                
                 ZStack {
                     // 1. Base Dial Track (Background slot)
                     DialArc(startAngle: .degrees(135), endAngle: .degrees(45), clockwise: false)

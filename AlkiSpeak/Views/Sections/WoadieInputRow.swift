@@ -2,6 +2,8 @@ import SwiftUI
 
 struct WoadieInputRow: View {
     @ObservedObject var model: AppModel
+    /// Kept while the Expression menu has focus, so a tag lands at the cursor.
+    @State private var selection: TextSelection?
 
     var body: some View {
         AlkiGlassSurface {
@@ -11,6 +13,7 @@ struct WoadieInputRow: View {
                         get: { model.inputText },
                         set: { model.inputText = $0 }
                     ),
+                    selection: $selection,
                     placeholder: "What should AlkiSpeak say?",
                     isDisabled: !model.canEditText
                 )
@@ -31,7 +34,7 @@ struct WoadieInputRow: View {
                     if !model.selectedVoiceExpressionTags.isEmpty {
                         Menu {
                             ForEach(model.selectedVoiceExpressionTags, id: \.self) { tag in
-                                Button("[\(tag)]") { model.insertExpressionTag(tag) }
+                                Button("[\(tag)]") { insert(tag) }
                             }
                         } label: {
                             Label("Expression", systemImage: "face.smiling")
@@ -62,5 +65,12 @@ struct WoadieInputRow: View {
             }
             .padding(15)
         }
+    }
+
+    private func insert(_ tag: String) {
+        let range = selection?.characterRange(in: model.inputText)
+        let cursor = model.insertExpressionTag(tag, replacing: range)
+        let text = model.inputText
+        selection = TextSelection(insertionPoint: text.index(text.startIndex, offsetBy: min(cursor, text.count)))
     }
 }

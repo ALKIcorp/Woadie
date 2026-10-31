@@ -24,10 +24,16 @@ final class InMemorySecretStore: SecretStoring {
 final class FakeLocalVoiceServer: LocalVoiceServerEnsuring {
     var ensureCount = 0
     var stopCount = 0
+    var preparedModels: [String] = []
     var error: Error?
 
     func ensureRunning() async throws {
         ensureCount += 1
+        if let error { throw error }
+    }
+
+    func prepareModel(_ modelID: String) async throws {
+        preparedModels.append(modelID)
         if let error { throw error }
     }
 
@@ -746,5 +752,149 @@ extension CloudSpeechServiceTests {
             XCTAssertGreaterThan(audioSeconds, 1.0)
         }
         print("LIVE native Kokoro: \(voiceCount) voices, load \(String(format: "%.1f", loadSeconds)) s")
+    }
+}
+
+// MARK: - Rough-edge fixes
+
+extension CloudSpeechServiceTests {
+    private func temporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("WoadieTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func spawnSleeper() throws -> Process {
+        let sleeper = Process()
+        sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        sleeper.arguments = ["30"]
+        try sleeper.run()
+        return sleeper
+    }
+
+    func testOrphanedServerFromAForceQuitIsReclaimedAndStopped() async throws {
+        let dir = try temporaryDirectory()
+        let pidFile = dir.appendingPathComponent("server.pid")
+        let orphan = try spawnSleeper()
+        defer { if orphan.isRunning { orphan.terminate() } }
+        try "\(orphan.processIdentifier)\n".write(to: pidFile, atomically: true, encoding: .utf8)
+        StubURLProtocol.handler = { _ in (200, Data(#"{"object":"list","data":[]}"#.utf8)) }
+        let manager = MLXAudioServerManager(
+            executableURL: URL(fileURLWithPath: "/nonexistent"), session: stubSession,
+            pidFileURL: pidFile, isServerProcess: { $0 == orphan.processIdentifier }
+        )
+
+        try await manager.ensureRunning()
+        XCTAssertTrue(manager.isOwnedServerRunning, "A server our earlier run launched is ours to stop")
+        manager.stopOwnedServer()
+
+        orphan.waitUntilExit()
+        XCTAssertFalse(orphan.isRunning)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pidFile.path))
+    }
+
+    func testServerStartedByHandIsNeverStopped() async throws {
+        let dir = try temporaryDirectory()
+        let pidFile = dir.appendingPathComponent("server.pid")
+        let stranger = try spawnSleeper()
+        defer { stranger.terminate() }
+        // A stale PID file naming a process that isn't mlx_audio.server.
+        try "\(stranger.processIdentifier)\n".write(to: pidFile, atomically: true, encoding: .utf8)
+        StubURLProtocol.handler = { _ in (200, Data(#"{"object":"list","data":[]}"#.utf8)) }
+        let manager = MLXAudioServerManager(
+            executableURL: URL(fileURLWithPath: "/nonexistent"), session: stubSession,
+            pidFileURL: pidFile, isServerProcess: { _ in false }
+        )
+
+        try await manager.ensureRunning()
+        XCTAssertFalse(manager.isOwnedServerRunning)
+        manager.stopOwnedServer()
+        XCTAssertTrue(stranger.isRunning, "An unrelated process with a recycled PID must survive")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pidFile.path), "The stale PID file is cleared")
+    }
+
+    func testPrepareModelLoadsOnceWithNoShortTimeout() async throws {
+        let posts = LoadCounter()
+        StubURLProtocol.handler = { request in
+            if request.httpMethod == "POST" {
+                XCTAssertEqual(request.url?.query, "model_name=mlx-community/Some-Model")
+                XCTAssertGreaterThanOrEqual(request.timeoutInterval, 3600)
+                Task { await posts.increment() }
+            }
+            return (200, Data(#"{"status":"success"}"#.utf8))
+        }
+        let manager = MLXAudioServerManager(executableURL: URL(fileURLWithPath: "/nonexistent"), session: stubSession, pidFileURL: nil)
+
+        async let first: Void = manager.prepareModel("mlx-community/Some-Model")
+        async let second: Void = manager.prepareModel("mlx-community/Some-Model")
+        _ = try await (first, second)
+        try await manager.prepareModel("mlx-community/Some-Model")
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let count = await posts.count
+        XCTAssertEqual(count, 1, "Concurrent and repeat prepares share one load")
+    }
+
+    func testPrepareModelFailureIsReadable() async {
+        StubURLProtocol.handler = { request in
+            request.httpMethod == "POST" ? (500, Data(#"{"detail":"Repository not found"}"#.utf8)) : (200, Data())
+        }
+        let manager = MLXAudioServerManager(executableURL: URL(fileURLWithPath: "/nonexistent"), session: stubSession, pidFileURL: nil)
+        do {
+            try await manager.prepareModel("mlx-community/Missing")
+            XCTFail("Expected a load error")
+        } catch let error as AlkiSpeakError {
+            XCTAssertEqual(error.code, "generation.mlx.model-load")
+            XCTAssertTrue(error.message.contains("Repository not found"))
+        } catch {
+            XCTFail("Unexpected error \(error)")
+        }
+    }
+
+    func testModelDownloadedCheckReadsTheHubCache() throws {
+        let hub = try temporaryDirectory()
+        let repo = hub.appendingPathComponent("models--mlx-community--Demo")
+        XCTAssertFalse(MLXAudioServerManager.isModelDownloaded("mlx-community/Demo", hubCache: hub))
+
+        try FileManager.default.createDirectory(at: repo.appendingPathComponent("snapshots/abc"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: repo.appendingPathComponent("blobs"), withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: repo.appendingPathComponent("blobs/123.incomplete").path, contents: Data())
+        XCTAssertFalse(MLXAudioServerManager.isModelDownloaded("mlx-community/Demo", hubCache: hub), "A partial download isn't done")
+
+        try FileManager.default.removeItem(at: repo.appendingPathComponent("blobs/123.incomplete"))
+        XCTAssertTrue(MLXAudioServerManager.isModelDownloaded("mlx-community/Demo", hubCache: hub))
+    }
+
+    func testLocalVoiceWithMissingModelPreparesItBeforeSpeaking() async throws {
+        let local = CloudVoice(providerID: CloudProvider.localMLX.id, model: "test/never-downloaded-\(UUID().uuidString)", voice: "Ryan", label: "Local")
+        settings.settings.voices = [local]
+        StubURLProtocol.handler = { _ in (200, Data([0x01])) }
+
+        _ = try await service.synthesize(text: "Hi", voice: local.voiceID, jobID: nil)
+
+        XCTAssertEqual(localServer.preparedModels, [local.model])
+    }
+
+    func testTwoSpeakersOnOneLineBecomeTwoTurns() {
+        let turns = DialogueScript.turns(in: "Joe: Hi there. Jane (calm): Hello! JOE: Ready? Jane said: no split here.", speakers: ["Joe", "Jane"])
+        XCTAssertEqual(turns, [
+            .init(speaker: "Joe", text: "Hi there."),
+            .init(speaker: "Jane", text: "Hello!", style: "calm"),
+            .init(speaker: "Joe", text: "Ready? Jane said: no split here.")
+        ])
+        XCTAssertEqual(DialogueScript.splitInlineLabels("Joe: Mr. Smith: hello", speakers: ["Joe", "Jane"]), ["Joe: Mr. Smith: hello"])
+    }
+
+    func testOpenAIPresetRetiresOnShutdownDay() throws {
+        let utc = Calendar(identifier: .gregorian)
+        func date(_ y: Int, _ m: Int, _ d: Int) -> Date {
+            DateComponents(calendar: utc, timeZone: TimeZone(identifier: "UTC"), year: y, month: m, day: d).date!
+        }
+        XCTAssertFalse(CloudProvider.openAI.isRetired(asOf: date(2027, 1, 5)))
+        XCTAssertTrue(CloudProvider.openAI.isRetired(asOf: date(2027, 1, 6)))
+        XCTAssertTrue(CloudProvider.selectable(asOf: date(2026, 12, 1)).contains(.openAI))
+        XCTAssertFalse(CloudProvider.selectable(asOf: date(2027, 2, 1)).contains(.openAI))
+        XCTAssertNotNil(CloudProvider.openAI.notice)
+        XCTAssertFalse(CloudProvider.elevenLabs.isRetired(asOf: date(2030, 1, 1)), "Other providers never retire")
     }
 }

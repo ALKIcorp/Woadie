@@ -29,6 +29,15 @@ struct CloudProvider: Identifiable, Hashable {
     let modelPrompt: String
     let voicePrompt: String
     var style: CloudAPIStyle = .openAICompatible
+    /// After this date the provider's models no longer work: it leaves the
+    /// picker and saved voices get a clear error instead of a raw failure.
+    var retiresOn: Date? = nil
+    /// Shown under the provider in Settings.
+    var notice: String? = nil
+
+    func isRetired(asOf now: Date = Date()) -> Bool {
+        retiresOn.map { now >= $0 } ?? false
+    }
 
     static let elevenLabs = CloudProvider(
         id: "elevenlabs",
@@ -71,7 +80,11 @@ struct CloudProvider: Identifiable, Hashable {
         defaultBaseURL: "https://api.openai.com/v1",
         requiresAPIKey: true,
         modelPrompt: "e.g. gpt-4o-mini-tts",
-        voicePrompt: "e.g. marin"
+        voicePrompt: "e.g. marin",
+        // tts-1, tts-1-hd and gpt-4o-mini-tts shut down on 2027-01-06, and
+        // their replacement doesn't serve /v1/audio/speech.
+        retiresOn: DateComponents(calendar: Calendar(identifier: .gregorian), timeZone: TimeZone(identifier: "UTC"), year: 2027, month: 1, day: 6).date,
+        notice: "OpenAI shuts down its /v1/audio/speech models (tts-1, tts-1-hd, gpt-4o-mini-tts) on Jan 6, 2027."
     )
     static let mistral = CloudProvider(
         id: "mistral",
@@ -102,6 +115,11 @@ struct CloudProvider: Identifiable, Hashable {
 
     static func provider(withID id: String) -> CloudProvider? {
         all.first { $0.id == id }
+    }
+
+    /// Providers offered for new voices: everything not yet retired.
+    static func selectable(asOf now: Date = Date()) -> [CloudProvider] {
+        all.filter { !$0.isRetired(asOf: now) }
     }
 
     /// The custom provider takes an optional key, so it always offers the field.
@@ -279,6 +297,13 @@ final class CloudSpeechGenerationService: SpeechGenerating {
         do {
             if provider == .localMLX {
                 try await localServer?.ensureRunning()
+                // A model that isn't on disk yet downloads through the
+                // no-time-limit prepare call instead of racing the speech
+                // request's timeout.
+                if let model = settings.load().voice(withID: voice)?.model,
+                   !MLXAudioServerManager.isModelDownloaded(model) {
+                    try await localServer?.prepareModel(model)
+                }
             }
             let (data, response) = try await session.data(for: request)
             let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
@@ -329,6 +354,13 @@ final class CloudSpeechGenerationService: SpeechGenerating {
         }
         guard let provider = cloudVoice.provider else {
             throw Self.failure(code: "cloud.provider-unknown", message: "Unknown cloud provider \"\(cloudVoice.providerID)\".")
+        }
+        if provider.isRetired() {
+            throw Self.failure(
+                code: "cloud.provider-retired",
+                message: provider.notice ?? "\(provider.name) no longer serves these speech models.",
+                suggestion: "Remove this voice in Settings → Cloud Voices and pick another provider."
+            )
         }
         let url: URL?
         switch provider.style {
@@ -775,8 +807,9 @@ enum DialogueScript {
 
     /// A line starting with a cast name (optionally followed by a `(note)`)
     /// and a colon opens that speaker's turn; names match case-insensitively.
-    /// Any other line continues the current turn, with its note, or the first
-    /// speaker's if the script doesn't open with a name.
+    /// A label may also start a turn mid-line right after a sentence ends
+    /// (`Joe: Hi. Jane: Hello!`). Any other line continues the current turn,
+    /// with its note, or the first speaker's if the script doesn't open with a name.
     static func turns(in text: String, speakers: [String]) -> [Turn] {
         guard let firstSpeaker = speakers.first else { return [] }
         var turns: [Turn] = []
@@ -792,7 +825,7 @@ enum DialogueScript {
             currentText = ""
         }
 
-        for rawLine in text.components(separatedBy: .newlines) {
+        for rawLine in text.components(separatedBy: .newlines).flatMap({ splitInlineLabels($0, speakers: speakers) }) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             guard !line.isEmpty else { continue }
             if let labeled = labeledLine(line, speakers: speakers) {
@@ -830,6 +863,27 @@ enum DialogueScript {
         }
         if !current.isEmpty { segments.append(current) }
         return segments
+    }
+
+    /// Breaks a line before each cast label that follows a sentence end, so
+    /// two speakers on one line become two turns.
+    static func splitInlineLabels(_ line: String, speakers: [String]) -> [String] {
+        let names = speakers.map { NSRegularExpression.escapedPattern(for: $0) }.joined(separator: "|")
+        guard !names.isEmpty,
+              let pattern = try? NSRegularExpression(
+                  pattern: #"(?<=[.!?…])\s+(?=(?:"# + names + #")\s*(?:\([^)]*\))?\s*:)"#,
+                  options: [.caseInsensitive]
+              )
+        else { return [line] }
+        var pieces: [String] = []
+        var start = line.startIndex
+        for match in pattern.matches(in: line, range: NSRange(line.startIndex..., in: line)) {
+            guard let range = Range(match.range, in: line) else { continue }
+            pieces.append(String(line[start..<range.lowerBound]))
+            start = range.upperBound
+        }
+        pieces.append(String(line[start...]))
+        return pieces
     }
 
     /// `Name: spoken` or `Name (note): spoken`. The note may itself contain a
