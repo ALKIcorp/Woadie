@@ -278,6 +278,85 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertNotEqual(before, after, "The elapsed time and scrubber must redraw when playback ticks")
     }
 
+    // MARK: Read-along (X2)
+
+    func testReadAlongSplitsWordsAndSentences() {
+        let text = "Hello there. How are you? Fine!"
+        let ns = text as NSString
+
+        XCTAssertEqual(ReadAlong.units(in: text, mode: .word).map { ns.substring(with: $0) }, ["Hello", "there.", "How", "are", "you?", "Fine!"])
+        XCTAssertEqual(ReadAlong.units(in: text, mode: .sentence).map { ns.substring(with: $0) }, ["Hello there.", "How are you?", "Fine!"])
+        XCTAssertTrue(ReadAlong.units(in: text, mode: .off).isEmpty)
+    }
+
+    func testReadAlongMapsTimeToTextAndBack() {
+        let segments = [ReadAlong.Segment(length: 100, duration: 10), ReadAlong.Segment(length: 50, duration: 5)]
+
+        XCTAssertEqual(ReadAlong.position(elapsed: 5, segments: segments)?.segment, 0)
+        XCTAssertEqual(ReadAlong.position(elapsed: 5, segments: segments)?.offset, 50)
+        XCTAssertEqual(ReadAlong.position(elapsed: 12.5, segments: segments)?.segment, 1)
+        XCTAssertEqual(ReadAlong.position(elapsed: 12.5, segments: segments)?.offset, 25)
+        XCTAssertEqual(ReadAlong.position(elapsed: 99, segments: segments)?.offset, 49, "Past the end stays on the last character")
+        XCTAssertEqual(ReadAlong.time(segment: 1, offset: 25, segments: segments), 12.5, accuracy: 0.001)
+        // A segment whose clip hasn't loaded yet uses an estimate.
+        XCTAssertEqual(ReadAlong.time(segment: 1, offset: 0, segments: [ReadAlong.Segment(length: 150, duration: nil), segments[1]]), 10, accuracy: 0.001)
+    }
+
+    func testReadAlongPassagesStayShortAndCoverTheText() {
+        let text = (1...30).map { "Sentence number \($0) is here." }.joined(separator: " ")
+
+        let passages = ReadAlong.passages(in: text, limit: 100)
+
+        XCTAssertGreaterThan(passages.count, 5)
+        XCTAssertTrue(passages.allSatisfy { $0.length <= 100 })
+        XCTAssertEqual(passages.first?.location, 0)
+        XCTAssertEqual(passages.last.map { $0.location + $0.length }, (text as NSString).length)
+    }
+
+    @MainActor
+    func testReadAlongHighlightsTheWordBeingSpokenAndSeeksOnClick() {
+        let playback = FakePlaybackCoordinating()
+        let store = AppStore()
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor(), playbackCoordinator: playback))
+        store.readAlongMode = .word
+        var first = SpeechSegment(index: 0, text: "One two three four.")
+        first.durationSeconds = 4
+        var second = SpeechSegment(index: 1, text: "Five six seven eight.")
+        second.durationSeconds = 4
+        let job = SpeechJob(text: "One two three four. Five six seven eight.", voiceID: "af_heart", segments: [first, second])
+        store.speechJobs = [job]
+        store.playback = PlaybackSnapshot(state: .playing, activeJobID: job.id, activeLogEntryID: nil, currentSegmentID: second.id, elapsedTime: 5.2, duration: 8, bufferedDuration: 8, statusMessage: nil)
+
+        let state = model.readAlongState
+
+        XCTAssertEqual(state?.passage, "Five six seven eight.")
+        XCTAssertEqual(state.flatMap { $0.highlight }.map { ("Five six seven eight." as NSString).substring(with: $0) }, "six")
+        XCTAssertEqual(state?.segmentIndex, 1)
+
+        model.seekReadAlong(segmentIndex: 1, offset: 9)
+        XCTAssertEqual(playback.lastSeek ?? -1, 4 + 4 * 9 / 21, accuracy: 0.001)
+
+        store.readAlongMode = .off
+        XCTAssertNil(model.readAlongState)
+    }
+
+    @MainActor
+    func testReadAlongFollowsTheAppleVoicesOwnWordRanges() {
+        let store = AppStore()
+        let model = AppModel(store: store, dependencies: .test(engineSupervisor: FakeEngineSupervisor()))
+        store.readAlongMode = .sentence
+        let text = "First sentence here. Second one now."
+        let job = SpeechJob(text: text, voiceID: "apple:x", segments: [SpeechSegment(index: 0, text: text)])
+        store.speechJobs = [job]
+        store.playback = PlaybackSnapshot(state: .playing, activeJobID: job.id, activeLogEntryID: nil, currentSegmentID: nil, elapsedTime: 0, duration: nil, bufferedDuration: 0, statusMessage: nil)
+        store.appleSpokenRange = (text as NSString).range(of: "one")
+
+        let state = model.readAlongState
+
+        XCTAssertEqual(state.flatMap { $0.highlight }.map { (state!.passage as NSString).substring(with: $0) }, "Second one now.")
+        XCTAssertEqual(state?.canSeek, false, "Apple's synthesizer can't jump")
+    }
+
     // MARK: Text cleanup and pronunciations (X7)
 
     func testCleanupStripsMarkdownButKeepsTheWords() {
@@ -1796,7 +1875,11 @@ private final class FakePlaybackCoordinating: PlaybackCoordinating {
     func prepare(characterCounts: [Int]) {}
     func append(audioURL: URL, segmentID: UUID, index: Int) throws -> TimeInterval { 0 }
     func finishEnqueuing() {}
-    func seek(to globalTime: TimeInterval) -> Bool { false }
+    private(set) var lastSeek: TimeInterval?
+    func seek(to globalTime: TimeInterval) -> Bool {
+        lastSeek = globalTime
+        return true
+    }
     func togglePlayback() { toggleCallCount += 1 }
     func stop() {}
     func applyTuning(_ tuning: PlaybackTuning) { lastTuning = tuning }

@@ -207,10 +207,13 @@ struct ContentView: View {
 /// Its own view so playback ticks, which it reads for the waveform, re-render
 /// this panel and not the whole window.
 private struct NowSpeakingPanel: View {
+    static let readAlongHeight: CGFloat = 100
+
     var model: AppModel
     var onNewVoice: () -> Void
 
     var body: some View {
+        let readAlong = model.readAlongState
         AlkiGlassSurface {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top) {
@@ -219,8 +222,15 @@ private struct NowSpeakingPanel: View {
                             .font(WoadieTheme.mono(size: 9, weight: .semibold))
                             .tracking(1.55)
                             .foregroundStyle(WoadieTheme.foregroundSubtle)
-                        Text(model.playback.state == .idle ? "Ready for speech." : "The future sounds clear.")
-                            .font(WoadieTheme.rounded(size: 22, weight: .medium))
+                        if let readAlong {
+                            ReadAlongText(state: readAlong) { offset in
+                                model.seekReadAlong(segmentIndex: readAlong.segmentIndex, offset: offset)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: Self.readAlongHeight, maxHeight: Self.readAlongHeight, alignment: .topLeading)
+                        } else {
+                            Text(model.playback.state == .idle ? "Ready for speech." : "The future sounds clear.")
+                                .font(WoadieTheme.rounded(size: 22, weight: .medium))
+                        }
                     }
                     Spacer()
                     Text(bufferLabel)
@@ -232,7 +242,9 @@ private struct NowSpeakingPanel: View {
                     isActive: model.playback.state == .playing || model.playback.state == .preparing,
                     magnitudes: model.fftMagnitudes
                 )
-                .frame(maxWidth: .infinity, minHeight: 220)
+                // The waveform gives up the room the read-along text takes,
+                // so the panel (and window) keep their height.
+                .frame(maxWidth: .infinity, minHeight: readAlong == nil ? 220 : 220 - (Self.readAlongHeight - 28))
 
                 HStack {
                     VoicePickerView(
@@ -261,6 +273,56 @@ private struct NowSpeakingPanel: View {
         let ready = model.store.speechJobs.first?.segments.filter { $0.audioURL != nil }.count ?? 0
         let total = model.store.speechJobs.first?.segments.count ?? 0
         return "BUFFER \(String(format: "%02d", ready)) / \(String(format: "%02d", total))"
+    }
+}
+
+/// The passage being spoken with the current word or sentence highlighted.
+/// Each word is a link that seeks there when the clip can seek.
+private struct ReadAlongText: View {
+    let state: AppModel.ReadAlongState
+    let onSeek: (Int) -> Void
+
+    var body: some View {
+        Text(attributed)
+            .font(WoadieTheme.rounded(size: 16, weight: .medium))
+            .lineSpacing(4)
+            .tint(WoadieTheme.foreground)
+            .environment(\.openURL, OpenURLAction { url in
+                guard url.scheme == "alkiseek", let offset = Int(url.host() ?? "") else { return .systemAction }
+                onSeek(offset)
+                return .handled
+            })
+            .animation(.easeOut(duration: 0.15), value: state.highlight)
+            .help(state.canSeek ? "Click a word to jump there" : "")
+    }
+
+    private var attributed: AttributedString {
+        let text = state.passage as NSString
+        var result = AttributedString()
+        // Words as separate runs so each can be highlighted and clicked.
+        var pieces: [(range: NSRange, isWord: Bool)] = []
+        var cursor = 0
+        for word in state.words.isEmpty ? [NSRange(location: 0, length: text.length)] : state.words {
+            if word.location > cursor { pieces.append((NSRange(location: cursor, length: word.location - cursor), false)) }
+            pieces.append((word, true))
+            cursor = word.location + word.length
+        }
+        if cursor < text.length { pieces.append((NSRange(location: cursor, length: text.length - cursor), false)) }
+
+        for piece in pieces {
+            var run = AttributedString(text.substring(with: piece.range))
+            let isHighlighted = state.highlight.map { NSIntersectionRange($0, piece.range).length > 0 } ?? false
+            run.foregroundColor = isHighlighted ? WoadieTheme.foreground : WoadieTheme.foregroundMuted
+            if isHighlighted {
+                // The scrubber's accent, so the two read as one control.
+                run.backgroundColor = Color.accentColor.opacity(0.3)
+            }
+            if state.canSeek, piece.isWord {
+                run.link = URL(string: "alkiseek://\(state.passageOffset + piece.range.location)")
+            }
+            result.append(run)
+        }
+        return result
     }
 }
 

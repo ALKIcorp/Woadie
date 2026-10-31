@@ -146,6 +146,17 @@ struct SettingsOverlayView: View {
             SettingsSection("Speed and Pitch", subtitle: "Changes what you hear; saved clips are never re-rendered") {
                 PlaybackTuningControls(model: model)
             }
+            SettingsSection("Read Along", subtitle: "Highlight the text as it's spoken. Click a word to jump there") {
+                Picker("Read along", selection: Binding(
+                    get: { model.store.readAlongMode },
+                    set: { model.setReadAlongMode($0) }
+                )) {
+                    ForEach(ReadAlongMode.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+            }
         case .pronunciation:
             SettingsSection("Clean Up Text Before Speaking", subtitle: "Fixes what voices stumble on. Your text in the editor isn't changed") {
                 TextCleanupSettings(model: model)

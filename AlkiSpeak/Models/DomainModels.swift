@@ -395,6 +395,110 @@ struct PlaybackTimeline: Equatable {
     }
 }
 
+/// How the read-along view follows playback.
+enum ReadAlongMode: String, CaseIterable, Identifiable, Codable {
+    case off = "Off"
+    case sentence = "Sentence"
+    case word = "Word"
+
+    static let defaultsKey = "AlkiSpeak.readAlong"
+    var id: Self { self }
+
+    static func load(from defaults: UserDefaults = .standard) -> ReadAlongMode {
+        defaults.string(forKey: defaultsKey).flatMap(ReadAlongMode.init(rawValue:)) ?? .sentence
+    }
+}
+
+/// Maps playback time to a place in the spoken text and back. Offsets are
+/// UTF-16, matching `NSString` and `AVSpeechSynthesizer`'s ranges. Within a
+/// segment, time is spread over its characters, which tracks speech closely
+/// enough to follow along.
+enum ReadAlong {
+    struct Segment: Equatable {
+        let length: Int
+        /// Known once the clip is queued; estimated until then.
+        let duration: TimeInterval?
+
+        var effectiveDuration: TimeInterval { duration ?? ReadAlong.estimatedDuration(length: length) }
+    }
+
+    /// Roughly 15 characters a second.
+    static func estimatedDuration(length: Int) -> TimeInterval { max(Double(length) / 15, 0.1) }
+
+    /// The words or sentences of `text`, as ranges.
+    static func units(in text: String, mode: ReadAlongMode) -> [NSRange] {
+        let pattern: String
+        switch mode {
+        case .off: return []
+        case .word: pattern = #"\S+"#
+        case .sentence: pattern = #"[^.!?…\n]+(?:[.!?…]+["”’)\]]*)?\s*"#
+        }
+        let regex = try! NSRegularExpression(pattern: pattern)
+        return regex.matches(in: text, range: NSRange(location: 0, length: (text as NSString).length))
+            .map(\.range)
+            .map { range in
+                // Trailing spaces belong to the gap, not the highlight.
+                let piece = (text as NSString).substring(with: range) as NSString
+                var length = range.length
+                while length > 0, let scalar = Unicode.Scalar(piece.character(at: length - 1)), CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                    length -= 1
+                }
+                return NSRange(location: range.location, length: length)
+            }
+            .filter { $0.length > 0 }
+    }
+
+    /// Which segment, and how far into it, `elapsed` seconds of playback is.
+    static func position(elapsed: TimeInterval, segments: [Segment]) -> (segment: Int, offset: Int)? {
+        guard !segments.isEmpty else { return nil }
+        var start: TimeInterval = 0
+        for (index, segment) in segments.enumerated() {
+            let duration = segment.effectiveDuration
+            if elapsed < start + duration || index == segments.count - 1 {
+                let fraction = min(max((elapsed - start) / duration, 0), 1)
+                return (index, min(Int(fraction * Double(segment.length)), max(segment.length - 1, 0)))
+            }
+            start += duration
+        }
+        return nil
+    }
+
+    /// When playback reaches `offset` in segment `index`, for click-to-seek.
+    static func time(segment index: Int, offset: Int, segments: [Segment]) -> TimeInterval {
+        guard segments.indices.contains(index) else { return 0 }
+        let before = segments.prefix(index).reduce(0) { $0 + $1.effectiveDuration }
+        let segment = segments[index]
+        guard segment.length > 0 else { return before }
+        return before + segment.effectiveDuration * Double(offset) / Double(segment.length)
+    }
+
+    /// The unit containing `offset`, or the last one starting before it.
+    static func unit(containing offset: Int, in units: [NSRange]) -> NSRange? {
+        units.last { $0.location <= offset }
+    }
+
+    /// Splits long text into passages of about `limit` characters at sentence
+    /// ends, so a whole book isn't shown at once.
+    static func passages(in text: String, limit: Int = 280) -> [NSRange] {
+        var result: [NSRange] = []
+        var current: NSRange?
+        for sentence in units(in: text, mode: .sentence) {
+            if var open = current {
+                let end = sentence.location + sentence.length
+                if end - open.location <= limit {
+                    open.length = end - open.location
+                    current = open
+                    continue
+                }
+                result.append(open)
+            }
+            current = sentence
+        }
+        if let current { result.append(current) }
+        return result
+    }
+}
+
 enum VoiceCycler {
     static func next(current: String, in voices: [String], offset: Int) -> String? {
         guard !voices.isEmpty else { return nil }

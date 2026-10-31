@@ -583,6 +583,8 @@ final class VoiceCloneRecorder: ObservableObject {
 
 final class AppleSpeechService: NSObject, LocalSpeechSynthesizing, AVSpeechSynthesizerDelegate {
     var onFinished: (() -> Void)?
+    /// The range of the utterance about to be spoken, for read-along.
+    var onWillSpeakRange: ((NSRange) -> Void)?
     private let synthesizer = AVSpeechSynthesizer()
     private var voiceLookup: [String: AVSpeechSynthesisVoice] = [:]
 
@@ -640,6 +642,12 @@ final class AppleSpeechService: NSObject, LocalSpeechSynthesizing, AVSpeechSynth
 
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, willSpeakRangeOfSpeechString characterRange: NSRange, utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            self.onWillSpeakRange?(characterRange)
+        }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {

@@ -35,6 +35,8 @@ final class AppModel {
     }
     @ObservationIgnored private var cancellables: Set<AnyCancellable> = []
     @ObservationIgnored private var tuningSaveTask: Task<Void, Never>?
+    /// A long Apple-voice job's passages, split once rather than per word.
+    @ObservationIgnored private var passageCache: (jobID: UUID, passages: [NSRange])?
     @ObservationIgnored private var hasRequestedAccessibilityPrompt = false
     @ObservationIgnored private var lastHotKeyClipboardChangeCount = NSPasteboard.general.changeCount
 
@@ -522,6 +524,9 @@ final class AppModel {
         if !AppConfig.isRunningUnitTests {
             diagnostics.startSession()
         }
+        (dependencies.localSpeechService as? AppleSpeechService)?.onWillSpeakRange = { [weak store] range in
+            store?.appleSpokenRange = range
+        }
 
         NotificationCenter.default.publisher(for: AVSpeechSynthesizer.availableVoicesDidChangeNotification)
             .receive(on: RunLoop.main)
@@ -643,6 +648,89 @@ final class AppModel {
         interruptForOverride()
         store.clearErrorMessage()
         pipeline.speak(text: spokenText(for: trimmed), voice: selectedVoice, dialogueSpeakers: nil, addToHistory: false, targetLogEntryID: nil)
+    }
+
+    // MARK: Read-along
+
+    /// What the read-along view shows: the passage being spoken and the part
+    /// to highlight. Nil when read-along is off or nothing is playing.
+    struct ReadAlongState: Equatable {
+        let passage: String
+        /// Within `passage` (UTF-16).
+        let highlight: NSRange?
+        /// The words of `passage`, for click-to-seek.
+        let words: [NSRange]
+        let segmentIndex: Int
+        /// Where `passage` starts in its segment (UTF-16).
+        let passageOffset: Int
+        let canSeek: Bool
+    }
+
+    func setReadAlongMode(_ mode: ReadAlongMode) {
+        store.readAlongMode = mode
+        if !AppConfig.isRunningUnitTests {
+            UserDefaults.standard.set(mode.rawValue, forKey: ReadAlongMode.defaultsKey)
+        }
+    }
+
+    var readAlongState: ReadAlongState? {
+        let mode = store.readAlongMode
+        let playback = store.playbackState
+        guard mode != .off,
+              playback.state == .playing || playback.state == .paused || playback.state == .preparing,
+              let jobID = playback.activeJobID,
+              let job = store.speechJobs.first(where: { $0.id == jobID })
+        else { return nil }
+
+        if job.voiceID.hasPrefix("apple:") {
+            // Apple reports the exact range it's speaking; it can't seek.
+            let text = job.text
+            let spoken = store.appleSpokenRange
+            let passages: [NSRange]
+            if let cached = passageCache, cached.jobID == job.id {
+                passages = cached.passages
+            } else {
+                passages = ReadAlong.passages(in: text)
+                passageCache = (job.id, passages)
+            }
+            let passage = passages.last { $0.location <= (spoken?.location ?? 0) } ?? passages.first
+            guard let passage else { return nil }
+            let passageText = (text as NSString).substring(with: passage)
+            var highlight: NSRange?
+            if let spoken {
+                let local = NSRange(location: spoken.location - passage.location, length: spoken.length)
+                highlight = mode == .word
+                    ? local
+                    : ReadAlong.unit(containing: local.location, in: ReadAlong.units(in: passageText, mode: .sentence))
+            }
+            return ReadAlongState(passage: passageText, highlight: highlight, words: [], segmentIndex: 0, passageOffset: passage.location, canSeek: false)
+        }
+
+        let segments = job.segments.map { ReadAlong.Segment(length: ($0.text as NSString).length, duration: $0.durationSeconds) }
+        guard let position = ReadAlong.position(elapsed: playback.elapsedTime, segments: segments) else { return nil }
+        let text = job.segments[position.segment].text
+        let passages = ReadAlong.passages(in: text)
+        let passage = passages.last { $0.location <= position.offset } ?? NSRange(location: 0, length: (text as NSString).length)
+        let passageText = (text as NSString).substring(with: passage)
+        let local = position.offset - passage.location
+        let highlight = playback.state == .preparing ? nil : ReadAlong.unit(containing: local, in: ReadAlong.units(in: passageText, mode: mode))
+        return ReadAlongState(
+            passage: passageText,
+            highlight: highlight,
+            words: ReadAlong.units(in: passageText, mode: .word),
+            segmentIndex: position.segment,
+            passageOffset: passage.location,
+            canSeek: true
+        )
+    }
+
+    /// Jumps playback to a word the user clicked in the read-along view.
+    func seekReadAlong(segmentIndex: Int, offset: Int) {
+        guard let jobID = store.playbackState.activeJobID,
+              let job = store.speechJobs.first(where: { $0.id == jobID })
+        else { return }
+        let segments = job.segments.map { ReadAlong.Segment(length: ($0.text as NSString).length, duration: $0.durationSeconds) }
+        seek(to: ReadAlong.time(segment: segmentIndex, offset: offset, segments: segments))
     }
 
     // MARK: Documents and web pages
@@ -923,6 +1011,7 @@ final class AppModel {
         guard canSpeak(text: trimmed) else { return }
         guard !trimmed.isEmpty else { return }
         store.clearErrorMessage()
+        store.appleSpokenRange = nil
         pipeline.speak(
             text: spokenText(for: trimmed),
             voice: selectedVoice,
@@ -1021,6 +1110,7 @@ final class AppModel {
         store.voiceFavorites = favoritesStore.load()
         store.recentVoiceIDs = UserDefaults.standard.stringArray(forKey: Self.recentVoicesKey) ?? []
         store.textCleanup = TextCleanupOptions.load()
+        store.readAlongMode = ReadAlongMode.load()
         store.pronunciations = PronunciationEntry.load()
         store.cloudSettings = dependencies.cloudSpeechSettings.load()
         store.playbackTuning = PlaybackTuning.load()

@@ -86,6 +86,9 @@ final class AppStore {
     private(set) var voiceLabelsByID: [String: String] = [:]
     var cloudSettings = CloudSpeechSettings()
     var textCleanup = TextCleanupOptions()
+    var readAlongMode: ReadAlongMode = .sentence
+    /// The part of the text an Apple voice is about to speak (UTF-16 offsets).
+    var appleSpokenRange: NSRange?
     var pronunciations: [PronunciationEntry] = []
     var playbackTuning: PlaybackTuning = .default
     var lastQueryResourceUsage: QueryResourceUsage?
