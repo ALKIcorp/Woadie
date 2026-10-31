@@ -2,10 +2,18 @@ import Foundation
 import Security
 import os.log
 
-/// A hosted (or local) speech endpoint that speaks the OpenAI-style
-/// `POST {baseURL}/audio/speech` shape: JSON `model`, `input`, `voice`,
-/// `response_format` in, raw audio bytes out. OpenRouter, OpenAI, Mistral and
-/// the `mlx-audio` server all accept it, so one adapter covers every preset.
+/// The request shape a provider speaks.
+enum CloudAPIStyle: Hashable {
+    /// `POST {base}/audio/speech` with JSON `model`, `input`, `voice`,
+    /// `response_format`; Bearer auth. OpenRouter, OpenAI, Mistral and the
+    /// `mlx-audio` server all accept it.
+    case openAICompatible
+    /// `POST {base}/text-to-speech/{voice_id}?output_format=…` with JSON
+    /// `text`, `model_id`; `xi-api-key` auth.
+    case elevenLabs
+}
+
+/// A hosted (or local) speech endpoint. Raw audio bytes come back either way.
 struct CloudProvider: Identifiable, Hashable {
     let id: String
     let name: String
@@ -14,7 +22,17 @@ struct CloudProvider: Identifiable, Hashable {
     let requiresAPIKey: Bool
     let modelPrompt: String
     let voicePrompt: String
+    var style: CloudAPIStyle = .openAICompatible
 
+    static let elevenLabs = CloudProvider(
+        id: "elevenlabs",
+        name: "ElevenLabs",
+        defaultBaseURL: "https://api.elevenlabs.io/v1",
+        requiresAPIKey: true,
+        modelPrompt: "e.g. eleven_v4",
+        voicePrompt: "Voice ID",
+        style: .elevenLabs
+    )
     static let openRouter = CloudProvider(
         id: "openrouter",
         name: "OpenRouter",
@@ -56,7 +74,7 @@ struct CloudProvider: Identifiable, Hashable {
         voicePrompt: "Voice ID"
     )
 
-    static let all: [CloudProvider] = [.openRouter, .openAI, .mistral, .localMLX, .custom]
+    static let all: [CloudProvider] = [.elevenLabs, .openRouter, .openAI, .mistral, .localMLX, .custom]
 
     static func provider(withID id: String) -> CloudProvider? {
         all.first { $0.id == id }
@@ -267,7 +285,14 @@ final class CloudSpeechGenerationService: SpeechGenerating {
         guard let provider = cloudVoice.provider else {
             throw Self.failure(code: "cloud.provider-unknown", message: "Unknown cloud provider \"\(cloudVoice.providerID)\".")
         }
-        guard let base = current.baseURL(for: provider), let url = Self.speechURL(base: base) else {
+        let url: URL?
+        switch provider.style {
+        case .openAICompatible:
+            url = current.baseURL(for: provider).flatMap { Self.speechURL(base: $0) }
+        case .elevenLabs:
+            url = current.baseURL(for: provider).flatMap { Self.elevenLabsSpeechURL(base: $0, voiceID: cloudVoice.voice) }
+        }
+        guard let url else {
             throw Self.failure(
                 code: "cloud.base-url",
                 message: "\(provider.name) has no valid base URL.",
@@ -287,28 +312,54 @@ final class CloudSpeechGenerationService: SpeechGenerating {
         request.httpMethod = "POST"
         request.timeoutInterval = AppConfig.requestTimeoutSeconds
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let apiKey, !apiKey.isEmpty {
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        }
         // MP3 is the one format every preset returns; the clip pipeline already
         // plays Edge's MP3 output, so no extra decoding path is needed.
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": cloudVoice.model,
-            "input": text,
-            "voice": cloudVoice.voice,
-            "response_format": "mp3"
-        ])
+        switch provider.style {
+        case .openAICompatible:
+            if let apiKey, !apiKey.isEmpty {
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "model": cloudVoice.model,
+                "input": text,
+                "voice": cloudVoice.voice,
+                "response_format": "mp3"
+            ])
+        case .elevenLabs:
+            request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
+            request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "text": text,
+                "model_id": cloudVoice.model
+            ])
+        }
         return request
     }
 
     static func speechURL(base: String) -> URL? {
+        normalizedBase(base).flatMap { URL(string: $0 + "/audio/speech") }
+    }
+
+    /// `{base}/text-to-speech/{voice_id}?output_format=mp3_44100_128`
+    static func elevenLabsSpeechURL(base: String, voiceID: String) -> URL? {
+        guard let base = normalizedBase(base),
+              let escaped = voiceID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))),
+              !escaped.isEmpty,
+              var components = URLComponents(string: base + "/text-to-speech/" + escaped)
+        else { return nil }
+        components.queryItems = [URLQueryItem(name: "output_format", value: "mp3_44100_128")]
+        return components.url
+    }
+
+    /// Trims whitespace and trailing slashes; `nil` unless it is an http(s) URL with a host.
+    static func normalizedBase(_ base: String) -> String? {
         var trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
         while trimmed.hasSuffix("/") { trimmed.removeLast() }
-        guard let url = URL(string: trimmed + "/audio/speech"),
+        guard let url = URL(string: trimmed),
               let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
               url.host != nil
         else { return nil }
-        return url
+        return trimmed
     }
 
     // MARK: - Errors
@@ -331,7 +382,8 @@ final class CloudSpeechGenerationService: SpeechGenerating {
     }
 
     /// Pulls a readable message out of the common error shapes
-    /// (`{"error":{"message":…}}`, `{"error":"…"}`, `{"detail":…}`).
+    /// (`{"error":{"message":…}}`, `{"error":"…"}`, `{"detail":…}`, and
+    /// ElevenLabs' `{"detail":{"message":…}}` / `{"detail":[{"msg":…}]}`).
     static func providerMessage(from body: Data) -> String? {
         if let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
             if let error = json["error"] as? [String: Any], let message = error["message"] as? String {
@@ -339,6 +391,13 @@ final class CloudSpeechGenerationService: SpeechGenerating {
             }
             if let message = json["error"] as? String { return message }
             if let message = json["detail"] as? String { return message }
+            if let detail = json["detail"] as? [String: Any], let message = detail["message"] as? String {
+                return message
+            }
+            if let details = json["detail"] as? [[String: Any]] {
+                let messages = details.compactMap { $0["msg"] as? String }
+                if !messages.isEmpty { return messages.joined(separator: "; ") }
+            }
             if let message = json["message"] as? String { return message }
         }
         let text = String(decoding: body.prefix(200), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -356,5 +415,113 @@ final class CloudSpeechGenerationService: SpeechGenerating {
             message: "The cloud speech request was cancelled before completion.",
             recoverySuggestion: "Start a new generation request when ready."
         )
+    }
+}
+
+// MARK: - ElevenLabs catalog
+
+struct ElevenLabsVoiceInfo: Identifiable, Hashable, Decodable {
+    let voiceID: String
+    let name: String
+    let category: String?
+
+    var id: String { voiceID }
+
+    enum CodingKeys: String, CodingKey {
+        case voiceID = "voice_id"
+        case name
+        case category
+    }
+}
+
+struct ElevenLabsModelInfo: Identifiable, Hashable, Decodable {
+    let modelID: String
+    let name: String
+    let canDoTextToSpeech: Bool
+
+    var id: String { modelID }
+
+    enum CodingKeys: String, CodingKey {
+        case modelID = "model_id"
+        case name
+        case canDoTextToSpeech = "can_do_text_to_speech"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        modelID = try container.decode(String.self, forKey: .modelID)
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? modelID
+        canDoTextToSpeech = try container.decodeIfPresent(Bool.self, forKey: .canDoTextToSpeech) ?? false
+    }
+}
+
+struct ElevenLabsCatalog: Hashable {
+    let voices: [ElevenLabsVoiceInfo]
+    let models: [ElevenLabsModelInfo]
+
+    /// The docs' quality recommendation, falling back to whatever the account offers.
+    var preferredModelID: String? {
+        let ids = models.map(\.modelID)
+        return ["eleven_v4", "eleven_multilingual_v2"].first(where: ids.contains) ?? ids.first
+    }
+}
+
+protocol ElevenLabsCatalogFetching: AnyObject {
+    func fetchCatalog() async throws -> ElevenLabsCatalog
+}
+
+/// Lists the account's voices (`GET /v1/voices`) and TTS-capable models
+/// (`GET /v1/models`) so Settings can offer pickers instead of raw IDs.
+final class ElevenLabsCatalogService: ElevenLabsCatalogFetching {
+    private let secrets: SecretStoring
+    private let session: URLSession
+    private let base: String
+
+    init(secrets: SecretStoring, session: URLSession = .shared, base: String = CloudProvider.elevenLabs.defaultBaseURL ?? "") {
+        self.secrets = secrets
+        self.session = session
+        self.base = base
+    }
+
+    private struct VoicesResponse: Decodable {
+        let voices: [ElevenLabsVoiceInfo]
+    }
+
+    func fetchCatalog() async throws -> ElevenLabsCatalog {
+        guard let key = secrets.secret(for: CloudProvider.elevenLabs.id), !key.isEmpty else {
+            throw AlkiSpeakError.generation(
+                code: "cloud.api-key-missing",
+                title: "Cloud Voice Error",
+                message: "No API key saved for ElevenLabs.",
+                recoverySuggestion: "Add your ElevenLabs key in Settings → Cloud Voices."
+            )
+        }
+        async let voicesData = get("voices", key: key)
+        async let modelsData = get("models", key: key)
+        let voices = try JSONDecoder().decode(VoicesResponse.self, from: await voicesData).voices
+        let models = try JSONDecoder().decode([ElevenLabsModelInfo].self, from: await modelsData)
+            .filter(\.canDoTextToSpeech)
+        return ElevenLabsCatalog(
+            voices: voices.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
+            models: models
+        )
+    }
+
+    private func get(_ path: String, key: String) async throws -> Data {
+        guard let normalized = CloudSpeechGenerationService.normalizedBase(base),
+              let url = URL(string: normalized + "/" + path)
+        else {
+            throw AlkiSpeakError.generation(code: "cloud.base-url", title: "Cloud Voice Error", message: "ElevenLabs has no valid base URL.", recoverySuggestion: "Retry.")
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        request.setValue(key, forHTTPHeaderField: "xi-api-key")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            throw CloudSpeechGenerationService.httpError(status: status, body: data)
+        }
+        return data
     }
 }

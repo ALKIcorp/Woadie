@@ -9,6 +9,7 @@ struct AppDependencies {
     let cloudSpeechSettings: CloudSpeechSettingsStoring
     let secretStore: SecretStoring
     let localVoiceServer: LocalVoiceServerEnsuring
+    let elevenLabsCatalog: ElevenLabsCatalogFetching
     let playbackCoordinator: PlaybackCoordinating
     let localSpeechService: LocalSpeechSynthesizing
     let selectedTextReader: SelectedTextReading
@@ -32,6 +33,7 @@ struct AppDependencies {
             cloudSpeechSettings: cloudSettings,
             secretStore: secrets,
             localVoiceServer: MLXAudioServerManager.shared,
+            elevenLabsCatalog: ElevenLabsCatalogService(secrets: secrets),
             playbackCoordinator: AVAudioPlaybackCoordinator(),
             localSpeechService: AppleSpeechService(),
             selectedTextReader: SelectedTextReader(),

@@ -190,6 +190,9 @@ private struct CloudVoicesSettings: View {
     @State private var modelID = ""
     @State private var voiceID = ""
     @State private var label = ""
+    @State private var elevenLabsCatalog: ElevenLabsCatalog?
+    @State private var isLoadingCatalog = false
+    @State private var catalogError: String?
 
     private var provider: CloudProvider {
         CloudProvider.provider(withID: providerID) ?? .openRouter
@@ -244,6 +247,10 @@ private struct CloudVoicesSettings: View {
                 }
             }
 
+            if provider == .elevenLabs && hasKey {
+                elevenLabsPickers
+            }
+
             HStack {
                 TextField("Model", text: $modelID, prompt: Text(provider.modelPrompt))
                     .textFieldStyle(.roundedBorder)
@@ -283,6 +290,61 @@ private struct CloudVoicesSettings: View {
             }
         }
         .onAppear { customBaseURL = model.cloudSettings.customBaseURL }
+    }
+
+    /// Fills the model and voice fields from the account instead of raw IDs.
+    @ViewBuilder
+    private var elevenLabsPickers: some View {
+        if let catalog = elevenLabsCatalog {
+            HStack {
+                Picker("Voice", selection: Binding(
+                    get: { voiceID },
+                    set: { id in
+                        voiceID = id
+                        label = catalog.voices.first { $0.voiceID == id }?.name ?? label
+                    }
+                )) {
+                    Text("Choose a voice").tag("")
+                    ForEach(catalog.voices) { voice in
+                        Text(voice.category.map { "\(voice.name) · \($0)" } ?? voice.name).tag(voice.voiceID)
+                    }
+                }
+                Picker("Model", selection: $modelID) {
+                    ForEach(catalog.models) { model in
+                        Text(model.name).tag(model.modelID)
+                    }
+                }
+            }
+            .pickerStyle(.menu)
+            caption("\(catalog.voices.count) voices · \(catalog.models.count) speech models on this account")
+        } else {
+            HStack {
+                WoadieButton(title: isLoadingCatalog ? "Loading…" : "Load My Voices", systemImage: "arrow.down.circle", variant: .default) {
+                    loadCatalog()
+                }
+                .disabled(isLoadingCatalog)
+                if let catalogError {
+                    caption(catalogError)
+                }
+            }
+        }
+    }
+
+    private func loadCatalog() {
+        isLoadingCatalog = true
+        catalogError = nil
+        Task {
+            do {
+                let catalog = try await model.loadElevenLabsCatalog()
+                elevenLabsCatalog = catalog
+                if modelID.isEmpty, let preferred = catalog.preferredModelID {
+                    modelID = preferred
+                }
+            } catch {
+                catalogError = (error as? AlkiSpeakError)?.message ?? error.localizedDescription
+            }
+            isLoadingCatalog = false
+        }
     }
 
     private func caption(_ text: String) -> some View {

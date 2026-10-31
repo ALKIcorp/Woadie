@@ -34,6 +34,11 @@ final class FakeLocalVoiceServer: LocalVoiceServerEnsuring {
     func stopOwnedServer() { stopCount += 1 }
 }
 
+final class FakeElevenLabsCatalog: ElevenLabsCatalogFetching {
+    var catalog = ElevenLabsCatalog(voices: [], models: [])
+    func fetchCatalog() async throws -> ElevenLabsCatalog { catalog }
+}
+
 /// Captures the outgoing request and replies with a canned response.
 private final class StubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var handler: ((URLRequest) -> (Int, Data))?
@@ -240,6 +245,81 @@ final class CloudSpeechServiceTests: XCTestCase {
             XCTAssertTrue(error.message.contains("/nonexistent/mlx_audio.server"))
         } catch {
             XCTFail("Unexpected error \(error)")
+        }
+    }
+
+    // MARK: ElevenLabs
+
+    func testElevenLabsRequestUsesVoicePathAndXIKey() throws {
+        let voice = CloudVoice(providerID: CloudProvider.elevenLabs.id, model: "eleven_v4", voice: "JBFqnCBsd6RMkjVDRZzb", label: "George")
+        settings.settings.voices = [voice]
+        try secrets.setSecret("xi-test", for: CloudProvider.elevenLabs.id)
+
+        let request = try service.makeRequest(text: "Hello", voiceID: voice.voiceID)
+
+        XCTAssertEqual(request.url?.absoluteString, "https://api.elevenlabs.io/v1/text-to-speech/JBFqnCBsd6RMkjVDRZzb?output_format=mp3_44100_128")
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "xi-api-key"), "xi-test")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "audio/mpeg")
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: String])
+        XCTAssertEqual(body, ["text": "Hello", "model_id": "eleven_v4"])
+    }
+
+    func testElevenLabsRequiresKey() {
+        let voice = CloudVoice(providerID: CloudProvider.elevenLabs.id, model: "eleven_v4", voice: "abc", label: "A")
+        settings.settings.voices = [voice]
+        XCTAssertThrowsError(try service.makeRequest(text: "Hi", voiceID: voice.voiceID)) { error in
+            XCTAssertEqual((error as? AlkiSpeakError)?.code, "generation.cloud.api-key-missing")
+        }
+    }
+
+    func testElevenLabsVoiceIDIsPathEscaped() {
+        let url = CloudSpeechGenerationService.elevenLabsSpeechURL(base: "https://api.elevenlabs.io/v1", voiceID: "a/b c")
+        XCTAssertEqual(url?.absoluteString, "https://api.elevenlabs.io/v1/text-to-speech/a%2Fb%20c?output_format=mp3_44100_128")
+        XCTAssertNil(CloudSpeechGenerationService.elevenLabsSpeechURL(base: "https://api.elevenlabs.io/v1", voiceID: ""))
+    }
+
+    func testElevenLabsErrorShapesAreReadable() {
+        let object = Data(#"{"detail":{"type":"payment_required","code":"insufficient_credits","message":"Not enough credits"}}"#.utf8)
+        XCTAssertEqual(CloudSpeechGenerationService.providerMessage(from: object), "Not enough credits")
+        let list = Data(#"{"detail":[{"loc":["body","text"],"msg":"field required","type":"missing"}]}"#.utf8)
+        XCTAssertEqual(CloudSpeechGenerationService.providerMessage(from: list), "field required")
+    }
+
+    func testCatalogListsVoicesAndOnlySpeechModels() async throws {
+        try secrets.setSecret("xi-test", for: CloudProvider.elevenLabs.id)
+        StubURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "xi-api-key"), "xi-test")
+            switch request.url?.path {
+            case "/v1/voices":
+                return (200, Data(#"{"voices":[{"voice_id":"z1","name":"Zoe","category":"premade"},{"voice_id":"a1","name":"Adam","category":"cloned","labels":{"accent":"American"}}]}"#.utf8))
+            case "/v1/models":
+                return (200, Data(#"[{"model_id":"eleven_multilingual_sts_v2","name":"STS","can_do_text_to_speech":false},{"model_id":"eleven_flash_v2_5","name":"Flash v2.5","can_do_text_to_speech":true},{"model_id":"eleven_v4","name":"Eleven v4","can_do_text_to_speech":true}]"#.utf8))
+            default:
+                return (404, Data())
+            }
+        }
+        let catalogService = ElevenLabsCatalogService(secrets: secrets, session: stubSession)
+
+        let catalog = try await catalogService.fetchCatalog()
+
+        XCTAssertEqual(catalog.voices.map(\.name), ["Adam", "Zoe"])
+        XCTAssertEqual(catalog.models.map(\.modelID), ["eleven_flash_v2_5", "eleven_v4"])
+        XCTAssertEqual(catalog.preferredModelID, "eleven_v4")
+    }
+
+    func testCatalogSurfacesBadKey() async throws {
+        try secrets.setSecret("xi-bad", for: CloudProvider.elevenLabs.id)
+        StubURLProtocol.handler = { _ in (401, Data(#"{"detail":{"code":"invalid_api_key","message":"Invalid API key"}}"#.utf8)) }
+        let catalogService = ElevenLabsCatalogService(secrets: secrets, session: stubSession)
+
+        do {
+            _ = try await catalogService.fetchCatalog()
+            XCTFail("Expected a 401")
+        } catch let error as AlkiSpeakError {
+            XCTAssertEqual(error.code, "generation.cloud.http.401")
+            XCTAssertTrue(error.message.contains("Invalid API key"))
         }
     }
 }

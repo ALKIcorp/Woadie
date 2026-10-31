@@ -259,6 +259,11 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The account's ElevenLabs voices and TTS models, for the Settings pickers.
+    func loadElevenLabsCatalog() async throws -> ElevenLabsCatalog {
+        try await dependencies.elevenLabsCatalog.fetchCatalog()
+    }
+
     /// Called on app quit. Leaves alone a server the app adopted rather than launched.
     func shutDownLocalVoiceServer() {
         dependencies.localVoiceServer.stopOwnedServer()
