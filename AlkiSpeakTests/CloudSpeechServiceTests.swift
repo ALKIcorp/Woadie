@@ -322,4 +322,68 @@ final class CloudSpeechServiceTests: XCTestCase {
             XCTAssertTrue(error.message.contains("Invalid API key"))
         }
     }
+
+    // MARK: Gemini
+
+    private let geminiVoice = CloudVoice(providerID: CloudProvider.gemini.id, model: "gemini-3.8-flash-tts", voice: "Kore", label: "Gemini Kore")
+
+    private func geminiResponse(audio: Data) -> Data {
+        let json: [String: Any] = ["steps": [
+            ["type": "user_input", "content": [["type": "text", "text": "Hi"]]],
+            ["type": "model_output", "content": [["type": "audio", "data": audio.base64EncodedString()]]]
+        ]]
+        return try! JSONSerialization.data(withJSONObject: json)
+    }
+
+    func testGeminiRequestUsesInteractionsShape() throws {
+        settings.settings.voices = [geminiVoice]
+        try secrets.setSecret("g-test", for: CloudProvider.gemini.id)
+
+        let request = try service.makeRequest(text: "Have a wonderful day!", voiceID: geminiVoice.voiceID)
+
+        XCTAssertEqual(request.url?.absoluteString, "https://generativelanguage.googleapis.com/v1beta/interactions")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-goog-api-key"), "g-test")
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+        XCTAssertEqual(body["model"] as? String, "gemini-3.8-flash-tts")
+        XCTAssertEqual((body["response_format"] as? [String: String])?["type"], "audio")
+        let input = try XCTUnwrap(body["input"] as? [[String: Any]])
+        XCTAssertEqual(input.first?["type"] as? String, "user_input")
+        let content = try XCTUnwrap(input.first?["content"] as? [[String: String]])
+        XCTAssertEqual(content, [["type": "text", "text": "Have a wonderful day!"]])
+        let speech = try XCTUnwrap((body["generation_config"] as? [String: Any])?["speech_config"] as? [[String: String]])
+        XCTAssertEqual(speech, [["voice": "Kore"]])
+    }
+
+    func testGeminiSynthesizeDecodesEmbeddedWAV() async throws {
+        settings.settings.voices = [geminiVoice]
+        try secrets.setSecret("g-test", for: CloudProvider.gemini.id)
+        let wav = Data("RIFF....WAVEfmt ".utf8) + Data(repeating: 0x7F, count: 32)
+        StubURLProtocol.handler = { _ in (200, self.geminiResponse(audio: wav)) }
+
+        let result = try await service.synthesize(text: "Hi", voice: geminiVoice.voiceID, jobID: nil)
+
+        XCTAssertEqual(result.audioData, wav)
+    }
+
+    func testGeminiWithoutAudioFailsClearly() {
+        let textOnly = Data(#"{"steps":[{"type":"model_output","content":[{"type":"text","text":"I can't do that"}]}]}"#.utf8)
+        XCTAssertThrowsError(try CloudSpeechGenerationService.geminiAudio(from: textOnly)) { error in
+            XCTAssertEqual((error as? AlkiSpeakError)?.code, "generation.cloud.gemini.no-audio")
+        }
+    }
+
+    func testGeminiErrorMessageIsReadable() {
+        let body = Data(#"{"error":{"code":"invalid_request","message":"API key not valid."}}"#.utf8)
+        XCTAssertEqual(CloudSpeechGenerationService.providerMessage(from: body), "API key not valid.")
+        // The live endpoint wraps the error in an array (seen 2026-10-30).
+        let wrapped = Data(#"[{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}]"#.utf8)
+        XCTAssertEqual(CloudSpeechGenerationService.providerMessage(from: wrapped), "API key not valid. Please pass a valid API key.")
+    }
+
+    func testGeminiCatalogListsThirtyUniqueVoices() {
+        XCTAssertEqual(GeminiSpeechCatalog.voices.count, 30)
+        XCTAssertEqual(Set(GeminiSpeechCatalog.voices.map(\.name)).count, 30)
+        XCTAssertEqual(GeminiSpeechCatalog.models.map(\.id), ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"])
+    }
 }

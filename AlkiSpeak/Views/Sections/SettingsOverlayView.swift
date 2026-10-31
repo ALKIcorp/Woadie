@@ -250,6 +250,9 @@ private struct CloudVoicesSettings: View {
             if provider == .elevenLabs && hasKey {
                 elevenLabsPickers
             }
+            if provider == .gemini {
+                geminiPickers
+            }
 
             HStack {
                 TextField("Model", text: $modelID, prompt: Text(provider.modelPrompt))
@@ -328,6 +331,34 @@ private struct CloudVoicesSettings: View {
                 }
             }
         }
+    }
+
+    /// Gemini's voices and models are fixed, so no request is needed to list them.
+    private var geminiPickers: some View {
+        HStack {
+            Picker("Voice", selection: Binding(
+                get: { voiceID },
+                set: { name in
+                    voiceID = name
+                    label = name.isEmpty ? label : "Gemini \(name)"
+                    if modelID.isEmpty, let first = GeminiSpeechCatalog.models.first {
+                        modelID = first.id
+                    }
+                }
+            )) {
+                Text("Choose a voice").tag("")
+                ForEach(GeminiSpeechCatalog.voices) { voice in
+                    Text("\(voice.name) · \(voice.trait)").tag(voice.name)
+                }
+            }
+            Picker("Model", selection: $modelID) {
+                Text("Choose a model").tag("")
+                ForEach(GeminiSpeechCatalog.models, id: \.id) { model in
+                    Text(model.name).tag(model.id)
+                }
+            }
+        }
+        .pickerStyle(.menu)
     }
 
     private func loadCatalog() {

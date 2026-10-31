@@ -11,9 +11,12 @@ enum CloudAPIStyle: Hashable {
     /// `POST {base}/text-to-speech/{voice_id}?output_format=…` with JSON
     /// `text`, `model_id`; `xi-api-key` auth.
     case elevenLabs
+    /// Gemini Interactions API: `POST {base}/interactions`, `x-goog-api-key`
+    /// auth. Audio comes back base64-encoded inside JSON (a WAV file by default).
+    case gemini
 }
 
-/// A hosted (or local) speech endpoint. Raw audio bytes come back either way.
+/// A hosted (or local) speech endpoint.
 struct CloudProvider: Identifiable, Hashable {
     let id: String
     let name: String
@@ -32,6 +35,15 @@ struct CloudProvider: Identifiable, Hashable {
         modelPrompt: "e.g. eleven_v4",
         voicePrompt: "Voice ID",
         style: .elevenLabs
+    )
+    static let gemini = CloudProvider(
+        id: "gemini",
+        name: "Google Gemini",
+        defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta",
+        requiresAPIKey: true,
+        modelPrompt: "e.g. gemini-3.8-flash-tts",
+        voicePrompt: "e.g. Kore",
+        style: .gemini
     )
     static let openRouter = CloudProvider(
         id: "openrouter",
@@ -74,7 +86,7 @@ struct CloudProvider: Identifiable, Hashable {
         voicePrompt: "Voice ID"
     )
 
-    static let all: [CloudProvider] = [.elevenLabs, .openRouter, .openAI, .mistral, .localMLX, .custom]
+    static let all: [CloudProvider] = [.elevenLabs, .gemini, .openRouter, .openAI, .mistral, .localMLX, .custom]
 
     static func provider(withID id: String) -> CloudProvider? {
         all.first { $0.id == id }
@@ -232,8 +244,9 @@ final class CloudSpeechGenerationService: SpeechGenerating {
     func synthesize(text: String, voice: String, jobID: UUID?) async throws -> SpeechGenerationResult {
         let startedAt = Date()
         let request = try makeRequest(text: text, voiceID: voice)
+        let provider = settings.load().voice(withID: voice)?.provider
         do {
-            if settings.load().voice(withID: voice)?.providerID == CloudProvider.localMLX.id {
+            if provider == .localMLX {
                 try await localServer?.ensureRunning()
             }
             let (data, response) = try await session.data(for: request)
@@ -244,11 +257,12 @@ final class CloudSpeechGenerationService: SpeechGenerating {
             guard (200..<300).contains(http.statusCode) else {
                 throw Self.httpError(status: http.statusCode, body: data)
             }
-            guard !data.isEmpty else {
+            let audio = provider?.style == .gemini ? try Self.geminiAudio(from: data) : data
+            guard !audio.isEmpty else {
                 throw Self.failure(code: "cloud.empty-audio", message: "The provider returned an empty audio response.")
             }
             logger.info("Cloud synthesis complete job=\(jobID?.uuidString ?? "none", privacy: .public) chars=\(text.count) elapsedMs=\(elapsedMs)")
-            return SpeechGenerationResult(audioData: data, latencyMs: elapsedMs, charCount: text.count)
+            return SpeechGenerationResult(audioData: audio, latencyMs: elapsedMs, charCount: text.count)
         } catch let error as AlkiSpeakError {
             throw error
         } catch is CancellationError {
@@ -291,6 +305,8 @@ final class CloudSpeechGenerationService: SpeechGenerating {
             url = current.baseURL(for: provider).flatMap { Self.speechURL(base: $0) }
         case .elevenLabs:
             url = current.baseURL(for: provider).flatMap { Self.elevenLabsSpeechURL(base: $0, voiceID: cloudVoice.voice) }
+        case .gemini:
+            url = current.baseURL(for: provider).flatMap { Self.normalizedBase($0) }.flatMap { URL(string: $0 + "/interactions") }
         }
         guard let url else {
             throw Self.failure(
@@ -332,8 +348,39 @@ final class CloudSpeechGenerationService: SpeechGenerating {
                 "text": text,
                 "model_id": cloudVoice.model
             ])
+        case .gemini:
+            // Unary responses default to a 24 kHz mono WAV with a RIFF header,
+            // which the clip pipeline plays as-is.
+            request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "model": cloudVoice.model,
+                "input": [["type": "user_input", "content": [["type": "text", "text": text]]]],
+                "response_format": ["type": "audio"],
+                "generation_config": ["speech_config": [["voice": cloudVoice.voice]]]
+            ] as [String: Any])
         }
         return request
+    }
+
+    /// Decodes the last audio block of the `model_output` step:
+    /// `steps[type=model_output].content[type=audio].data` (base64).
+    static func geminiAudio(from body: Data) throws -> Data {
+        let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+        let steps = json?["steps"] as? [[String: Any]] ?? []
+        let audioBlocks = steps
+            .filter { $0["type"] as? String == "model_output" }
+            .flatMap { $0["content"] as? [[String: Any]] ?? [] }
+            .filter { $0["type"] as? String == "audio" }
+        guard let encoded = audioBlocks.last?["data"] as? String,
+              let audio = Data(base64Encoded: encoded, options: .ignoreUnknownCharacters)
+        else {
+            throw failure(
+                code: "cloud.gemini.no-audio",
+                message: "Gemini answered without any audio.",
+                suggestion: "Check that the model is a TTS model (e.g. gemini-3.8-flash-tts) and the voice name is valid."
+            )
+        }
+        return audio
     }
 
     static func speechURL(base: String) -> URL? {
@@ -385,7 +432,9 @@ final class CloudSpeechGenerationService: SpeechGenerating {
     /// (`{"error":{"message":…}}`, `{"error":"…"}`, `{"detail":…}`, and
     /// ElevenLabs' `{"detail":{"message":…}}` / `{"detail":[{"msg":…}]}`).
     static func providerMessage(from body: Data) -> String? {
-        if let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+        let parsed = try? JSONSerialization.jsonObject(with: body)
+        // Google's endpoints wrap the error object in a one-element array.
+        if let json = (parsed as? [String: Any]) ?? (parsed as? [[String: Any]])?.first {
             if let error = json["error"] as? [String: Any], let message = error["message"] as? String {
                 return message
             }
@@ -524,4 +573,32 @@ final class ElevenLabsCatalogService: ElevenLabsCatalogFetching {
         }
         return data
     }
+}
+
+// MARK: - Gemini catalog
+
+/// Gemini's TTS models and its 30 prebuilt voices, as listed in the speech
+/// generation guide. Fixed, so Settings can offer pickers without a request.
+enum GeminiSpeechCatalog {
+    struct Voice: Identifiable, Hashable {
+        let name: String
+        let trait: String
+        var id: String { name }
+    }
+
+    static let models: [(id: String, name: String)] = [
+        ("gemini-3.8-flash-tts", "Gemini 3.8 Flash TTS"),
+        ("gemini-3.8-flash-lite-tts", "Gemini 3.8 Flash-Lite TTS")
+    ]
+
+    static let voices: [Voice] = [
+        ("Zephyr", "Bright"), ("Puck", "Upbeat"), ("Charon", "Informative"), ("Kore", "Firm"),
+        ("Fenrir", "Excitable"), ("Leda", "Youthful"), ("Orus", "Firm"), ("Aoede", "Breezy"),
+        ("Callirrhoe", "Easy-going"), ("Autonoe", "Bright"), ("Enceladus", "Breathy"), ("Iapetus", "Clear"),
+        ("Umbriel", "Easy-going"), ("Algieba", "Smooth"), ("Despina", "Smooth"), ("Erinome", "Clear"),
+        ("Algenib", "Gravelly"), ("Rasalgethi", "Informative"), ("Laomedeia", "Upbeat"), ("Achernar", "Soft"),
+        ("Alnilam", "Firm"), ("Schedar", "Even"), ("Gacrux", "Mature"), ("Pulcherrima", "Forward"),
+        ("Achird", "Friendly"), ("Zubenelgenubi", "Casual"), ("Vindemiatrix", "Gentle"), ("Sadachbia", "Lively"),
+        ("Sadaltager", "Knowledgeable"), ("Sulafat", "Warm")
+    ].map { Voice(name: $0.0, trait: $0.1) }
 }
