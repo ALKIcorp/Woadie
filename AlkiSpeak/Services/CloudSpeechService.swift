@@ -329,7 +329,14 @@ final class CloudSpeechGenerationService: SpeechGenerating {
             guard (200..<300).contains(http.statusCode) else {
                 throw Self.httpError(status: http.statusCode, body: data)
             }
-            let audio = provider?.style == .gemini ? try Self.geminiAudio(from: data) : data
+            let audio: Data
+            if provider?.style == .gemini {
+                audio = try Self.geminiAudio(from: data)
+            } else if provider == .localMLX {
+                audio = Self.joinedWAVStream(data)
+            } else {
+                audio = data
+            }
             guard !audio.isEmpty else {
                 throw Self.failure(code: "cloud.empty-audio", message: "The provider returned an empty audio response.")
             }
@@ -355,6 +362,54 @@ final class CloudSpeechGenerationService: SpeechGenerating {
 
     static func isCloudVoice(_ voiceID: String) -> Bool {
         voiceID.hasPrefix(idPrefix)
+    }
+
+    /// A streamed mlx-audio response is a run of complete WAV files, one per
+    /// ~2 s of audio. Returns one WAV holding all their samples, or `data`
+    /// unchanged when it isn't a run of WAVs in a single format.
+    static func joinedWAVStream(_ data: Data) -> Data {
+        let bytes = [UInt8](data)
+        func tag(_ at: Int) -> String { String(decoding: bytes[at..<at + 4], as: UTF8.self) }
+        func uint32(_ at: Int) -> Int {
+            Int(bytes[at]) | Int(bytes[at + 1]) << 8 | Int(bytes[at + 2]) << 16 | Int(bytes[at + 3]) << 24
+        }
+        var format: ArraySlice<UInt8>?
+        var samples: [UInt8] = []
+        var files = 0
+        var offset = 0
+        while offset + 12 <= bytes.count, tag(offset) == "RIFF", tag(offset + 8) == "WAVE" {
+            let end = offset + 8 + uint32(offset + 4)
+            guard end <= bytes.count else { return data }
+            var chunk = offset + 12
+            while chunk + 8 <= end {
+                let size = uint32(chunk + 4)
+                let body = (chunk + 8)..<min(end, chunk + 8 + size)
+                switch tag(chunk) {
+                case "fmt ":
+                    if let format, format != bytes[body] { return data }
+                    format = bytes[body]
+                case "data":
+                    samples.append(contentsOf: bytes[body])
+                default:
+                    break
+                }
+                chunk = body.upperBound + (size & 1)
+            }
+            offset = end
+            files += 1
+        }
+        guard files > 1, offset == bytes.count, let format else { return data }
+        var wav = Data()
+        func append(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { wav.append(contentsOf: $0) } }
+        wav.append(contentsOf: Array("RIFF".utf8))
+        append(UInt32(4 + 8 + format.count + 8 + samples.count))
+        wav.append(contentsOf: Array("WAVEfmt ".utf8))
+        append(UInt32(format.count))
+        wav.append(contentsOf: format)
+        wav.append(contentsOf: Array("data".utf8))
+        append(UInt32(samples.count))
+        wav.append(contentsOf: samples)
+        return wav
     }
 
     // MARK: - Request building
@@ -424,6 +479,16 @@ final class CloudSpeechGenerationService: SpeechGenerating {
                 "input": text,
                 "response_format": "mp3"
             ]
+            if provider == .localMLX {
+                // WAV skips the server's per-clip ffmpeg MP3 encode.
+                body["response_format"] = "wav"
+                if cloudVoice.model.contains("Qwen3-TTS") {
+                    // Streaming makes Qwen3 decode the audio 2 s at a time
+                    // instead of all at once: the same samples with ~3 GB less
+                    // peak memory. `joinedWAVStream` merges the chunks.
+                    body["stream"] = true
+                }
+            }
             if provider == .localMLX, cloudVoice.isCloned {
                 // Qwen3 Base clones from a reference clip plus its transcript;
                 // it rejects a `voice` name alongside them.

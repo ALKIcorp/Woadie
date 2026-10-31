@@ -425,6 +425,52 @@ final class CloudSpeechServiceTests: XCTestCase {
 
     // MARK: Ming voice design and expression tags
 
+    func testLocalQwenVoiceStreamsWAVAndOthersOnlyAskForWAV() throws {
+        let qwen = CloudVoice(providerID: CloudProvider.localMLX.id, model: "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit", voice: "Ryan", label: "Ryan")
+        let ming = CloudVoice(providerID: CloudProvider.localMLX.id, model: "mlx-community/Ming-3.0-tts-0.5B-bf16", voice: "US_Emma", label: "Emma")
+        settings.settings.voices = [qwen, ming]
+
+        let qwenBody = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(service.makeRequest(text: "Hi", voiceID: qwen.voiceID).httpBody)) as? [String: Any])
+        XCTAssertEqual(qwenBody["response_format"] as? String, "wav")
+        XCTAssertEqual(qwenBody["stream"] as? Bool, true)
+
+        let mingBody = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(service.makeRequest(text: "Hi", voiceID: ming.voiceID).httpBody)) as? [String: Any])
+        XCTAssertEqual(mingBody["response_format"] as? String, "wav")
+        XCTAssertNil(mingBody["stream"], "Streaming is only verified for Qwen3")
+    }
+
+    func testStreamedWAVChunksJoinIntoOneFile() async throws {
+        let qwen = CloudVoice(providerID: CloudProvider.localMLX.id, model: "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit", voice: "Ryan", label: "Ryan")
+        settings.settings.voices = [qwen]
+        let chunks: [[Int16]] = [[1, 2, 3, 4], [5, 6], [7]]
+        StubURLProtocol.handler = { _ in (200, chunks.map(Self.wav).reduce(Data(), +)) }
+
+        let result = try await service.synthesize(text: "Hi", voice: qwen.voiceID, jobID: nil)
+
+        XCTAssertEqual(result.audioData, Self.wav([1, 2, 3, 4, 5, 6, 7]))
+    }
+
+    func testWAVJoinLeavesOtherResponsesAlone() {
+        let single = Self.wav([1, 2, 3])
+        XCTAssertEqual(CloudSpeechGenerationService.joinedWAVStream(single), single)
+        let mp3 = Data([0xFF, 0xF3, 0x01, 0x02])
+        XCTAssertEqual(CloudSpeechGenerationService.joinedWAVStream(mp3), mp3)
+        let truncated = Self.wav([1, 2]) + Self.wav([3, 4]).dropLast(2)
+        XCTAssertEqual(CloudSpeechGenerationService.joinedWAVStream(truncated), truncated)
+    }
+
+    /// A 24 kHz mono 16-bit WAV, laid out the way mlx-audio writes each chunk.
+    private static func wav(_ samples: [Int16]) -> Data {
+        var data = Data()
+        func append<T: FixedWidthInteger>(_ value: T) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+        data.append(contentsOf: Array("RIFF".utf8)); append(UInt32(36 + samples.count * 2))
+        data.append(contentsOf: Array("WAVEfmt ".utf8)); append(UInt32(16))
+        append(UInt16(1)); append(UInt16(1)); append(UInt32(24_000)); append(UInt32(48_000)); append(UInt16(2)); append(UInt16(16))
+        data.append(contentsOf: Array("data".utf8)); append(UInt32(samples.count * 2))
+        samples.forEach { append($0) }
+        return data
+    }
+
     func testDesignedLocalVoiceSendsInstructInsteadOfVoice() throws {
         let designed = CloudVoice(providerID: CloudProvider.localMLX.id, model: "mlx-community/Ming-3.0-tts-0.5B-bf16", voice: "", label: "Narrator", instructions: "A deep, slow documentary narrator.")
         let builtIn = CloudVoice(providerID: CloudProvider.localMLX.id, model: "mlx-community/Ming-3.0-tts-0.5B-bf16", voice: "US_Emma", label: "Emma")
@@ -462,11 +508,11 @@ final class CloudSpeechServiceTests: XCTestCase {
         )
         settings.settings.voices = [cloned]
 
-        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(service.makeRequest(text: "Read this.", voiceID: cloned.voiceID).httpBody)) as? [String: String])
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(service.makeRequest(text: "Read this.", voiceID: cloned.voiceID).httpBody)) as? [String: Any])
 
-        XCTAssertEqual(body["ref_audio"], "/tmp/ref.wav")
-        XCTAssertEqual(body["ref_text"], "Hi, this is my voice.")
-        XCTAssertEqual(body["model"], LocalVoiceCatalog.cloningModelID)
+        XCTAssertEqual(body["ref_audio"] as? String, "/tmp/ref.wav")
+        XCTAssertEqual(body["ref_text"] as? String, "Hi, this is my voice.")
+        XCTAssertEqual(body["model"] as? String, LocalVoiceCatalog.cloningModelID)
         XCTAssertNil(body["voice"], "Qwen3 Base rejects a voice name alongside a reference")
         XCTAssertNil(body["instruct"])
     }
