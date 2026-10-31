@@ -29,6 +29,11 @@
 		A1000013 /* WoadieFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000015 /* WoadieFooter.swift */; };
 		A1000014 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000016 /* AppConfig.swift */; };
 		A1000015 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000017 /* AppStore.swift */; };
+		A1000107 /* KokoroEngineController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000107 /* KokoroEngineController.swift */; };
+		A1000106 /* SpeechPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000106 /* SpeechPipeline.swift */; };
+		A1000105 /* SpeechDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000105 /* SpeechDiagnostics.swift */; };
+		A1000104 /* VoiceCatalogController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000104 /* VoiceCatalogController.swift */; };
+		A1000103 /* HistoryController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000103 /* HistoryController.swift */; };
 		A1000016 /* AppDependencies.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000018 /* AppDependencies.swift */; };
 		A1000017 /* DomainModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000019 /* DomainModels.swift */; };
 		A1000018 /* AlkiSpeakError.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001A /* AlkiSpeakError.swift */; };
@@ -92,6 +97,11 @@
 		A2000015 /* WoadieFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WoadieFooter.swift; sourceTree = "<group>"; };
 		A2000016 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		A2000017 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
+		A2000107 /* KokoroEngineController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokoroEngineController.swift; sourceTree = "<group>"; };
+		A2000106 /* SpeechPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechPipeline.swift; sourceTree = "<group>"; };
+		A2000105 /* SpeechDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechDiagnostics.swift; sourceTree = "<group>"; };
+		A2000104 /* VoiceCatalogController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCatalogController.swift; sourceTree = "<group>"; };
+		A2000103 /* HistoryController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryController.swift; sourceTree = "<group>"; };
 		A2000018 /* AppDependencies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDependencies.swift; sourceTree = "<group>"; };
 		A2000019 /* DomainModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainModels.swift; sourceTree = "<group>"; };
 		A200001A /* AlkiSpeakError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlkiSpeakError.swift; sourceTree = "<group>"; };
@@ -230,6 +240,11 @@
 			children = (
 				A2000016 /* AppConfig.swift */,
 				A2000017 /* AppStore.swift */,
+				A2000107 /* KokoroEngineController.swift */,
+				A2000106 /* SpeechPipeline.swift */,
+				A2000105 /* SpeechDiagnostics.swift */,
+				A2000104 /* VoiceCatalogController.swift */,
+				A2000103 /* HistoryController.swift */,
 				A2000018 /* AppDependencies.swift */,
 			);
 			path = App;
@@ -413,6 +428,11 @@
 				A1000013 /* WoadieFooter.swift in Sources */,
 				A1000014 /* AppConfig.swift in Sources */,
 				A1000015 /* AppStore.swift in Sources */,
+				A1000107 /* KokoroEngineController.swift in Sources */,
+				A1000106 /* SpeechPipeline.swift in Sources */,
+				A1000105 /* SpeechDiagnostics.swift in Sources */,
+				A1000104 /* VoiceCatalogController.swift in Sources */,
+				A1000103 /* HistoryController.swift in Sources */,
 				A1000016 /* AppDependencies.swift in Sources */,
 				A1000017 /* DomainModels.swift in Sources */,
 				A1000018 /* AlkiSpeakError.swift in Sources */,

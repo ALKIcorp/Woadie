@@ -7,42 +7,34 @@ import Foundation
 final class AppModel: ObservableObject {
     let store: AppStore
     private let dependencies: AppDependencies
-    private let requestPolicy = EngineRequestPolicy.live
-    private let ttsQueue = TTSQueue()
     private let favoritesStore = VoiceFavoritesStore()
+    private lazy var voiceCatalog = VoiceCatalogController(
+        store: store,
+        dependencies: dependencies,
+        favoritesStore: favoritesStore,
+        selectVoice: { [weak self] in self?.selectedVoice = $0 },
+        record: { [weak self] in self?.record($0) },
+        trace: { [weak self] in self?.consoleTrace($0) }
+    )
+    private lazy var diagnostics = SpeechDiagnostics(dependencies: dependencies, store: store) { [weak self] in
+        self?.diagnosticsBaseContext() ?? [:]
+    }
+    private lazy var pipeline = SpeechPipeline(store: store, dependencies: dependencies, diagnostics: diagnostics)
+    private lazy var engine = KokoroEngineController(
+        store: store,
+        dependencies: dependencies,
+        diagnostics: diagnostics,
+        selectedVoiceUsesEngine: { [weak self] in self?.isSelectedVoicePythonKokoro ?? false },
+        fetchVoices: { [weak self] in await self?.fetchVoices() },
+        stopPlayback: { [weak self] in self?.stopPlayback() },
+        trace: { [weak self] in self?.consoleTrace($0) }
+    )
+    private lazy var history = HistoryController(store: store, dependencies: dependencies) { [weak self] error in
+        self?.record(error)
+    }
     private var cancellables: Set<AnyCancellable> = []
-    private var engineStartTask: Task<Void, Never>?
-    /// The task running the current generation/playback request. Cancelled by
-    /// `interruptForOverride()` so a superseding request actually tears down the
-    /// in-flight network call (cooperative cancellation propagates through
-    /// `URLSession.data(for:)`) instead of letting it finish uselessly in the
-    /// background while only its result gets discarded.
-    private var activeSpeechTask: Task<Void, Never>?
-    private var engineStartGeneration: UInt64 = 0
-    /// Stops the Python Kokoro engine once it has sat unused for a while.
-    private var pythonEngineIdleTask: Task<Void, Never>?
-    /// The Python engine was stopped to save memory rather than by the user,
-    /// so Generate wakes it instead of being disabled.
-    private var pythonEngineSleeping = false
     private var tuningSaveTask: Task<Void, Never>?
-    private var queryStartedAt: ContinuousClock.Instant?
-    private var queryResourceBefore: SystemResourceSnapshot = .empty
-    private var resourceUsageAccumulator = QueryResourceUsageAccumulator()
-    private var resourceSamplingGeneration: UInt64 = 0
-    private var resourceSamplingTask: Task<Void, Never>?
-    // The transport snapshot republishes the whole observable store, which
-    // re-renders the entire view tree (glass surfaces, waveform, voice picker).
-    // 30 Hz keeps the scrubber/timecode smooth while leaving the main thread
-    // free enough that taps on controls and the voice picker stay responsive
-    // during playback. The waveform interpolates per display frame on its own
-    // `TimelineView`, so it stays fluid regardless of this rate.
-    private let playbackSnapshotMinimumInterval: TimeInterval = 1.0 / 30.0
-    private var lastPlaybackSnapshotAppliedAt: TimeInterval = 0
-    private var performanceDiagnosticsTask: Task<Void, Never>?
-    private var performanceDiagnosticPhase: PerformanceDiagnosticPhase = .idle
-    private var activePerformanceDiagnosticJobID: UUID?
     private var hasRequestedAccessibilityPrompt = false
-    private var savedLogsNeedPersisting = false
     private var lastHotKeyClipboardChangeCount = NSPasteboard.general.changeCount
 
     private func consoleTrace(_ message: String, function: StaticString = #function, line: UInt = #line) {
@@ -174,18 +166,9 @@ final class AppModel: ObservableObject {
 
     var voiceFavorites: Set<String> { store.voiceFavorites }
 
-    func isFavorite(_ voiceID: String) -> Bool {
-        store.voiceFavorites.contains(voiceID)
-    }
+    func isFavorite(_ voiceID: String) -> Bool { voiceCatalog.isFavorite(voiceID) }
 
-    func toggleFavorite(_ voiceID: String) {
-        if store.voiceFavorites.contains(voiceID) {
-            store.voiceFavorites.remove(voiceID)
-        } else {
-            store.voiceFavorites.insert(voiceID)
-        }
-        favoritesStore.save(store.voiceFavorites)
-    }
+    func toggleFavorite(_ voiceID: String) { voiceCatalog.toggleFavorite(voiceID) }
 
     // MARK: Listen-only playback tuning
 
@@ -228,90 +211,34 @@ final class AppModel: ObservableObject {
     var cloudSettings: CloudSpeechSettings { store.cloudSettings }
 
     func hasCloudAPIKey(for provider: CloudProvider) -> Bool {
-        !(dependencies.secretStore.secret(for: provider.id) ?? "").isEmpty
+        voiceCatalog.hasCloudAPIKey(for: provider)
     }
 
     /// Saves (or, with an empty string, removes) a provider's key in the Keychain.
     func setCloudAPIKey(_ key: String, for provider: CloudProvider) {
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            try dependencies.secretStore.setSecret(trimmed.isEmpty ? nil : trimmed, for: provider.id)
-            store.userMessage = trimmed.isEmpty ? "\(provider.name) key removed." : "\(provider.name) key saved to Keychain."
+        if voiceCatalog.setCloudAPIKey(key, for: provider) {
             objectWillChange.send()
-        } catch let error as AlkiSpeakError {
-            record(error)
-        } catch {
-            store.userMessage = error.localizedDescription
         }
     }
 
     func setCloudCustomBaseURL(_ url: String) {
-        store.cloudSettings.customBaseURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        dependencies.cloudSpeechSettings.save(store.cloudSettings)
+        voiceCatalog.setCloudCustomBaseURL(url)
     }
 
     func addCloudVoice(provider: CloudProvider, model: String, voice: String, label: String) {
-        let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        let voice = voice.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !model.isEmpty, !voice.isEmpty else { return }
-        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        appendCloudVoice(CloudVoice(
-            providerID: provider.id,
-            model: model,
-            voice: voice,
-            label: trimmedLabel.isEmpty ? "\(provider.name) · \(voice)" : trimmedLabel
-        ))
+        voiceCatalog.makeCloudVoice(provider: provider, model: model, voice: voice, label: label).map(appendCloudVoice)
     }
 
-    /// Adds a local voice built from a description instead of a built-in name.
     func addDesignedLocalVoice(model localModel: LocalVoiceCatalog.Model, description: String, label: String) {
-        let description = description.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard localModel.supportsVoiceDesign, !description.isEmpty else { return }
-        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        let shortened = description.count > 32
-            ? String(description.prefix(32)).trimmingCharacters(in: .whitespaces) + "…"
-            : description
-        let fallbackLabel = "Designed · " + shortened
-        appendCloudVoice(CloudVoice(
-            providerID: CloudProvider.localMLX.id,
-            model: localModel.id,
-            voice: "",
-            label: trimmedLabel.isEmpty ? fallbackLabel : trimmedLabel,
-            instructions: description
-        ))
+        voiceCatalog.makeDesignedLocalVoice(model: localModel, description: description, label: label).map(appendCloudVoice)
     }
 
-    /// Adds a local voice cloned from a recording. `transcript` must be the
-    /// exact words spoken in it; Qwen3 lines the two up to learn the voice.
-    /// The clip is converted and kept by the app, so the original can go.
     func addClonedLocalVoice(recording: URL, transcript: String, label: String) throws {
-        let transcript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !transcript.isEmpty else {
-            throw AlkiSpeakError.generation(
-                code: "clone.transcript",
-                title: "Transcript Needed",
-                message: "Type the exact words spoken in the recording.",
-                recoverySuggestion: "The cloned voice copies how those words were said, so they must match the clip."
-            )
-        }
-        let id = UUID()
-        let stored = try VoiceCloneReference.store(from: recording, id: id)
-        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        appendCloudVoice(CloudVoice(
-            id: id,
-            providerID: CloudProvider.localMLX.id,
-            model: LocalVoiceCatalog.cloningModelID,
-            voice: "",
-            label: trimmedLabel.isEmpty ? "My voice (local)" : trimmedLabel,
-            referenceAudioPath: stored.path,
-            referenceText: transcript
-        ))
+        appendCloudVoice(try voiceCatalog.makeClonedLocalVoice(recording: recording, transcript: transcript, label: label))
     }
 
     private func appendCloudVoice(_ cloudVoice: CloudVoice) {
-        store.cloudSettings.voices.append(cloudVoice)
-        dependencies.cloudSpeechSettings.save(store.cloudSettings)
-        refreshCloudVoices()
+        voiceCatalog.add(cloudVoice)
         selectedVoice = cloudVoice.voiceID
         if cloudVoice.provider == .localMLX {
             warmUpLocalVoiceServer()
@@ -319,26 +246,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Adds a Gemini voice that reads `Name: line` scripts with two prebuilt
-    /// voices. Names must be distinct, non-empty and colon-free.
     func addGeminiDialogueVoice(model: String, speakers: [DialogueSpeaker], label: String) {
-        let cast = speakers.map {
-            DialogueSpeaker(name: $0.name.trimmingCharacters(in: .whitespacesAndNewlines), voice: $0.voice)
-        }
-        let validVoices = Set(GeminiSpeechCatalog.voices.map(\.name))
-        guard !model.isEmpty,
-              cast.count == DialogueScript.maxSpeakers,
-              cast.allSatisfy({ !$0.name.isEmpty && !$0.name.contains(":") && validVoices.contains($0.voice) }),
-              Set(cast.map { $0.name.lowercased() }).count == cast.count
-        else { return }
-        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        appendCloudVoice(CloudVoice(
-            providerID: CloudProvider.gemini.id,
-            model: model,
-            voice: cast.map(\.voice).joined(separator: "+"),
-            label: trimmedLabel.isEmpty ? "Gemini dialogue · " + cast.map(\.name).joined(separator: " & ") : trimmedLabel,
-            speakers: cast
-        ))
+        voiceCatalog.makeGeminiDialogueVoice(model: model, speakers: speakers, label: label).map(appendCloudVoice)
     }
 
     /// The cast when the selected voice is a dialogue voice, else `nil`.
@@ -419,7 +328,7 @@ final class AppModel: ObservableObject {
     }
 
     func hasCloudVoice(provider: CloudProvider, model: String, voice: String) -> Bool {
-        store.cloudSettings.voices.contains { $0.providerID == provider.id && $0.model == model && $0.voice == voice }
+        voiceCatalog.hasCloudVoice(provider: provider, model: model, voice: voice)
     }
 
     /// One-click add for a verified local preset; a no-op if it's already added.
@@ -455,9 +364,7 @@ final class AppModel: ObservableObject {
             // `mergeVoiceOptions` keeps the selected ID alive on purpose.
             selectedVoice = AppConfig.defaultVoice
         }
-        mergeVoiceOptions(remote: store.voiceOptions
-            .filter { !$0.isLocal && $0.source != .kokoroNative }
-            .map(\.id))
+        voiceCatalog.replaceNativeKokoroVoices(with: [])
     }
 
     private func loadNativeKokoro() {
@@ -467,10 +374,7 @@ final class AppModel: ObservableObject {
                 let count = try await dependencies.nativeKokoroService.prepare()
                 let native = try await dependencies.nativeKokoroService.fetchVoices()
                 guard dependencies.nativeKokoroService.isEnabled else { return }
-                let others = store.voiceOptions
-                    .filter { !$0.isLocal && $0.source != .kokoroNative }
-                    .map(\.id)
-                mergeVoiceOptions(remote: others + native)
+                voiceCatalog.replaceNativeKokoroVoices(with: native)
                 // Report ready only once the voices are in the picker.
                 nativeKokoroState = .ready(voiceCount: count)
             } catch {
@@ -483,12 +387,12 @@ final class AppModel: ObservableObject {
 
     /// The account's Cartesia voices, for the Settings picker.
     func loadCartesiaVoices() async throws -> [CartesiaCatalog.Voice] {
-        try await dependencies.cartesiaVoices.fetchVoices()
+        try await voiceCatalog.loadCartesiaVoices()
     }
 
     /// The account's ElevenLabs voices and TTS models, for the Settings pickers.
     func loadElevenLabsCatalog() async throws -> ElevenLabsCatalog {
-        try await dependencies.elevenLabsCatalog.fetchCatalog()
+        try await voiceCatalog.loadElevenLabsCatalog()
     }
 
     /// Called on app quit. Leaves alone a server the app adopted rather than launched.
@@ -497,34 +401,12 @@ final class AppModel: ObservableObject {
     }
 
     func removeCloudVoice(_ cloudVoice: CloudVoice) {
-        store.cloudSettings.voices.removeAll { $0.id == cloudVoice.id }
-        dependencies.cloudSpeechSettings.save(store.cloudSettings)
-        if let referencePath = cloudVoice.referenceAudioPath {
-            VoiceCloneReference.remove(atPath: referencePath)
-        }
-        if selectedVoice == cloudVoice.voiceID {
-            // `mergeVoiceOptions` keeps the selected ID alive on purpose, so
-            // move off the deleted voice before it re-adds it as a ghost.
-            selectedVoice = AppConfig.defaultVoice
-        }
-        if store.voiceFavorites.remove(cloudVoice.voiceID) != nil {
-            favoritesStore.save(store.voiceFavorites)
-        }
-        refreshCloudVoices()
-    }
-
-    /// Rebuilds the catalog's cloud entries from settings without re-fetching
-    /// the Kokoro and Edge lists over the network.
-    private func refreshCloudVoices() {
-        let others = store.voiceOptions
-            .filter { !$0.isLocal && !CloudSpeechGenerationService.isCloudVoice($0.id) }
-            .map(\.id)
-        mergeVoiceOptions(remote: others + store.cloudSettings.voices.map(\.voiceID))
+        voiceCatalog.remove(cloudVoice)
     }
 
     var lastQueryResourceUsage: QueryResourceUsage? { store.lastQueryResourceUsage }
 
-    var isResourceSamplingActiveForTesting: Bool { resourceSamplingTask != nil }
+    var isResourceSamplingActiveForTesting: Bool { diagnostics.isResourceSamplingActive }
 
     private var isSelectedVoiceLocal: Bool {
         selectedVoice.hasPrefix("apple:")
@@ -551,44 +433,10 @@ final class AppModel: ObservableObject {
     /// The engine is off because the selected voice doesn't use it, or it
     /// went unused long enough to be stopped. It starts again when a Kokoro
     /// voice is picked or Generate is pressed.
-    var isEngineOnStandby: Bool {
-        status == .stopped && engineStartTask == nil && (!isSelectedVoicePythonKokoro || pythonEngineSleeping)
-    }
-
-    /// How long the Python Kokoro engine may sit unused before it stops,
-    /// freeing PyTorch and the model. Shorter when no Kokoro voice is selected.
-    static let pythonEngineIdleTimeout: TimeInterval = 3 * 60
-    static let pythonEngineUnselectedTimeout: TimeInterval = 30
+    var isEngineOnStandby: Bool { engine.isOnStandby }
 
     private func schedulePythonEngineIdleStop() {
-        pythonEngineIdleTask?.cancel()
-        guard !AppConfig.isRunningUnitTests else { return }
-        let timeout = isSelectedVoicePythonKokoro ? Self.pythonEngineIdleTimeout : Self.pythonEngineUnselectedTimeout
-        pythonEngineIdleTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            self?.stopPythonKokoroEngineIfIdle()
-        }
-    }
-
-    /// Starts the engine after an idle stop and waits until it answers.
-    private func wakePythonKokoroEngine() async throws {
-        guard !status.isAvailableForRemoteSpeech else { return }
-        store.playback.statusMessage = "Starting Kokoro…"
-        defer { store.playback.statusMessage = nil }
-        if engineStartTask == nil {
-            startEngine()
-        }
-        await engineStartTask?.value
-        try Task.checkCancellation()
-        guard status.isAvailableForRemoteSpeech else {
-            throw AlkiSpeakError.engine(
-                code: "wake-failed",
-                title: "Kokoro Didn't Start",
-                message: "The Kokoro engine didn't come back up for this request.",
-                recoverySuggestion: "Press Generate again, or restart the engine."
-            )
-        }
+        engine.scheduleIdleStop()
     }
 
     /// Starts the Python Kokoro engine only when the selected voice needs it.
@@ -621,44 +469,18 @@ final class AppModel: ObservableObject {
 
     /// Stops the Python Kokoro engine to free its memory (a native Kokoro
     /// voice took over, or it went unused), unless it is still generating.
-    /// Finished clips play without it.
     func stopPythonKokoroEngineIfIdle() {
-        let supervisor = dependencies.engineSupervisor
-        guard status.isProcessExpectedAlive || supervisor.isRunning,
-              supervisor.healthSummary.activeJobID == nil
-        else { return }
-        consoleTrace("stopping idle Python Kokoro engine")
-        engineStartGeneration &+= 1
-        engineStartTask?.cancel()
-        engineStartTask = nil
-        pythonEngineIdleTask?.cancel()
-        supervisor.stop()
-        pythonEngineSleeping = true
-        store.engineStatus = .stopped
+        engine.stopIfIdle()
     }
 
-    private static let kokoroVoiceCacheKey = "AlkiSpeak.kokoroVoiceCache"
-
-    /// The Kokoro voice list from the last time the engine answered, so the
-    /// picker still lists Kokoro voices while the engine is off.
-    private var cachedKokoroVoices: [String] {
-        get { UserDefaults.standard.stringArray(forKey: Self.kokoroVoiceCacheKey) ?? [] }
-        set { UserDefaults.standard.set(newValue, forKey: Self.kokoroVoiceCacheKey) }
-    }
-
-    private func remoteService(for voice: String) -> SpeechGenerating {
-        if voice.hasPrefix(EdgeSpeechGenerationService.idPrefix) { return dependencies.edgeSpeechService }
-        if CloudSpeechGenerationService.isCloudVoice(voice) { return dependencies.cloudSpeechService }
-        if NativeKokoroSpeechService.isNativeKokoroVoice(voice) { return dependencies.nativeKokoroService }
-        return dependencies.generationService
-    }
+    private var cachedKokoroVoices: [String] { voiceCatalog.cachedKokoroVoices }
 
     init(store: AppStore, dependencies: AppDependencies) {
         self.store = store
         self.dependencies = dependencies
         consoleTrace("init isRunningUnitTests=\(AppConfig.isRunningUnitTests) kokoroPath=\(AppConfig.kokoroPath) baseURL=\(AppConfig.serverBaseURL.absoluteString)")
         if !AppConfig.isRunningUnitTests {
-            startPerformanceDiagnosticSession()
+            diagnostics.startSession()
         }
 
         store.objectWillChange
@@ -674,7 +496,9 @@ final class AppModel: ObservableObject {
             .store(in: &cancellables)
 
         consoleTrace("wiring service callbacks")
-        wireServiceCallbacks()
+        engine.wireSupervisorCallbacks()
+        // Created now, not on first use, so it owns the playback callbacks.
+        pipeline.host = self
         loadPreferences()
         consoleTrace("loading workspace")
         loadWorkspace()
@@ -682,7 +506,7 @@ final class AppModel: ObservableObject {
         consoleTrace("refreshing local voices")
         refreshLocalVoices()
         if !AppConfig.isRunningUnitTests {
-            startPerformanceDiagnosticSampling()
+            diagnostics.startIdleSampling()
             consoleTrace("starting engine from AppModel.init if the selected voice needs it")
             startEngineIfNeeded()
             // Edge voices don't depend on the Kokoro engine, so fetch them right
@@ -711,145 +535,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    deinit {
-        performanceDiagnosticsTask?.cancel()
-    }
-
-    func startEngine() {
-        consoleTrace("startEngine requested currentStatus=\(status.rawValue) supervisorRunning=\(dependencies.engineSupervisor.isRunning) pid=\(dependencies.engineSupervisor.processIdentifier.map(String.init) ?? "nil")")
-        guard !status.isProcessExpectedAlive && !dependencies.engineSupervisor.isRunning else {
-            consoleTrace("startEngine ignored because engine is already expected alive or supervisor reports running")
-            return
-        }
-        dependencies.performanceDiagnostics.recordMarker(
-            phase: .engineStart,
-            message: "Engine start requested.",
-            jobID: nil,
-            context: performanceDiagnosticContext()
-        )
-        engineStartTask?.cancel()
-        engineStartGeneration &+= 1
-        let startGeneration = engineStartGeneration
-        pythonEngineSleeping = false
-        store.clearErrorMessage()
-        store.engineStatus = .starting
-        consoleTrace("engineStatus set to starting")
-
-        let supervisor = dependencies.engineSupervisor
-        engineStartTask = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                if self.engineStartGeneration == startGeneration {
-                    self.engineStartTask = nil
-                }
-            }
-            do {
-                consoleTrace("detached supervisor.start beginning")
-                try await Task.detached(priority: .userInitiated) {
-                    try supervisor.start()
-                }.value
-                guard self.engineStartGeneration == startGeneration, !Task.isCancelled else {
-                    consoleTrace("supervisor.start completed after cancellation; ignoring result")
-                    return
-                }
-                consoleTrace("detached supervisor.start completed pid=\(supervisor.processIdentifier.map(String.init) ?? "nil") healthStatus=\(supervisor.healthSummary.status.rawValue)")
-                refreshTelemetry()
-            } catch {
-                guard self.engineStartGeneration == startGeneration else {
-                    consoleTrace("supervisor.start error belongs to an old start generation; ignoring error=\(String(describing: error))")
-                    return
-                }
-                if error is CancellationError || Task.isCancelled {
-                    consoleTrace("supervisor.start cancelled")
-                    if store.engineStatus == .starting || store.engineStatus == .retrying {
-                        store.engineStatus = .stopped
-                    }
-                    return
-                }
-                consoleTrace("supervisor.start failed error=\(String(describing: error))")
-                if let appError = error as? AlkiSpeakError, appError.code == "engine.port-in-use" {
-                    let pids = await Task.detached(priority: .userInitiated) {
-                        supervisor.findListeningPidsOnEnginePort()
-                    }.value
-                    consoleTrace("port-in-use surfaced pids=\(pids.map(String.init).joined(separator: ","))")
-                    store.portInUsePids = pids
-                    store.showPortInUseAlert = true
-                    record(appError)
-                } else {
-                    record(
-                        .engine(
-                            code: "start-failed",
-                            title: "Engine Start Failed",
-                            message: "Failed to start the speech engine.",
-                            recoverySuggestion: "Verify the Kokoro checkout and virtual environment path, then try again.",
-                            underlyingError: error
-                        )
-                    )
-                }
-                store.engineStatus = .failed
-                consoleTrace("engineStatus set to failed after start error")
-                return
-            }
-            // Poll health at 250 ms — mirrors the original waitForHealth() pattern from
-            // 999d859 — so both auto-launch on init AND manual stop→start transitions
-            // snap the UI out of "Starting..." as soon as the engine is reachable.
-            await waitForEngineReady(startGeneration: startGeneration)
-        }
-    }
-
-    func stopEngine() {
-        consoleTrace("stopEngine requested currentStatus=\(status.rawValue) supervisorRunning=\(dependencies.engineSupervisor.isRunning) pid=\(dependencies.engineSupervisor.processIdentifier.map(String.init) ?? "nil")")
-        dependencies.performanceDiagnostics.recordMarker(
-            phase: .engineStop,
-            message: "Engine stop requested.",
-            jobID: activePerformanceDiagnosticJobID,
-            context: performanceDiagnosticContext()
-        )
-        engineStartGeneration &+= 1
-        engineStartTask?.cancel()
-        engineStartTask = nil
-        store.clearErrorMessage()
-        stopPlayback()
-        pythonEngineIdleTask?.cancel()
-        pythonEngineSleeping = false
-        dependencies.engineSupervisor.stop()
-        store.engineStatus = .stopped
-        consoleTrace("engineStatus set to stopped")
-        refreshTelemetry()
-    }
-
-    func restartEngine() {
-        consoleTrace("restartEngine requested")
-        engineStartGeneration &+= 1
-        engineStartTask?.cancel()
-        engineStartTask = nil
-        stopPlayback()
-        store.clearErrorMessage()
-        store.engineStatus = .starting
-        let restartGeneration = engineStartGeneration
-
-        let supervisor = dependencies.engineSupervisor
-        Task {
-            do {
-                try await Task.detached(priority: .userInitiated) {
-                    try supervisor.restart()
-                }.value
-                await waitForEngineReady(startGeneration: restartGeneration)
-            } catch {
-                store.engineStatus = .failed
-                record(normalizeEngineError(error))
-            }
-        }
-    }
-
-    func toggleEngine() {
-        consoleTrace("toggleEngine status=\(status.rawValue) processExpectedAlive=\(status.isProcessExpectedAlive) supervisorRunning=\(dependencies.engineSupervisor.isRunning)")
-        if status.isProcessExpectedAlive || dependencies.engineSupervisor.isRunning {
-            stopEngine()
-        } else {
-            startEngine()
-        }
-    }
+    func startEngine() { engine.start() }
+    func stopEngine() { engine.stop() }
+    func restartEngine() { engine.restart() }
+    func toggleEngine() { engine.toggle() }
 
     func refreshVoices() {
         Task {
@@ -864,7 +553,7 @@ final class AppModel: ObservableObject {
 
     func speak() {
         if appMode == .quick {
-            deleteActiveQuickClips()
+            pipeline.deleteActiveClips()
         }
         // A new request always takes over: stop whatever is playing or generating
         // so the user never has to pause/stop first. The in-flight job (if any) is
@@ -884,27 +573,21 @@ final class AppModel: ObservableObject {
     /// detached queue cancel — the new request cancels and re-seeds the queue in
     /// the same task, which keeps the override race-free.
     private func interruptForOverride() {
-        activeSpeechTask?.cancel()
-        activeSpeechTask = nil
-        finishResourceSampling()
-        finishPerformanceDiagnosticJob(message: "Superseded by a new request.")
-        dependencies.playbackCoordinator.stop()
-        dependencies.localSpeechService.stop()
-        markActiveJobsCompleted()
+        pipeline.interrupt()
     }
 
     func speakExternalText(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         if appMode == .quick {
-            deleteActiveQuickClips()
+            pipeline.deleteActiveClips()
         }
         interruptForOverride()
         inputText = trimmed
         if !status.isProcessExpectedAlive && !dependencies.engineSupervisor.isRunning && isSelectedVoicePythonKokoro {
             if status == .stopped {
                 // The request below starts the engine and waits for it.
-                pythonEngineSleeping = true
+                engine.markSleeping()
             } else {
                 startEngine()
             }
@@ -1020,50 +703,11 @@ final class AppModel: ObservableObject {
 
     func exportSelectedEntry() {
         guard let entry = selectedLogEntry else { return }
-        let panel = NSOpenPanel()
-        panel.title = "Choose Export Location"
-        panel.prompt = "Export"
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
-        do {
-            let exportedURL = try dependencies.speechEntryArchiveService.export(entry: entry, to: destination)
-            store.userMessage = "Exported \(exportedURL.lastPathComponent)"
-        } catch {
-            record(AlkiSpeakError(
-                code: "archive.export",
-                title: "Export Failed",
-                message: error.localizedDescription,
-                recoverySuggestion: "Choose another destination and try again."
-            ))
-        }
+        history.exportEntry(entry)
     }
 
     func importSpeechEntry() {
-        let panel = NSOpenPanel()
-        panel.title = "Import Speech Entry"
-        panel.prompt = "Import"
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let source = panel.url else { return }
-        do {
-            let entry = try dependencies.speechEntryArchiveService.importEntry(from: source)
-            try dependencies.speechEntryStore.insert(entry)
-            loadSpeechEntries()
-            store.selectedLogEntryID = entry.id
-            store.appMode = .pro
-            store.userMessage = "Imported \(source.lastPathComponent)"
-        } catch {
-            record(AlkiSpeakError(
-                code: "archive.import",
-                title: "Import Failed",
-                message: error.localizedDescription,
-                recoverySuggestion: "Select a complete AlkiSpeak export folder."
-            ))
-        }
+        history.importSpeechEntry()
     }
 
     func addCurrentToLog() {
@@ -1076,171 +720,36 @@ final class AppModel: ObservableObject {
         saveEntry(for: job)
     }
 
+    /// Replays a saved entry and puts its text and voice back in the editor.
     func open(_ entry: SpeechEntry) {
         stopPlayback()
         inputText = entry.textContent
         selectedVoice = entry.voice
-        let urls = entry.segmentRelativePaths.compactMap { try? dependencies.speechEntryStore.absoluteURL(for: $0) }
-        let segments = urls.enumerated().map { index, url in
-            SpeechSegment(index: index, text: "", status: .ready, audioURL: url)
-        }
-        let job = SpeechJob(text: entry.textContent, voiceID: entry.voice, segments: segments, status: .completed, logEntryID: entry.id)
-        store.speechJobs.insert(job, at: 0)
-        dependencies.playbackCoordinator.prepare(characterCounts: Array(repeating: 1, count: urls.count))
-        for (index, url) in urls.enumerated() {
-            try? dependencies.playbackCoordinator.append(audioURL: url, segmentID: segments[index].id, index: index)
-        }
-        dependencies.playbackCoordinator.finishEnqueuing()
-        store.playback.activeJobID = job.id
-        store.playback.activeLogEntryID = entry.id
-        store.playback.duration = entry.totalDurationSeconds
-        store.playback.bufferedDuration = entry.totalDurationSeconds
+        history.loadForPlayback(entry)
     }
 
+    /// Replays a saved entry without touching the editor.
     func reinsert(_ entry: SpeechEntry) {
         stopPlayback()
-        let urls = entry.segmentRelativePaths.compactMap { try? dependencies.speechEntryStore.absoluteURL(for: $0) }
-        let segments = urls.enumerated().map { index, url in
-            SpeechSegment(index: index, text: "", status: .ready, audioURL: url)
-        }
-        let job = SpeechJob(text: entry.textContent, voiceID: entry.voice, segments: segments, status: .completed, logEntryID: entry.id)
-        store.speechJobs.insert(job, at: 0)
-        dependencies.playbackCoordinator.prepare(characterCounts: Array(repeating: 1, count: urls.count))
-        for (index, url) in urls.enumerated() {
-            try? dependencies.playbackCoordinator.append(audioURL: url, segmentID: segments[index].id, index: index)
-        }
-        dependencies.playbackCoordinator.finishEnqueuing()
-        store.playback.activeJobID = job.id
-        store.playback.activeLogEntryID = entry.id
-        store.playback.duration = entry.totalDurationSeconds
-        store.playback.bufferedDuration = entry.totalDurationSeconds
+        history.loadForPlayback(entry)
     }
 
     func savePlaybackToDefaultFolder() {
-        guard let jobID = store.playback.activeJobID,
-              let job = store.speechJobs.first(where: { $0.id == jobID }),
-              job.status != .failed,
-              !job.segments.isEmpty,
-              job.segments.allSatisfy({ $0.audioURL != nil })
-        else { return }
-
-        let urls = job.segments.compactMap(\.audioURL)
-        guard !urls.isEmpty else { return }
-
-        guard let downloads = try? FileManager.default.url(
-            for: .downloadsDirectory, in: .userDomainMask, appropriateFor: nil, create: true
-        ) else { return }
-        let destination = downloads.appendingPathComponent(defaultClipFilename())
-
-        Task {
-            do {
-                let savedURL = try await exportPlaybackAudio(urls: urls, to: destination)
-                saveEntry(for: job)
-                store.userMessage = "Saved \(savedURL.lastPathComponent) to Downloads."
-            } catch {
-                record(AlkiSpeakError(code: "playback.savedefault", title: "Save Failed", message: error.localizedDescription, recoverySuggestion: "Try Save As instead."))
-            }
+        history.savePlaybackToDownloads { [weak self] job in
+            self?.saveEntry(for: job)
         }
     }
 
     func savePlaybackAs() {
-        guard let jobID = store.playback.activeJobID,
-              let job = store.speechJobs.first(where: { $0.id == jobID })
-        else { return }
-
-        let urls = job.segments.compactMap(\.audioURL)
-        guard !urls.isEmpty else { return }
-
-        DispatchQueue.main.async {
-            let panel = NSSavePanel()
-            panel.title = "Save Audio As..."
-            panel.prompt = "Save"
-            panel.allowedContentTypes = [.wav]
-            panel.nameFieldStringValue = self.defaultClipFilename()
-
-            guard panel.runModal() == .OK, let destination = panel.url else { return }
-
-            Task {
-                do {
-                    let savedURL = try await self.exportPlaybackAudio(urls: urls, to: destination)
-                    self.store.userMessage = "Saved \(savedURL.lastPathComponent)"
-                } catch {
-                    self.record(AlkiSpeakError(code: "playback.saveas", title: "Save Failed", message: error.localizedDescription, recoverySuggestion: "Try a different location."))
-                }
-            }
-        }
+        history.savePlaybackAs()
     }
 
     func sharePlaybackAudio(from anchorRect: CGRect = .zero) {
-        guard let jobID = store.playback.activeJobID,
-              let job = store.speechJobs.first(where: { $0.id == jobID })
-        else { return }
-
-        let urls = job.segments.compactMap { $0.audioURL }
-        guard !urls.isEmpty else { return }
-
-        DispatchQueue.main.async {
-            guard let mainWindow = NSApp.windows.first(where: { $0.isKeyWindow }),
-                  let contentView = mainWindow.contentView
-            else { return }
-            let picker = NSSharingServicePicker(items: urls)
-            let rect: NSRect = anchorRect == .zero
-                ? contentView.bounds
-                : NSRect(
-                    x: anchorRect.minX,
-                    y: contentView.bounds.height - anchorRect.maxY,
-                    width: anchorRect.width,
-                    height: anchorRect.height
-                )
-            picker.show(relativeTo: rect, of: contentView, preferredEdge: .minY)
-        }
-    }
-
-    private func defaultClipFilename() -> String {
-        "AlkiSpeak_Clip_\(Int(Date().timeIntervalSince1970)).wav"
-    }
-
-    private func exportPlaybackAudio(urls: [URL], to destination: URL) async throws -> URL {
-        if urls.count == 1 {
-            try FileManager.default.copyItem(at: urls[0], to: destination)
-            return destination
-        }
-
-        let composition = AVMutableComposition()
-        let compositionAudioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-
-        var insertTime = CMTime.zero
-        for url in urls {
-            let asset = AVURLAsset(url: url)
-            if let track = try? await asset.loadTracks(withMediaType: .audio).first {
-                let timeRange = CMTimeRange(start: .zero, duration: try await asset.load(.duration))
-                try compositionAudioTrack?.insertTimeRange(timeRange, of: track, at: insertTime)
-                insertTime = CMTimeAdd(insertTime, timeRange.duration)
-            }
-        }
-
-        guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A) else {
-            try FileManager.default.copyItem(at: urls[0], to: destination)
-            return destination
-        }
-        let outputURL = destination.deletingPathExtension().appendingPathExtension("m4a")
-        if FileManager.default.fileExists(atPath: outputURL.path) {
-            try FileManager.default.removeItem(at: outputURL)
-        }
-        try await exportSession.export(to: outputURL, as: .m4a)
-        return outputURL
+        history.sharePlaybackAudio(from: anchorRect)
     }
 
     func delete(_ entry: SpeechEntry) {
-        do {
-            try dependencies.speechEntryStore.delete(entry)
-            if store.selectedLogEntryID == entry.id {
-                store.selectedLogEntryID = nil
-            }
-            loadSpeechEntries()
-        } catch {
-            record(AlkiSpeakError(code: "persistence.log.delete", title: "Delete Failed", message: error.localizedDescription, recoverySuggestion: "Try again."))
-        }
+        history.delete(entry)
     }
 
     func togglePlayback() {
@@ -1248,24 +757,11 @@ final class AppModel: ObservableObject {
     }
 
     func stopPlayback() {
-        activeSpeechTask?.cancel()
-        activeSpeechTask = nil
-        finishResourceSampling()
-        finishPerformanceDiagnosticJob(message: "Playback stopped.")
-        dependencies.playbackCoordinator.stop()
-        dependencies.localSpeechService.stop()
-        Task { await ttsQueue.cancel() }
-        store.playback = .idle
-        markActiveJobsCompleted()
+        pipeline.stop()
     }
 
     func confirmPortSwitchAndStart() {
-        Task {
-            await dependencies.engineSupervisor.terminatePortUsers(store.portInUsePids)
-            store.portInUsePids = []
-            store.showPortInUseAlert = false
-            startEngine()
-        }
+        engine.takeOverPortAndStart()
     }
 
     private func speak(text: String, addToHistory: Bool, targetLogEntryID: UUID?) {
@@ -1273,712 +769,48 @@ final class AppModel: ObservableObject {
         guard canSpeak(text: trimmed) else { return }
         guard !trimmed.isEmpty else { return }
         store.clearErrorMessage()
-
-        let segments: [SpeechSegment]
-        if let speakers = selectedDialogueSpeakers {
-            // Split between turns so every request carries its speaker labels.
-            segments = DialogueScript.segments(for: trimmed, speakers: speakers.map(\.name))
-                .enumerated()
-                .map { SpeechSegment(index: $0.offset, text: $0.element) }
-        } else {
-            segments = requestPolicy.segments(for: trimmed)
-        }
-        if segments.count > 1 {
-            store.userMessage = "Large text split into \(segments.count) segments. Sending smaller engine requests to avoid request timeouts."
-        }
-        let logEntryID: UUID
-        let jobID = UUID()
-
-        if addToHistory {
-            logEntryID = UUID()
-        } else if let targetLogEntryID {
-            logEntryID = targetLogEntryID
-        } else {
-            logEntryID = UUID()
-        }
-
-        let job = SpeechJob(
-            id: jobID,
+        pipeline.speak(
             text: trimmed,
-            voiceID: selectedVoice,
-            segments: segments,
-            status: .generating,
-            logEntryID: logEntryID
+            voice: selectedVoice,
+            dialogueSpeakers: selectedDialogueSpeakers?.map(\.name),
+            addToHistory: addToHistory,
+            targetLogEntryID: targetLogEntryID
         )
-        store.speechJobs.insert(job, at: 0)
-        queryStartedAt = ContinuousClock.now
-        setPerformanceDiagnosticPhase(
-            isSelectedVoiceLocal ? .localSpeech : .remoteGeneration,
-            jobID: jobID,
-            message: "Speech job started.",
-            context: [
-                "characterCount": "\(trimmed.count)",
-                "segmentCount": "\(segments.count)",
-                "voiceSource": diagnosticVoiceSource(for: selectedVoice)
-            ]
-        )
-        Task { queryResourceBefore = await SystemResourceMonitor.shared.snapshot() }
-        startResourceSampling()
-        store.playback = PlaybackSnapshot(
-            state: .preparing,
-            activeJobID: job.id,
-            activeLogEntryID: logEntryID,
-            currentSegmentID: segments.first?.id,
-            elapsedTime: 0,
-            duration: TimeInterval(trimmed.count) / 150.0,
-            bufferedDuration: 0,
-            statusMessage: nil
-        )
-
-        activeSpeechTask = Task {
-            // Supersede any older in-flight generation before this request does
-            // anything. Done here (in the same task, before branching) so it
-            // covers both the remote queue and a remote→local switch, with
-            // deterministic ordering relative to this request's own enqueue.
-            await ttsQueue.cancel()
-            if isSelectedVoiceLocal {
-                speakLocal(text: trimmed, jobID: job.id, logEntryID: logEntryID)
-                return
-            }
-            await speakRemote(segments: segments, voice: selectedVoice, jobID: job.id, logEntryID: logEntryID)
-        }
-    }
-
-    private func speakRemote(segments: [SpeechSegment], voice: String, jobID: UUID, logEntryID: UUID) async {
-        dependencies.engineSupervisor.noteRequestStarted(jobID: jobID)
-        pythonEngineIdleTask?.cancel()
-        defer {
-            dependencies.engineSupervisor.noteRequestFinished(jobID: jobID)
-            persistSavedLogsIfNeeded()
-            schedulePythonEngineIdleStop()
-        }
-
-        do {
-            guard !segments.isEmpty else { return }
-            if remoteService(for: voice) === dependencies.generationService {
-                try await wakePythonKokoroEngine()
-            }
-            if segments.count > 1 {
-                updateJob(jobID, status: .queued, error: nil)
-                store.userMessage = "Speaking \(segments.count) segments in order…"
-            }
-
-            await ttsQueue.enqueue(segments)
-            dependencies.playbackCoordinator.prepare(characterCounts: segments.map { $0.text.count })
-            await ttsQueue.process(canGenerate: {
-                await SystemResourceMonitor.shared.canProceed()
-            }, onWaiting: { waiting in
-                await MainActor.run {
-                    self.store.playback.statusMessage = waiting ? "Waiting for resources…" : nil
-                    if waiting {
-                        self.setPerformanceDiagnosticPhase(
-                            .resourceWait,
-                            jobID: jobID,
-                            message: "Generation paused while waiting for system resources.",
-                            context: ["segmentCount": "\(segments.count)"]
-                        )
-                    }
-                }
-            }) { [generationService = remoteService(for: voice), clipStore = dependencies.clipStore, workspaceID = store.activeWorkspace.id] segment in
-                await MainActor.run {
-                    self.setPerformanceDiagnosticPhase(
-                        .remoteGeneration,
-                        jobID: jobID,
-                        message: "Generating segment.",
-                        context: [
-                            "segmentIndex": "\(segment.index)",
-                            "segmentCharacterCount": "\(segment.text.count)"
-                        ]
-                    )
-                }
-                let result = try await generationService.synthesize(
-                    text: segment.text,
-                    voice: voice,
-                    jobID: jobID
-                )
-                let url = try clipStore.writeClip(data: result.audioData, segmentID: segment.id, workspaceID: workspaceID)
-                await MainActor.run {
-                    self.store.dashboardTelemetry.lastLatencyMs = result.latencyMs
-                    self.store.dashboardTelemetry.lastCharCount = result.charCount
-                }
-                // The player reads the duration when it opens the clip.
-                return GeneratedSegment(audioURL: url, durationSeconds: nil)
-            } onReady: { [playbackCoordinator = dependencies.playbackCoordinator] segment in
-                await MainActor.run {
-                    self.setPerformanceDiagnosticPhase(
-                        .playback,
-                        jobID: jobID,
-                        message: "Segment ready for playback.",
-                        context: ["segmentIndex": "\(segment.index)"]
-                    )
-                    self.store.playback.currentSegmentID = segment.id
-                    self.updateJobSegment(jobID, segmentID: segment.id, status: .ready, audioURL: segment.audioURL, error: nil)
-                    self.updateSavedLogSegment(logEntryID, segmentID: segment.id, status: .ready, audioURL: segment.audioURL, error: nil)
-                    self.updateJob(jobID, status: .playing, error: nil)
-                    self.store.playback.state = .playing
-                }
-                guard let audioURL = segment.audioURL else { return }
-                let duration = try playbackCoordinator.append(audioURL: audioURL, segmentID: segment.id, index: segment.index)
-                await MainActor.run {
-                    self.setJobSegmentDuration(jobID, segmentID: segment.id, duration: duration)
-                }
-            }
-
-            let snapshot = await ttsQueue.snapshot()
-            if let failed = snapshot.first(where: {
-                if case .failed = $0.status { return true }
-                return false
-            }), case .failed(let error) = failed.status {
-                throw error
-            }
-
-            // If a newer request superseded this job while we were generating,
-            // do not finalize the transport or persist — the new job now owns
-            // playback and finishing here would prematurely cut it off.
-            guard store.playback.activeJobID == jobID else {
-                finishResourceSampling()
-                return
-            }
-
-            dependencies.playbackCoordinator.finishEnqueuing()
-            finishResourceSampling()
-            if self.isProMode && self.logMode == .auto, let job = self.store.speechJobs.first(where: { $0.id == jobID }) {
-                self.saveEntry(for: job)
-            }
-        } catch is CancellationError {
-            finishResourceSampling()
-            finishPerformanceDiagnosticJob(message: "Speech request cancelled.")
-            updateJob(jobID, status: .cancelled, error: nil)
-            // A newer request that superseded this one owns playback now.
-            if store.playback.activeJobID == jobID {
-                store.playback = .idle
-            }
-        } catch {
-            let appError = normalizeGenerationError(error)
-            failPlayback(jobID: jobID, logEntryID: logEntryID, error: appError)
-        }
-    }
-
-    private func speakLocal(text: String, jobID: UUID, logEntryID: UUID) {
-        do {
-            setPerformanceDiagnosticPhase(
-                .localSpeech,
-                jobID: jobID,
-                message: "Local speech playback started.",
-                context: ["characterCount": "\(text.count)"]
-            )
-            updateJob(jobID, status: .playing, error: nil)
-            store.playback.state = .playing
-            try dependencies.localSpeechService.speak(text: text, voiceID: selectedVoice)
-        } catch {
-            failPlayback(jobID: jobID, logEntryID: logEntryID, error: normalizePlaybackError(error))
-        }
-    }
-
-    private func waitForEngineReady(startGeneration: UInt64) async {
-        let deadline = Date().addingTimeInterval(min(AppConfig.engineStartupTimeoutSeconds, 120))
-        var attempt = 0
-        consoleTrace("waitForEngineReady started deadline=\(deadline) baseURL=\(AppConfig.serverBaseURL.absoluteString)")
-        while Date() < deadline {
-            guard engineStartGeneration == startGeneration, !Task.isCancelled else {
-                consoleTrace("waitForEngineReady cancelled startGeneration=\(startGeneration)")
-                return
-            }
-            attempt += 1
-            if await dependencies.generationService.checkHealth() {
-                guard engineStartGeneration == startGeneration, !Task.isCancelled else {
-                    consoleTrace("waitForEngineReady health ok after cancellation; ignoring")
-                    return
-                }
-                consoleTrace("waitForEngineReady health ok attempt=\(attempt)")
-                // Immediately update status when the engine becomes reachable, matching the
-                // original waitForHealth() from 999d859. Without this the UI can sit at
-                // "Starting..." for up to 5 s waiting for the supervisor's health-check cycle.
-                if store.engineStatus == .starting || store.engineStatus == .retrying {
-                    store.engineStatus = .running
-                    consoleTrace("engineStatus set to running after health ok")
-                }
-                await fetchVoices()
-                refreshTelemetry()
-                schedulePythonEngineIdleStop()
-                return
-            }
-            consoleTrace("waitForEngineReady health not ready attempt=\(attempt) status=\(store.engineStatus.rawValue)")
-            try? await Task.sleep(nanoseconds: 250_000_000)
-        }
-        refreshTelemetry()
-        consoleTrace("waitForEngineReady deadline reached attempts=\(attempt)")
-        guard engineStartGeneration == startGeneration, !Task.isCancelled else {
-            consoleTrace("waitForEngineReady deadline reached after cancellation; ignoring")
-            return
-        }
-        if !(await dependencies.generationService.checkHealth()) {
-            store.userMessage =
-                "Could not reach the Kokoro engine at \(AppConfig.serverBaseURL.absoluteString). "
-                + "Verify \(AppConfig.kokoroPath) contains kokoro_server.py and .venv/bin/python3. "
-                + "Expected command: python -m uvicorn kokoro_server:app --host 127.0.0.1 --port \(AppConfig.enginePort) --timeout-keep-alive 120 --timeout-graceful-shutdown 30 --log-level warning --log-config kokoro-log-config.json"
-            consoleTrace("waitForEngineReady final health failed; userMessage updated")
-        }
     }
 
     /// Fetches the Kokoro, Edge and cloud voice lists independently — each is
     /// a different dependency (local engine, Microsoft's service, user config),
     /// so one being unreachable should not blank out the others' voices.
     private func fetchVoices() async {
-        consoleTrace("fetchVoices starting")
-        async let kokoroResult = fetchVoicesResult(from: dependencies.generationService, label: "kokoro")
-        async let edgeResult = fetchVoicesResult(from: dependencies.edgeSpeechService, label: "edge")
-        async let cloudResult = fetchVoicesResult(from: dependencies.cloudSpeechService, label: "cloud")
-        async let nativeResult = fetchVoicesResult(from: dependencies.nativeKokoroService, label: "kokoro-native")
-        let (kokoro, edge, cloud, native) = await (kokoroResult, edgeResult, cloudResult, nativeResult)
-
-        var combined: [String] = []
-        if let kokoro, !kokoro.isEmpty {
-            cachedKokoroVoices = kokoro
-            combined += kokoro
-        } else {
-            // The engine only runs while a Kokoro voice is selected.
-            combined += cachedKokoroVoices
-        }
-        if let native { combined += native }
-        if let edge { combined += edge }
-        if let cloud { combined += cloud }
-
-        consoleTrace("fetchVoices completed count=\(combined.count) voices=\(combined.joined(separator: ","))")
-        if combined.isEmpty {
-            store.userMessage = "Voice list empty. Using last voice."
-        }
-        mergeVoiceOptions(remote: combined)
-    }
-
-    private func fetchVoicesResult(from service: SpeechGenerating, label: String) async -> [String]? {
-        do {
-            return try await service.fetchVoices()
-        } catch {
-            consoleTrace("fetchVoices(\(label)) failed error=\(String(describing: error))")
-            return nil
-        }
+        await voiceCatalog.fetchVoices()
     }
 
     private func refreshLocalVoices() {
-        consoleTrace("refreshLocalVoices starting")
-        dependencies.localSpeechService.refreshVoices()
-        consoleTrace("refreshLocalVoices localCount=\(dependencies.localSpeechService.voiceOptions.count)")
-        mergeVoiceOptions(remote: store.voiceOptions.filter { !$0.isLocal }.map(\.id))
-    }
-
-    private func mergeVoiceOptions(remote: [String]) {
-        // On cold start, `refreshLocalVoices()` runs before /voices returns, so `remote` is
-        // often empty. Without preserving the workspace Kokoro id here, `selectedVoice`
-        // (e.g. af_heart) is not in the Apple-only list and gets replaced by the first
-        // Apple voice — remote synthesis then never runs until the user re-picks Kokoro.
-        var remoteIDs = remote
-        if !isSelectedVoiceLocal, !selectedVoice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           !remoteIDs.contains(selectedVoice)
-        {
-            remoteIDs.append(selectedVoice)
-        }
-        let remoteOptions = remoteIDs.map { id -> VoiceOption in
-            if id.hasPrefix(EdgeSpeechGenerationService.idPrefix) {
-                let name = EdgeSpeechGenerationService.stripPrefix(id)
-                return VoiceOption(id: id, label: "Edge - \(name)", source: .edge)
-            }
-            if CloudSpeechGenerationService.isCloudVoice(id) {
-                let label = store.cloudSettings.voice(withID: id)?.label ?? "Removed voice"
-                return VoiceOption(id: id, label: "Cloud - \(label)", source: .api)
-            }
-            if NativeKokoroSpeechService.isNativeKokoroVoice(id) {
-                return VoiceOption(id: id, label: "Kokoro Native - \(NativeKokoroSpeechService.stripPrefix(id))", source: .kokoroNative)
-            }
-            return VoiceOption(id: id, label: "Kokoro - \(id)", source: .kokoro)
-        }
-        let options = dependencies.localSpeechService.voiceOptions + remoteOptions
-        if options != store.voiceOptions {
-            store.voiceOptions = options
-        }
-        let resolved = VoiceSelection.resolved(
-            current: selectedVoice,
-            in: store.voiceOptions,
-            fallback: AppConfig.defaultVoice
-        )
-        if resolved != selectedVoice {
-            // The setter persists the workspace.
-            selectedVoice = resolved
-        }
-    }
-
-    private func wireServiceCallbacks() {
-        dependencies.engineSupervisor.onHealthChanged = { [weak self] summary in
-            Task { @MainActor in
-                guard let self else { return }
-                self.consoleTrace("onHealthChanged status=\(summary.status.rawValue) pid=\(summary.pid.map(String.init) ?? "nil") retry=\(summary.retryCount) failures=\(summary.consecutiveHealthFailures) latestIssue=\(summary.latestIssue?.code ?? "nil")")
-                guard self.shouldApplyEngineHealth(summary) else {
-                    self.consoleTrace("ignored stale engine health status=\(summary.status.rawValue) currentStatus=\(self.store.engineStatus.rawValue)")
-                    return
-                }
-                let wasReady = self.store.engineStatus == .idle || self.store.engineStatus == .running
-                // Each 5 s health check only bumps its timestamps, which no
-                // view shows; assigning the summary anyway would republish
-                // the store and redraw the window every check.
-                if !summary.matchesIgnoringCheckTimes(self.store.engineHealth) {
-                    self.store.engineHealth = summary
-                }
-                if summary.status != self.store.engineStatus {
-                    self.store.engineStatus = summary.status
-                    self.refreshTelemetry()
-                }
-                if summary.status == .idle || summary.status == .running {
-                    if self.store.lastError?.code.hasPrefix("engine.") == true {
-                        self.store.clearErrorMessage()
-                    }
-                    // Health checks repeat every few seconds; the voice lists
-                    // (Edge's comes over the internet) only need fetching when
-                    // the engine becomes ready, not on every check.
-                    if !wasReady {
-                        await self.fetchVoices()
-                    }
-                }
-            }
-        }
-
-        dependencies.engineSupervisor.onIssue = { [weak self] issue in
-            Task { @MainActor in
-                guard let self else { return }
-                self.consoleTrace("onIssue code=\(issue.code) title=\(issue.title) rawError=\(issue.rawError ?? "nil") context=\(issue.context)")
-                self.store.playback = .idle
-                self.store.record(issue)
-            }
-        }
-
-        dependencies.playbackCoordinator.onFinished = { [weak self] in self?.finishPlayback() }
-        dependencies.playbackCoordinator.onSnapshotChanged = { [weak self] snapshot in
-            Task { @MainActor in
-                guard let self else { return }
-                guard self.shouldApplyPlaybackSnapshot(snapshot) else { return }
-                var playback = self.store.playback
-                playback.state = snapshot.state
-                playback.currentSegmentID = snapshot.currentSegmentID
-                playback.elapsedTime = snapshot.elapsedTime
-                playback.bufferedDuration = snapshot.bufferedDuration
-                playback.duration = snapshot.totalDuration
-                self.store.playback = playback
-            }
-        }
-
-        if let localSpeech = dependencies.localSpeechService as? AppleSpeechService {
-            localSpeech.onFinished = { [weak self] in
-                self?.finishPlayback()
-            }
-        }
-    }
-
-    private func shouldApplyEngineHealth(_ summary: EngineHealthSummary) -> Bool {
-        switch summary.status {
-        case .starting, .retrying:
-            return store.engineStatus != .stopped || engineStartTask != nil
-        case .stopped:
-            return !(engineStartTask != nil && (store.engineStatus == .starting || store.engineStatus == .retrying))
-        case .running, .idle, .busy, .degraded, .timedOut, .stalled, .failed:
-            return true
-        }
-    }
-
-    private func shouldApplyPlaybackSnapshot(_ snapshot: PlaybackTransportSnapshot) -> Bool {
-        let playback = store.playback
-        let now = Date.timeIntervalSinceReferenceDate
-        let structureChanged =
-            snapshot.state != playback.state ||
-            snapshot.currentSegmentID != playback.currentSegmentID ||
-            abs(snapshot.bufferedDuration - playback.bufferedDuration) > 0.001 ||
-            abs(snapshot.totalDuration - (playback.duration ?? 0)) > 0.001
-        let elapsedChanged = abs(snapshot.elapsedTime - playback.elapsedTime) > 0.001
-
-        // An identical snapshot would still republish the whole store, so drop it.
-        guard structureChanged || elapsedChanged else { return false }
-        let shouldApplyImmediately = structureChanged || snapshot.state != .playing
-
-        guard shouldApplyImmediately || now - lastPlaybackSnapshotAppliedAt >= playbackSnapshotMinimumInterval else {
-            return false
-        }
-        lastPlaybackSnapshotAppliedAt = now
-        return true
-    }
-
-    private func finishPlayback() {
-        finishResourceSampling()
-        finishPerformanceDiagnosticJob(message: "Playback finished.")
-        markActiveJobsCompleted()
-        store.playback.state = .stopped
-        store.playback.elapsedTime = 0
-        store.playback.currentSegmentID = nil
-        store.dashboardTelemetry.generatedJobCount += 1
-    }
-
-    private func failPlayback(jobID: UUID, logEntryID: UUID, error: AlkiSpeakError) {
-        finishResourceSampling()
-        dependencies.performanceDiagnostics.recordMarker(
-            phase: .failure,
-            message: "Playback failed.",
-            jobID: jobID,
-            context: performanceDiagnosticContext([
-                "errorCode": error.code,
-                "errorTitle": error.title
-            ])
-        )
-        finishPerformanceDiagnosticJob(message: "Playback failed.")
-        updateJob(jobID, status: .failed, error: error)
-        store.playback = PlaybackSnapshot(
-            state: .failed,
-            activeJobID: jobID,
-            activeLogEntryID: logEntryID,
-            currentSegmentID: nil,
-            elapsedTime: 0,
-            duration: nil,
-            bufferedDuration: 0,
-            statusMessage: nil
-        )
-        store.dashboardTelemetry.failedJobCount += 1
-        record(error)
-    }
-
-    private func markActiveJobsCompleted() {
-        guard let jobID = store.playback.activeJobID else { return }
-        updateJob(jobID, status: .completed, error: nil)
-    }
-
-    private func updateJob(_ jobID: UUID, status: SpeechJob.Status, error: AlkiSpeakError?) {
-        guard let index = store.speechJobs.firstIndex(where: { $0.id == jobID }) else { return }
-        store.speechJobs[index].status = status
-        store.speechJobs[index].updatedAt = Date()
-        store.speechJobs[index].error = error
-    }
-
-    private func updateJobSegment(_ jobID: UUID, segmentID: UUID, status: SpeechSegment.Status, audioURL: URL?, error: AlkiSpeakError?) {
-        guard let jobIndex = store.speechJobs.firstIndex(where: { $0.id == jobID }),
-              let segmentIndex = store.speechJobs[jobIndex].segments.firstIndex(where: { $0.id == segmentID })
-        else { return }
-        store.speechJobs[jobIndex].segments[segmentIndex].status = status
-        store.speechJobs[jobIndex].segments[segmentIndex].audioURL = audioURL
-        store.speechJobs[jobIndex].segments[segmentIndex].error = error
-        store.speechJobs[jobIndex].updatedAt = Date()
-    }
-
-    private func setJobSegmentDuration(_ jobID: UUID, segmentID: UUID, duration: TimeInterval) {
-        guard let jobIndex = store.speechJobs.firstIndex(where: { $0.id == jobID }),
-              let segmentIndex = store.speechJobs[jobIndex].segments.firstIndex(where: { $0.id == segmentID })
-        else { return }
-        store.speechJobs[jobIndex].segments[segmentIndex].durationSeconds = duration
-    }
-
-    private func updateSavedLogSegment(_ logEntryID: UUID, segmentID: UUID, status: SpeechSegment.Status, audioURL: URL?, error: AlkiSpeakError?) {
-        guard let entryIndex = store.savedLogEntries.firstIndex(where: { $0.id == logEntryID }),
-              let segmentIndex = store.savedLogEntries[entryIndex].segments.firstIndex(where: { $0.id == segmentID })
-        else { return }
-        store.savedLogEntries[entryIndex].segments[segmentIndex].status = status
-        store.savedLogEntries[entryIndex].segments[segmentIndex].audioURL = audioURL
-        store.savedLogEntries[entryIndex].segments[segmentIndex].error = error
-        savedLogsNeedPersisting = true
-    }
-
-    /// Writes the saved logs once a job is over, instead of re-encoding all
-    /// of them for every segment that becomes ready.
-    private func persistSavedLogsIfNeeded() {
-        guard savedLogsNeedPersisting else { return }
-        savedLogsNeedPersisting = false
-        try? dependencies.logStore.replaceLogs(store.savedLogEntries, workspaceID: store.activeWorkspace.id)
+        voiceCatalog.refreshLocalVoices()
     }
 
     private func record(_ error: AlkiSpeakError) {
         store.record(error)
     }
 
-    private func normalizeEngineError(_ error: Error) -> AlkiSpeakError {
-        if let appError = error as? AlkiSpeakError { return appError }
-        return .engine(
-            code: "unknown",
-            title: "Engine Error",
-            message: error.localizedDescription,
-            recoverySuggestion: "Retry the operation or restart the engine.",
-            underlyingError: error
-        )
-    }
-
-    private func normalizeGenerationError(_ error: Error) -> AlkiSpeakError {
-        if let appError = error as? AlkiSpeakError { return appError }
-        return .generation(
-            code: "unknown",
-            title: "Speech Failed",
-            message: "Speak failed: \(error.localizedDescription)",
-            recoverySuggestion: "Check the selected voice and try again.",
-            underlyingError: error
-        )
-    }
-
-    private func normalizePlaybackError(_ error: Error) -> AlkiSpeakError {
-        if let appError = error as? AlkiSpeakError { return appError }
-        return .playback(
-            code: "unknown",
-            title: "Playback Failed",
-            message: error.localizedDescription,
-            recoverySuggestion: "Try generating the speech again.",
-            underlyingError: error
-        )
-    }
-
     private func refreshTelemetry() {
-        store.dashboardTelemetry.resourceSnapshot = dependencies.telemetryService.capture(
-            engineProcessID: dependencies.engineSupervisor.processIdentifier
-        )
+        engine.refreshTelemetry()
     }
 
-    // MARK: Performance diagnostics
-
-    private func startPerformanceDiagnosticSession() {
-        dependencies.performanceDiagnostics.startSession(
-            context: [
-                "pid": "\(ProcessInfo.processInfo.processIdentifier)",
-                "bundleID": Bundle.main.bundleIdentifier ?? "unknown",
-                "diagnosticLog": dependencies.performanceDiagnostics.logURL.path,
-                "diagnosticSummary": dependencies.performanceDiagnostics.summaryURL.path
-            ]
-        )
-        dependencies.performanceDiagnostics.recordMarker(
-            phase: .idle,
-            message: "AppModel initialized.",
-            jobID: nil,
-            context: performanceDiagnosticContext()
-        )
-    }
-
-    private func startPerformanceDiagnosticSampling() {
-        performanceDiagnosticsTask?.cancel()
-        let interval = UInt64(AppConfig.performanceDiagnosticIdleSampleIntervalSeconds * 1_000_000_000)
-        performanceDiagnosticsTask = Task { [weak self] in
-            while !Task.isCancelled {
-                let system = await SystemResourceMonitor.shared.snapshot()
-                await MainActor.run {
-                    self?.recordPerformanceDiagnosticSample(
-                        system: system,
-                        context: ["source": "app-sampler"]
-                    )
-                }
-                try? await Task.sleep(nanoseconds: interval)
-            }
-        }
-    }
-
-    private func setPerformanceDiagnosticPhase(
-        _ phase: PerformanceDiagnosticPhase,
-        jobID: UUID?,
-        message: String,
-        context: [String: String] = [:]
-    ) {
-        performanceDiagnosticPhase = phase
-        activePerformanceDiagnosticJobID = jobID
-        dependencies.performanceDiagnostics.recordMarker(
-            phase: phase,
-            message: message,
-            jobID: jobID,
-            context: performanceDiagnosticContext(context)
-        )
-    }
-
-    private func finishPerformanceDiagnosticJob(message: String) {
-        guard activePerformanceDiagnosticJobID != nil || performanceDiagnosticPhase != .idle else { return }
-        dependencies.performanceDiagnostics.recordMarker(
-            phase: .idle,
-            message: message,
-            jobID: activePerformanceDiagnosticJobID,
-            context: performanceDiagnosticContext()
-        )
-        performanceDiagnosticPhase = .idle
-        activePerformanceDiagnosticJobID = nil
-    }
-
-    private func recordPerformanceDiagnosticSample(system: SystemResourceSnapshot, context: [String: String]) {
-        let process = dependencies.telemetryService.capture(
-            engineProcessID: dependencies.engineSupervisor.processIdentifier
-        )
-        dependencies.performanceDiagnostics.recordSample(
-            phase: performanceDiagnosticPhase,
-            jobID: activePerformanceDiagnosticJobID,
-            system: system,
-            process: process,
-            context: performanceDiagnosticContext(context)
-        )
-    }
-
-    private func performanceDiagnosticContext(_ extra: [String: String] = [:]) -> [String: String] {
-        var context = [
+    /// App state stamped on every diagnostics event.
+    private func diagnosticsBaseContext() -> [String: String] {
+        [
             "engineStatus": status.rawValue,
             "enginePID": dependencies.engineSupervisor.processIdentifier.map(String.init) ?? "nil",
             "playbackState": store.playback.state.rawValue,
             "appMode": appMode.rawValue,
-            "voiceSource": diagnosticVoiceSource(for: selectedVoice)
+            "voiceSource": SpeechDiagnostics.voiceSource(for: selectedVoice)
         ]
-        extra.forEach { context[$0.key] = $0.value }
-        return context
-    }
-
-    private func diagnosticVoiceSource(for voiceID: String) -> String {
-        if voiceID.hasPrefix("apple:") { return "apple" }
-        if voiceID.hasPrefix(EdgeSpeechGenerationService.idPrefix) { return "edge" }
-        if CloudSpeechGenerationService.isCloudVoice(voiceID) { return "cloud" }
-        if NativeKokoroSpeechService.isNativeKokoroVoice(voiceID) { return "kokoro-native" }
-        return "kokoro"
-    }
-
-    // MARK: Query resource sampling
-
-    private func startResourceSampling() {
-        resourceSamplingTask?.cancel()
-        resourceSamplingGeneration &+= 1
-        let generation = resourceSamplingGeneration
-        resourceUsageAccumulator.reset()
-        resourceSamplingTask = Task { [weak self] in
-            while !Task.isCancelled {
-                let snapshot = await SystemResourceMonitor.shared.snapshot()
-                guard !Task.isCancelled else { break }
-                await MainActor.run {
-                    guard let self, self.resourceSamplingGeneration == generation else { return }
-                    self.resourceUsageAccumulator.record(snapshot)
-                    self.recordPerformanceDiagnosticSample(
-                        system: snapshot,
-                        context: ["source": "query-sampler"]
-                    )
-                }
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-        }
-    }
-
-    @discardableResult
-    private func finishResourceSampling() -> QueryResourceUsage? {
-        resourceSamplingTask?.cancel()
-        resourceSamplingTask = nil
-        resourceSamplingGeneration &+= 1
-        guard let usage = resourceUsageAccumulator.usage else { return nil }
-        resourceUsageAccumulator.reset()
-        store.lastQueryResourceUsage = usage
-        dependencies.performanceDiagnostics.recordMarker(
-            phase: performanceDiagnosticPhase,
-            message: "Query resource sampling finished.",
-            jobID: activePerformanceDiagnosticJobID,
-            context: performanceDiagnosticContext([
-                "sampleCount": "\(usage.sampleCount)",
-                "averageCPUPercent": String(format: "%.1f", usage.averageCPUPercent),
-                "averageRAMUsedMB": String(format: "%.0f", usage.averageRAMUsedMB),
-                "peakRAMUsedMB": String(format: "%.0f", usage.peakRAMUsedMB)
-            ])
-        )
-        return usage
     }
 
     // MARK: Storage inventory
 
-    var clipInventory: [ClipInventoryItem] {
-        ClipInventory.items(from: store.speechEntries)
-    }
+    var clipInventory: [ClipInventoryItem] { history.clipInventory }
 
     func sortedClipInventory(by field: ClipSortField, ascending: Bool) -> [ClipInventoryItem] {
         ClipInventory.sorted(clipInventory, by: field, ascending: ascending)
@@ -1988,45 +820,12 @@ final class AppModel: ObservableObject {
         ClipInventory.totalBytes(of: clipInventory)
     }
 
-    func rename(_ entry: SpeechEntry, to displayName: String?) {
-        do {
-            try dependencies.speechEntryStore.rename(entry, to: displayName)
-            loadSpeechEntries()
-        } catch {
-            record(AlkiSpeakError(code: "persistence.log.rename", title: "Rename Failed", message: error.localizedDescription, recoverySuggestion: "Try again."))
-        }
-    }
-
-    func cleanupOrphanClips() {
-        do {
-            let removed = try dependencies.speechEntryStore.cleanupOrphanClips()
-            store.userMessage = removed == 0 ? "No orphaned clips found." : "Removed \(removed) orphaned clip\(removed == 1 ? "" : "s")."
-        } catch {
-            record(AlkiSpeakError(code: "persistence.clips.cleanup", title: "Cleanup Failed", message: error.localizedDescription, recoverySuggestion: "Try again."))
-        }
-    }
-
-    func openClipsFolder() {
-        guard let url = try? dependencies.speechEntryStore.clipsRootURL() else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
-    }
-
-    func showClipInFinder(_ item: ClipInventoryItem) {
-        let urls = item.segmentRelativePaths.compactMap { try? dependencies.speechEntryStore.absoluteURL(for: $0) }
-        guard !urls.isEmpty else { return }
-        NSWorkspace.shared.activateFileViewerSelecting(urls)
-    }
-
-    func copyClipText(_ item: ClipInventoryItem) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(item.text, forType: .string)
-    }
-
-    func deleteClip(_ item: ClipInventoryItem) {
-        guard let entry = store.speechEntries.first(where: { $0.id == item.id }) else { return }
-        delete(entry)
-    }
+    func rename(_ entry: SpeechEntry, to displayName: String?) { history.rename(entry, to: displayName) }
+    func cleanupOrphanClips() { history.cleanupOrphanClips() }
+    func openClipsFolder() { history.openClipsFolder() }
+    func showClipInFinder(_ item: ClipInventoryItem) { history.showClipInFinder(item) }
+    func copyClipText(_ item: ClipInventoryItem) { history.copyClipText(item) }
+    func deleteClip(_ item: ClipInventoryItem) { history.deleteClip(item) }
 
     private func loadWorkspace() {
         do {
@@ -2062,73 +861,11 @@ final class AppModel: ObservableObject {
     }
 
     private func loadSpeechEntries() {
-        do {
-            _ = try dependencies.speechEntryStore.migrateLegacyHistoryIfNeeded()
-            store.speechEntries = try dependencies.speechEntryStore.fetchAll()
-        } catch {
-            record(AlkiSpeakError(code: "persistence.log.load", title: "Log Load Failed", message: error.localizedDescription, recoverySuggestion: "The legacy data was preserved. Restart and try again."))
-        }
+        history.loadSpeechEntries()
     }
 
     private func saveEntry(for job: SpeechJob) {
-        guard !store.speechEntries.contains(where: { $0.id == job.logEntryID }) else { return }
-        let readySegments = job.segments.filter { $0.audioURL != nil }
-        let urls = readySegments.compactMap(\.audioURL)
-        let knownDurations = readySegments.compactMap(\.durationSeconds)
-        let paths = urls.compactMap { try? dependencies.speechEntryStore.relativePath(for: $0) }
-        guard !paths.isEmpty else { return }
-        let elapsed = queryStartedAt.map { $0.duration(to: ContinuousClock.now) } ?? .zero
-        let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
-        let fileSize = urls.reduce(Int64(0)) {
-            $0 + Int64((try? FileManager.default.attributesOfItem(atPath: $1.path)[.size] as? NSNumber)?.int64Value ?? 0)
-        }
-        Task {
-            let after = await SystemResourceMonitor.shared.snapshot()
-            // Durations come from playback; only parse files it never opened.
-            let durations = knownDurations.count == urls.count ? knownDurations : await audioDurations(urls)
-            let entry = SpeechEntry(
-                id: job.logEntryID ?? UUID(),
-                textContent: job.text,
-                voice: job.voiceID,
-                segmentRelativePaths: paths,
-                segmentDurations: durations,
-                totalDurationSeconds: durations.reduce(0, +),
-                stats: QueryStats(
-                    tokenCount: max(1, job.text.count / 4),
-                    generationTimeSeconds: abs(seconds),
-                    fileSizeBytes: fileSize,
-                    characterCount: job.text.count,
-                    segmentCount: job.segments.count,
-                    resourceBefore: queryResourceBefore,
-                    resourceAfter: after,
-                    resourceUsage: store.lastQueryResourceUsage
-                ),
-                appMode: .pro
-            )
-            do {
-                try dependencies.speechEntryStore.insert(entry)
-                loadSpeechEntries()
-            } catch {
-                record(AlkiSpeakError(code: "persistence.log.save", title: "Save Failed", message: error.localizedDescription, recoverySuggestion: "Try Add to Log again."))
-            }
-        }
-    }
-
-    private func audioDurations(_ urls: [URL]) async -> [Double] {
-        var values: [Double] = []
-        for url in urls {
-            values.append((try? await AVURLAsset(url: url).load(.duration).seconds) ?? 0)
-        }
-        return values
-    }
-
-    private func deleteActiveQuickClips() {
-        guard let jobID = store.playback.activeJobID,
-              let job = store.speechJobs.first(where: { $0.id == jobID })
-        else { return }
-        for segment in job.segments {
-            if let url = segment.audioURL { try? FileManager.default.removeItem(at: url) }
-        }
+        history.saveEntry(for: job, generationSeconds: diagnostics.generationSeconds, resourceBefore: diagnostics.resourceBefore)
     }
 
     private func saveWorkspace() {
@@ -2164,16 +901,30 @@ final class AppModel: ObservableObject {
     }
 }
 
-private extension EngineHealthSummary {
-    /// Equal apart from the health-check timestamps, which change on every
-    /// check but aren't shown anywhere.
-    func matchesIgnoringCheckTimes(_ other: EngineHealthSummary) -> Bool {
-        var lhs = self
-        var rhs = other
-        lhs.lastHealthCheckAt = nil
-        lhs.lastSuccessfulHealthCheckAt = nil
-        rhs.lastHealthCheckAt = nil
-        rhs.lastSuccessfulHealthCheckAt = nil
-        return lhs == rhs
+extension AppModel: SpeechPipelineHost {
+    func prepareEngine(forVoice voice: String) async throws {
+        // Only the Python Kokoro voices need the engine; it may be asleep.
+        guard !voice.hasPrefix("apple:"),
+              !voice.hasPrefix(EdgeSpeechGenerationService.idPrefix),
+              !CloudSpeechGenerationService.isCloudVoice(voice),
+              !NativeKokoroSpeechService.isNativeKokoroVoice(voice)
+        else { return }
+        try await engine.wake()
+    }
+
+    func speechRequestStarted(jobID: UUID) {
+        dependencies.engineSupervisor.noteRequestStarted(jobID: jobID)
+        engine.cancelIdleStop()
+    }
+
+    func speechRequestFinished(jobID: UUID) {
+        dependencies.engineSupervisor.noteRequestFinished(jobID: jobID)
+        schedulePythonEngineIdleStop()
+    }
+
+    func speechJobFinishedGenerating(_ job: SpeechJob) {
+        if isProMode && logMode == .auto {
+            saveEntry(for: job)
+        }
     }
 }
