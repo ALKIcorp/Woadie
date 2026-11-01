@@ -285,10 +285,9 @@ final class AVAudioPlaybackCoordinator: NSObject, PlaybackCoordinating {
             )
         }
         guard let target = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channels),
-              let converter = AVAudioConverter(from: file.processingFormat, to: target),
-              let input = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))
+              let converter = AVAudioConverter(from: file.processingFormat, to: target)
         else { throw failure("unsupported format") }
-        try file.read(into: input)
+        let input = try file.readAll()
 
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("AlkiSpeakConverted", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -506,7 +505,6 @@ enum VoiceCloneReference {
 
         guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false),
               let converter = AVAudioConverter(from: inputFormat, to: outputFormat),
-              let inputBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(input.length)),
               let outputBuffer = AVAudioPCMBuffer(
                   pcmFormat: outputFormat,
                   frameCapacity: AVAudioFrameCount(seconds * sampleRate) + 4_096
@@ -514,7 +512,7 @@ enum VoiceCloneReference {
         else {
             throw failure("Couldn't convert that recording.")
         }
-        try input.read(into: inputBuffer)
+        let inputBuffer = try input.readAll()
 
         var supplied = false
         var conversionError: NSError?
@@ -587,6 +585,39 @@ enum VoiceCloneReference {
 
 // MARK: - Clip audio
 
+extension AVAudioFile {
+    /// The rest of the file in one buffer, in `processingFormat`. A single
+    /// `read(into:)` can return fewer frames than asked for (it stops at the
+    /// decoder's packet boundaries), so this keeps reading until the file
+    /// runs out.
+    func readAll() throws -> AVAudioPCMBuffer {
+        let format = processingFormat
+        let remaining = AVAudioFrameCount(max(0, length - framePosition))
+        guard let whole = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: max(1, remaining)),
+              let chunk = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16_384),
+              let wholeChannels = whole.floatChannelData,
+              let chunkChannels = chunk.floatChannelData
+        else {
+            throw AlkiSpeakError.playback(
+                code: "audio-read-failed",
+                title: "Audio Read Failed",
+                message: "A clip couldn't be read: unsupported format.",
+                recoverySuggestion: "Generate the speech again."
+            )
+        }
+        while framePosition < length {
+            try read(into: chunk)
+            let count = min(chunk.frameLength, whole.frameCapacity - whole.frameLength)
+            guard count > 0 else { break }
+            for channel in 0..<Int(format.channelCount) {
+                (wholeChannels[channel] + Int(whole.frameLength)).update(from: chunkChannels[channel], count: Int(count))
+            }
+            whole.frameLength += count
+        }
+        return whole
+    }
+}
+
 /// Mono float samples read from clip files and written back as WAV.
 enum AudioPCM {
     /// Reads `url` (any format AVFoundation reads) as mono samples, at
@@ -599,29 +630,19 @@ enum AudioPCM {
             converted = try AVAudioPlaybackCoordinator.convert(file, toSampleRate: sampleRate, channels: 1)
             file = try AVAudioFile(forReading: converted!)
         }
-        let format = file.processingFormat
-        guard let chunk = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16_384),
-              let channels = chunk.floatChannelData
-        else { throw failure("unsupported format") }
-        let channelCount = Int(format.channelCount)
-        var mono: [Float] = []
-        mono.reserveCapacity(Int(file.length))
-        // One read can return fewer frames than asked for, so keep reading.
-        while file.framePosition < file.length {
-            try file.read(into: chunk)
-            let count = Int(chunk.frameLength)
-            guard count > 0 else { break }
-            var mixed = Array(UnsafeBufferPointer(start: channels[0], count: count))
-            if channelCount > 1 {
-                for channel in 1..<channelCount {
-                    vDSP_vadd(mixed, 1, channels[channel], 1, &mixed, 1, vDSP_Length(count))
-                }
-                var scale = 1 / Float(channelCount)
-                vDSP_vsmul(mixed, 1, &scale, &mixed, 1, vDSP_Length(count))
+        let buffer = try file.readAll()
+        guard let channels = buffer.floatChannelData else { throw failure("unsupported format") }
+        let count = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+        var mono = Array(UnsafeBufferPointer(start: channels[0], count: count))
+        if channelCount > 1 {
+            for channel in 1..<channelCount {
+                vDSP_vadd(mono, 1, channels[channel], 1, &mono, 1, vDSP_Length(count))
             }
-            mono.append(contentsOf: mixed)
+            var scale = 1 / Float(channelCount)
+            vDSP_vsmul(mono, 1, &scale, &mono, 1, vDSP_Length(count))
         }
-        return (mono, format.sampleRate)
+        return (mono, buffer.format.sampleRate)
     }
 
     /// Reads clip bytes (WAV or MP3) as mono samples.

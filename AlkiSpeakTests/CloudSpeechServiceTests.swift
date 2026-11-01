@@ -2055,3 +2055,35 @@ final class SegmentConsistencyTests: XCTestCase {
         XCTAssertEqual(ClipConditioner.condition(data, trailingPause: 0.2), data)
     }
 }
+
+// MARK: - Whole-file reads
+
+extension CloudSpeechServiceTests {
+    func testReadAllReturnsEveryFrameEvenWhenOneReadStopsShort() throws {
+        // A 4 s mono 24 kHz float file: a single read(into:) returns ~95,000 of its 96,000 frames.
+        let tone = try writeTone(seconds: 4, sampleRate: 24_000, channels: 1, in: temporaryDirectory())
+
+        let buffer = try AVAudioFile(forReading: tone).readAll()
+
+        XCTAssertEqual(buffer.frameLength, 96_000)
+        XCTAssertEqual(try AudioPCM.readMono(tone).samples.count, 96_000)
+    }
+
+    func testJoinedAudioKeepsTheEndOfEveryClip() throws {
+        let dir = try temporaryDirectory()
+        let clips = try [4.0, 2.0].map { try Data(contentsOf: writeTone(seconds: $0, sampleRate: 24_000, channels: 1, in: dir)) }
+
+        let joined = try AudioPCM.decode(AudioJoiner.wav(from: clips))
+
+        XCTAssertEqual(joined.samples.count, 144_000)
+    }
+
+    func testStoredCloneReferenceKeepsTheWholeRecording() throws {
+        let dir = try temporaryDirectory()
+        let source = try writeTone(seconds: 4, sampleRate: 24_000, channels: 1, in: dir)
+
+        let stored = try VoiceCloneReference.store(from: source, id: UUID(), in: dir)
+
+        XCTAssertEqual(try AVAudioFile(forReading: stored).length, 96_000)
+    }
+}

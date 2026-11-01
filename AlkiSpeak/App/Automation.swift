@@ -78,7 +78,6 @@ enum AudioJoiner {
         }
         guard let first = sources.first else { return Data() }
         let sampleRate = first.processingFormat.sampleRate
-        guard let target = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else { return Data() }
 
         let outputURL = directory.appendingPathComponent("joined.wav")
         let settings: [String: Any] = [
@@ -98,9 +97,7 @@ enum AudioJoiner {
                 } else {
                     file = try AVAudioFile(forReading: AVAudioPlaybackCoordinator.convert(source, toSampleRate: sampleRate, channels: 1))
                 }
-                guard let buffer = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: AVAudioFrameCount(file.length)) else { continue }
-                try file.read(into: buffer)
-                try output.write(from: buffer)
+                try output.write(from: file.readAll())
             }
         }
         return try Data(contentsOf: outputURL)
