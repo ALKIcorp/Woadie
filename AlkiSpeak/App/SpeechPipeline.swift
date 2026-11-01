@@ -163,21 +163,45 @@ final class SpeechPipeline {
     func segmentTexts(for text: String, voice: String) -> [String] {
         // mlx-audio models have a large fixed cost per request and run
         // near real time, so a short opening only moves the wait to a gap
-        // after it. Every other engine starts sooner with one.
+        // after it, and after a standard-size first request they read
+        // paragraph-sized ones. Every other engine starts sooner with one.
         let isMLXVoice = store.cloudSettings.voice(withID: voice)?.provider == .localMLX
-        return requestPolicy.segments(for: text, leadIn: !isMLXVoice).map(\.text)
+        return requestPolicy.segments(for: text, leadIn: !isMLXVoice, sizing: isMLXVoice ? .long : .standard).map(\.text)
     }
 
     /// Audio for one request without playing it: from the cache, or
-    /// generated and cached. Used to render books ahead and compare voices,
-    /// so it never swaps in a different voice.
+    /// generated and cached, then conditioned like a played clip. Used to
+    /// compare voices, so it never swaps in a different voice.
     func audio(for text: String, voice: String) async throws -> (data: Data, latencyMs: Int, fromCache: Bool) {
         let generator = makeGenerator(forVoice: voice, allowFallback: false)
         try await generator.preparePrimary()
         let started = Date()
         let (result, fromCache) = try await generator.generate(text: text, jobID: nil)
         let latency = fromCache ? 0 : (result.latencyMs ?? Int(Date().timeIntervalSince(started) * 1000))
-        return (result.audioData, latency, fromCache)
+        let audio = await Self.conditioned(result.audioData, trailingPause: 0)
+        return (audio, latency, fromCache)
+    }
+
+    /// Segment `index` of `chain`'s text, ready to join to the others: made
+    /// with the segments around it so the whole text keeps one delivery,
+    /// conditioned, and recorded so the next segment continues from it. Used
+    /// to render books ahead and save audio, so it never swaps in a
+    /// different voice.
+    func audio(forSegment index: Int, of chain: SegmentChain, voice: String) async throws -> Data {
+        let generator = makeGenerator(forVoice: voice, allowFallback: false)
+        try await generator.preparePrimary()
+        let text = chain.texts[index]
+        let (result, _) = try await generator.generate(text: text, jobID: nil, context: await chain.context(for: index))
+        let audio = await Self.conditioned(result.audioData, trailingPause: chain.pause(after: index))
+        try await chain.record(index: index, audio: audio, requestID: result.requestID)
+        return audio
+    }
+
+    /// Conditioning decodes and re-encodes the clip, so it runs off the main actor.
+    nonisolated private static func conditioned(_ data: Data, trailingPause: TimeInterval) async -> Data {
+        await Task.detached(priority: .userInitiated) {
+            ClipConditioner.condition(data, trailingPause: trailingPause)
+        }.value
     }
 
     // MARK: Fallback
@@ -274,10 +298,15 @@ final class SpeechPipeline {
 
             await ttsQueue.enqueue(segments)
             dependencies.playbackCoordinator.prepare(characterCounts: segments.map { $0.text.count })
-            // Network voices generate a segment ahead; engines on this Mac
-            // go one at a time.
-            let runsOnThisMac = store.cloudSettings.voice(withID: voice)?.provider == .localMLX
-            let lookahead = EngineRequestPolicy.generationConcurrency(forVoice: voice, runsOnThisMac: runsOnThisMac)
+            let chain = SegmentChain(texts: segments.map(\.text))
+            // Network voices generate a segment ahead; engines on this Mac,
+            // and voices that stitch onto the previous request, go one at a time.
+            let provider = store.cloudSettings.voice(withID: voice)?.provider
+            let lookahead = EngineRequestPolicy.generationConcurrency(
+                forVoice: voice,
+                runsOnThisMac: provider == .localMLX,
+                chainsRequests: provider?.style == .elevenLabs
+            )
             await ttsQueue.process(maxConcurrent: lookahead, canGenerate: {
                 await SystemResourceMonitor.shared.canProceed()
             }, onWaiting: { waiting in
@@ -305,8 +334,10 @@ final class SpeechPipeline {
                     )
                 }
                 // Cached audio replays with no network call or engine work;
-                // otherwise the voice (or a fallback) generates it.
-                let (result, fromCache) = try await generator.generate(text: segment.text, jobID: jobID)
+                // otherwise the voice (or a fallback) generates it, carrying
+                // on from the segment before.
+                let context = await chain.context(for: segment.index)
+                let (result, fromCache) = try await generator.generate(text: segment.text, jobID: jobID, context: context)
                 if fromCache {
                     await MainActor.run {
                         self.diagnostics.recordMarkerForActiveJob(
@@ -315,7 +346,9 @@ final class SpeechPipeline {
                         )
                     }
                 }
-                let url = try clipStore.writeClip(data: result.audioData, segmentID: segment.id, workspaceID: workspaceID)
+                let audio = await Self.conditioned(result.audioData, trailingPause: chain.pause(after: segment.index))
+                let url = try clipStore.writeClip(data: audio, segmentID: segment.id, workspaceID: workspaceID)
+                await chain.record(index: segment.index, audioURL: url, requestID: result.requestID)
                 await MainActor.run {
                     self.store.dashboardTelemetry.lastLatencyMs = result.latencyMs
                     self.store.dashboardTelemetry.lastCharCount = result.charCount
@@ -557,5 +590,64 @@ final class SpeechPipeline {
             recoverySuggestion: "Try generating the speech again.",
             underlyingError: error
         )
+    }
+}
+
+/// Carries each segment's audio and request ID on to the next, so a text
+/// split into requests keeps one delivery: cloned voices continue from the
+/// previous clip, ElevenLabs stitches onto the previous requests, and every
+/// voice ends each clip on a pause that fits where the text was split.
+actor SegmentChain {
+    nonisolated let texts: [String]
+    private var clips: [Int: URL] = [:]
+    private var requestIDs: [Int: String] = [:]
+    /// Holds clips handed over as data (book rendering, saved audio).
+    private var scratch: URL?
+
+    init(texts: [String]) {
+        self.texts = texts
+    }
+
+    deinit {
+        scratch.map { try? FileManager.default.removeItem(at: $0) }
+    }
+
+    func context(for index: Int) -> SpeechContext {
+        var context = SpeechContext()
+        if texts.indices.contains(index - 1) { context.previousText = texts[index - 1] }
+        if texts.indices.contains(index + 1) { context.nextText = texts[index + 1] }
+        context.previousAudioURL = clips[index - 1]
+        // Only an unbroken run of IDs right before this segment stitches.
+        var previous = index - 1
+        while previous >= 0,
+              context.previousRequestIDs.count < CloudSpeechGenerationService.maximumStitchedRequests,
+              let id = requestIDs[previous] {
+            context.previousRequestIDs.insert(id, at: 0)
+            previous -= 1
+        }
+        return context
+    }
+
+    nonisolated func pause(after index: Int) -> TimeInterval {
+        ClipConditioner.pause(after: texts[index], isLast: index == texts.count - 1)
+    }
+
+    func record(index: Int, audioURL: URL, requestID: String?) {
+        clips[index] = audioURL
+        requestIDs[index] = requestID
+    }
+
+    func record(index: Int, audio: Data, requestID: String?) throws {
+        let directory: URL
+        if let scratch {
+            directory = scratch
+        } else {
+            directory = FileManager.default.temporaryDirectory.appendingPathComponent("AlkiSpeakChain-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            scratch = directory
+        }
+        let url = directory.appendingPathComponent("\(index).wav")
+        try audio.write(to: url)
+        record(index: index, audioURL: url, requestID: requestID)
     }
 }

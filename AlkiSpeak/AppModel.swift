@@ -944,7 +944,8 @@ final class AppModel {
                         continue
                     }
                     var clips: [Data] = []
-                    for segment in chapter.segments {
+                    let chain = SegmentChain(texts: chapter.segments)
+                    for index in chapter.segments.indices {
                         // Respect the resource guard: wait while the Mac is busy.
                         while !(await SystemResourceMonitor.shared.canProceed()) {
                             self.store.bookRender?.message = "Waiting for the Mac to be less busy…"
@@ -952,7 +953,7 @@ final class AppModel {
                         }
                         self.store.bookRender?.message = nil
                         try Task.checkCancellation()
-                        clips.append(try await self.pipeline.audio(for: segment, voice: voice).data)
+                        clips.append(try await self.pipeline.audio(forSegment: index, of: chain, voice: voice))
                         done += 1
                         self.store.bookRender?.done = done
                     }
@@ -1226,8 +1227,9 @@ final class AppModel {
         }
         let spoken = spokenText(for: text, voice: voice)
         var clips: [Data] = []
-        for segment in pipeline.segmentTexts(for: spoken, voice: voice) {
-            clips.append(try await pipeline.audio(for: segment, voice: voice).data)
+        let chain = SegmentChain(texts: pipeline.segmentTexts(for: spoken, voice: voice))
+        for index in chain.texts.indices {
+            clips.append(try await pipeline.audio(forSegment: index, of: chain, voice: voice))
         }
         return try AudioJoiner.wav(from: clips)
     }

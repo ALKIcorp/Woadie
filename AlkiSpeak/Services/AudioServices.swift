@@ -546,6 +546,27 @@ enum VoiceCloneReference {
         return destination
     }
 
+    /// Silence between the recording and the previous segment in a
+    /// continuation reference, so the two don't run together.
+    static let continuationGap: TimeInterval = 0.3
+
+    /// A temporary WAV of `reference`, a short gap, then `previous`, for a
+    /// cloned voice to continue from. The caller deletes it after the
+    /// request. Nil when `previous` runs longer than `maximumAddedSeconds`.
+    static func continuation(of reference: URL, then previous: URL, maximumAddedSeconds: Double) throws -> URL? {
+        let recording = try AudioPCM.readMono(reference, sampleRate: sampleRate)
+        let previousClip = try AudioPCM.readMono(previous, sampleRate: sampleRate)
+        guard !previousClip.samples.isEmpty,
+              Double(previousClip.samples.count) / sampleRate <= maximumAddedSeconds
+        else { return nil }
+        let gap = [Float](repeating: 0, count: Int(continuationGap * sampleRate))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("AlkiSpeakContinuations", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
+        try AudioPCM.wav(recording.samples + gap + previousClip.samples, sampleRate: sampleRate).write(to: url)
+        return url
+    }
+
     /// Deletes a stored reference, but only inside the voice-clone folder.
     static func remove(atPath path: String, in directory: URL? = VoiceCloneReference.directory) {
         guard let directory else { return }
@@ -561,6 +582,168 @@ enum VoiceCloneReference {
             message: message,
             recoverySuggestion: "Record or choose a clear 5–20 second clip of one person speaking."
         )
+    }
+}
+
+// MARK: - Clip audio
+
+/// Mono float samples read from clip files and written back as WAV.
+enum AudioPCM {
+    /// Reads `url` (any format AVFoundation reads) as mono samples, at
+    /// `sampleRate` when given, else at the file's own rate.
+    static func readMono(_ url: URL, sampleRate: Double? = nil) throws -> (samples: [Float], sampleRate: Double) {
+        var file = try AVAudioFile(forReading: url)
+        var converted: URL?
+        defer { converted.map { try? FileManager.default.removeItem(at: $0) } }
+        if let sampleRate, abs(file.processingFormat.sampleRate - sampleRate) > 0.5 {
+            converted = try AVAudioPlaybackCoordinator.convert(file, toSampleRate: sampleRate, channels: 1)
+            file = try AVAudioFile(forReading: converted!)
+        }
+        let format = file.processingFormat
+        guard let chunk = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16_384),
+              let channels = chunk.floatChannelData
+        else { throw failure("unsupported format") }
+        let channelCount = Int(format.channelCount)
+        var mono: [Float] = []
+        mono.reserveCapacity(Int(file.length))
+        // One read can return fewer frames than asked for, so keep reading.
+        while file.framePosition < file.length {
+            try file.read(into: chunk)
+            let count = Int(chunk.frameLength)
+            guard count > 0 else { break }
+            var mixed = Array(UnsafeBufferPointer(start: channels[0], count: count))
+            if channelCount > 1 {
+                for channel in 1..<channelCount {
+                    vDSP_vadd(mixed, 1, channels[channel], 1, &mixed, 1, vDSP_Length(count))
+                }
+                var scale = 1 / Float(channelCount)
+                vDSP_vsmul(mixed, 1, &scale, &mixed, 1, vDSP_Length(count))
+            }
+            mono.append(contentsOf: mixed)
+        }
+        return (mono, format.sampleRate)
+    }
+
+    /// Reads clip bytes (WAV or MP3) as mono samples.
+    static func decode(_ data: Data) throws -> (samples: [Float], sampleRate: Double) {
+        // AVAudioFile sniffs the format, but needs a plausible extension.
+        let isWAV = data.prefix(4) == Data("RIFF".utf8)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("alkispeak-decode-\(UUID().uuidString)")
+            .appendingPathExtension(isWAV ? "wav" : "mp3")
+        try data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        return try readMono(url)
+    }
+
+    /// A 16-bit mono WAV of `samples`, clamped to full scale.
+    static func wav(_ samples: [Float], sampleRate: Double) -> Data {
+        var pcm = [Int16](repeating: 0, count: samples.count)
+        for (index, sample) in samples.enumerated() {
+            pcm[index] = Int16(max(-1, min(1, sample)) * Float(Int16.max))
+        }
+        let rate = UInt32(sampleRate.rounded())
+        let dataSize = UInt32(pcm.count * 2)
+        var wav = Data(capacity: 44 + pcm.count * 2)
+        func append<T: FixedWidthInteger>(_ value: T) { withUnsafeBytes(of: value.littleEndian) { wav.append(contentsOf: $0) } }
+        wav.append(contentsOf: Array("RIFF".utf8)); append(UInt32(36) + dataSize)
+        wav.append(contentsOf: Array("WAVEfmt ".utf8)); append(UInt32(16))
+        append(UInt16(1)); append(UInt16(1)); append(rate); append(rate * 2); append(UInt16(2)); append(UInt16(16))
+        wav.append(contentsOf: Array("data".utf8)); append(dataSize)
+        pcm.withUnsafeBytes { wav.append(contentsOf: $0) }
+        return wav
+    }
+
+    private static func failure(_ reason: String) -> AlkiSpeakError {
+        .playback(
+            code: "audio-read-failed",
+            title: "Audio Read Failed",
+            message: "A clip couldn't be read: \(reason).",
+            recoverySuggestion: "Generate the speech again."
+        )
+    }
+}
+
+/// Evens out each clip before it's queued so the seams between a text's
+/// segments don't stand out: trims the silence each request leaves at its
+/// ends, brings the speech to one loudness, fades the edges so nothing
+/// clicks, and ends on a pause that fits where the text was split. The
+/// pause stands in for a crossfade: segments meet at a break in the speech,
+/// so there's no sound to blend across.
+enum ClipConditioner {
+    /// Speech level every clip is brought to: about -21 dBFS RMS.
+    static let targetLevel: Float = 0.09
+    /// Peaks stay under -1 dBFS; a clip that would pass it gets less gain.
+    static let peakCeiling: Float = 0.89
+    /// At most ±20 dB, so a near-silent clip isn't blown up into noise.
+    static let gainRange: ClosedRange<Float> = 0.1...10
+    /// Kept around the speech so soft onsets and breath tails survive the trim.
+    static let edgeMargin: TimeInterval = 0.04
+    static let fadeDuration: TimeInterval = 0.012
+    private static let window: TimeInterval = 0.01
+
+    static let sentencePause: TimeInterval = 0.25
+    static let clausePause: TimeInterval = 0.12
+    static let wordPause: TimeInterval = 0.04
+
+    /// `data` conditioned as a 16-bit mono WAV, or unchanged if it can't be read.
+    static func condition(_ data: Data, trailingPause: TimeInterval) -> Data {
+        guard let clip = try? AudioPCM.decode(data), !clip.samples.isEmpty else { return data }
+        return AudioPCM.wav(condition(clip.samples, sampleRate: clip.sampleRate, trailingPause: trailingPause), sampleRate: clip.sampleRate)
+    }
+
+    static func condition(_ samples: [Float], sampleRate: Double, trailingPause: TimeInterval) -> [Float] {
+        let pause = [Float](repeating: 0, count: Int(trailingPause * sampleRate))
+        let windowLength = max(1, Int(sampleRate * window))
+        let windowCount = samples.count / windowLength
+        guard windowCount > 0 else { return samples + pause }
+
+        var levels = [Float](repeating: 0, count: windowCount)
+        samples.withUnsafeBufferPointer { pointer in
+            for index in 0..<windowCount {
+                vDSP_rmsqv(pointer.baseAddress! + index * windowLength, 1, &levels[index], vDSP_Length(windowLength))
+            }
+        }
+        let loudest = levels.max() ?? 0
+        // Silence (or near it) is left alone rather than amplified.
+        guard loudest > 0.001,
+              let first = levels.firstIndex(where: { $0 > loudest * 0.01 }),
+              let last = levels.lastIndex(where: { $0 > loudest * 0.01 })
+        else { return samples + pause }
+
+        let margin = Int(sampleRate * edgeMargin)
+        let start = max(0, first * windowLength - margin)
+        let end = min(samples.count, (last + 1) * windowLength + margin)
+        var output = Array(samples[start..<end])
+
+        // Loudness of the speech itself, not the pauses inside it.
+        let speech = levels.filter { $0 > loudest * 0.05 }
+        let speechLevel = (speech.reduce(0) { $0 + $1 * $1 } / Float(speech.count)).squareRoot()
+        var gain = min(gainRange.upperBound, max(gainRange.lowerBound, targetLevel / speechLevel))
+        var peak: Float = 0
+        vDSP_maxmgv(output, 1, &peak, vDSP_Length(output.count))
+        if peak * gain > peakCeiling { gain = peakCeiling / peak }
+        vDSP_vsmul(output, 1, &gain, &output, 1, vDSP_Length(output.count))
+
+        let fade = min(Int(sampleRate * fadeDuration), output.count / 2)
+        for index in 0..<fade {
+            let ramp = Float(index) / Float(fade)
+            output[index] *= ramp
+            output[output.count - 1 - index] *= ramp
+        }
+        return output + pause
+    }
+
+    /// The pause after a segment: a sentence's worth at a sentence end, a
+    /// short one at a clause break, a breath at a word break, none at the end.
+    static func pause(after text: String, isLast: Bool) -> TimeInterval {
+        guard !isLast else { return 0 }
+        let closers: Set<Character> = ["\"", "'", "”", "’", ")", "»"]
+        switch text.trimmingCharacters(in: .whitespacesAndNewlines).last(where: { !closers.contains($0) }) {
+        case ".", "!", "?", "…": return sentencePause
+        case ",", ";", ":", "—", "–": return clausePause
+        default: return wordPause
+        }
     }
 }
 

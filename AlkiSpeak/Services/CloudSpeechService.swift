@@ -271,7 +271,7 @@ final class KeychainSecretStore: SecretStoring {
 
 /// Routes `cloud:<uuid>` voice IDs to whichever provider the user configured
 /// for that voice. Like Edge, it never depends on the local Kokoro engine.
-final class CloudSpeechGenerationService: SpeechGenerating {
+final class CloudSpeechGenerationService: ContextualSpeechGenerating {
     static let idPrefix = "cloud:"
 
     private let logger = Logger(subsystem: "com.alki.Woadie", category: "CloudTTS")
@@ -302,12 +302,20 @@ final class CloudSpeechGenerationService: SpeechGenerating {
     }
 
     func synthesize(text: String, voice: String, jobID: UUID?) async throws -> SpeechGenerationResult {
+        try await synthesize(text: text, voice: voice, jobID: jobID, context: .none)
+    }
+
+    func synthesize(text: String, voice: String, jobID: UUID?, context: SpeechContext) async throws -> SpeechGenerationResult {
         let startedAt = Date()
         // Decode the stored settings once for the whole call.
         let current = settings.load()
-        let request = try makeRequest(text: text, voiceID: voice, settings: current)
         let cloudVoice = current.voice(withID: voice)
         let provider = cloudVoice?.provider
+        // A cloned voice continues from the segment before it, so the whole
+        // text keeps one delivery instead of each request starting fresh.
+        let continuation = cloudVoice.flatMap { Self.continuationReference(for: $0, context: context) }
+        defer { continuation.map { try? FileManager.default.removeItem(at: $0.url) } }
+        let request = try makeRequest(text: text, voiceID: voice, settings: current, context: context, continuation: continuation)
         if provider == .localMLX { localServer?.beginUse() }
         defer { if provider == .localMLX { localServer?.endUse() } }
         do {
@@ -327,6 +335,12 @@ final class CloudSpeechGenerationService: SpeechGenerating {
                 throw Self.failure(code: "cloud.no-response", message: "The provider returned no HTTP response.")
             }
             guard (200..<300).contains(http.statusCode) else {
+                // Some ElevenLabs models refuse request stitching; read the
+                // segment on its own rather than failing it.
+                if provider?.style == .elevenLabs, context != .none, [400, 422].contains(http.statusCode) {
+                    logger.info("ElevenLabs refused request stitching status=\(http.statusCode); retrying without it")
+                    return try await synthesize(text: text, voice: voice, jobID: jobID, context: .none)
+                }
                 throw Self.httpError(status: http.statusCode, body: data)
             }
             let audio: Data
@@ -340,8 +354,13 @@ final class CloudSpeechGenerationService: SpeechGenerating {
             guard !audio.isEmpty else {
                 throw Self.failure(code: "cloud.empty-audio", message: "The provider returned an empty audio response.")
             }
-            logger.info("Cloud synthesis complete job=\(jobID?.uuidString ?? "none", privacy: .public) chars=\(text.count) elapsedMs=\(elapsedMs)")
-            return SpeechGenerationResult(audioData: audio, latencyMs: elapsedMs, charCount: text.count)
+            logger.info("Cloud synthesis complete job=\(jobID?.uuidString ?? "none", privacy: .public) chars=\(text.count) elapsedMs=\(elapsedMs) continued=\(continuation != nil)")
+            return SpeechGenerationResult(
+                audioData: audio,
+                latencyMs: elapsedMs,
+                charCount: text.count,
+                requestID: http.value(forHTTPHeaderField: "request-id")
+            )
         } catch let error as AlkiSpeakError {
             throw error
         } catch is CancellationError {
@@ -415,11 +434,57 @@ final class CloudSpeechGenerationService: SpeechGenerating {
 
     // MARK: - Request building
 
-    func makeRequest(text: String, voiceID: String) throws -> URLRequest {
-        try makeRequest(text: text, voiceID: voiceID, settings: settings.load())
+    func makeRequest(text: String, voiceID: String, context: SpeechContext = .none, continuation: ContinuationReference? = nil) throws -> URLRequest {
+        try makeRequest(text: text, voiceID: voiceID, settings: settings.load(), context: context, continuation: continuation)
     }
 
-    private func makeRequest(text: String, voiceID: String, settings current: CloudSpeechSettings) throws -> URLRequest {
+    /// A cloned voice's reference recording followed by the segment just
+    /// before this one, with both their words: the model picks up the voice
+    /// from the recording and the delivery from where the reading left off.
+    struct ContinuationReference: Hashable {
+        let url: URL
+        let text: String
+    }
+
+    /// Previous clips longer than this aren't chained: the reference is
+    /// re-read on every request, so a very long one slows each segment.
+    static let maximumContinuationSeconds: Double = 40
+
+    static func continuationReference(for voice: CloudVoice, context: SpeechContext) -> ContinuationReference? {
+        guard voice.provider == .localMLX, voice.isCloned,
+              let original = voice.referenceAudioPath,
+              let previousAudio = context.previousAudioURL,
+              let previousText = context.previousText?.trimmingCharacters(in: .whitespacesAndNewlines), !previousText.isEmpty,
+              let url = try? VoiceCloneReference.continuation(
+                  of: URL(fileURLWithPath: original),
+                  then: previousAudio,
+                  maximumAddedSeconds: maximumContinuationSeconds
+              )
+        else { return nil }
+        let originalText = (voice.referenceText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return ContinuationReference(url: url, text: originalText.isEmpty ? previousText : originalText + " " + previousText)
+    }
+
+    /// Cloned voices sample closer to the model's most likely reading than
+    /// mlx-audio's defaults (0.7 / 0.95), so separate requests come out in the
+    /// same delivery instead of each rolling a new one. The small repetition
+    /// penalty keeps the lower temperature from looping.
+    static let clonedVoiceSampling: [String: Double] = [
+        "temperature": 0.3,
+        "top_p": 0.8,
+        "repetition_penalty": 1.05
+    ]
+
+    /// ElevenLabs reads at most this many previous request IDs.
+    static let maximumStitchedRequests = 3
+
+    private func makeRequest(
+        text: String,
+        voiceID: String,
+        settings current: CloudSpeechSettings,
+        context: SpeechContext = .none,
+        continuation: ContinuationReference? = nil
+    ) throws -> URLRequest {
         guard let cloudVoice = current.voice(withID: voiceID) else {
             throw Self.failure(
                 code: "cloud.voice-missing",
@@ -493,8 +558,9 @@ final class CloudSpeechGenerationService: SpeechGenerating {
             if provider == .localMLX, cloudVoice.isCloned {
                 // Qwen3 Base clones from a reference clip plus its transcript;
                 // it rejects a `voice` name alongside them.
-                body["ref_audio"] = cloudVoice.referenceAudioPath
-                body["ref_text"] = cloudVoice.referenceText ?? ""
+                body["ref_audio"] = continuation?.url.path ?? cloudVoice.referenceAudioPath
+                body["ref_text"] = continuation?.text ?? cloudVoice.referenceText ?? ""
+                for (key, value) in Self.clonedVoiceSampling { body[key] = value }
             } else if provider == .localMLX, let instructions = cloudVoice.instructions, !instructions.isEmpty {
                 // Ming rejects `voice` and `instruct` together (the server then
                 // answers 200 with an empty body), so a designed voice sends
@@ -507,10 +573,18 @@ final class CloudSpeechGenerationService: SpeechGenerating {
         case .elevenLabs:
             request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
             request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
-            request.httpBody = try JSONSerialization.data(withJSONObject: [
+            // Request stitching: the text around this segment and the IDs of
+            // the requests before it, so the segments read as one take.
+            var body: [String: Any] = [
                 "text": text,
                 "model_id": cloudVoice.model
-            ])
+            ]
+            if let previous = context.previousText, !previous.isEmpty { body["previous_text"] = previous }
+            if let next = context.nextText, !next.isEmpty { body["next_text"] = next }
+            if !context.previousRequestIDs.isEmpty {
+                body["previous_request_ids"] = Array(context.previousRequestIDs.suffix(Self.maximumStitchedRequests))
+            }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
         case .gemini:
             // Unary responses default to a 24 kHz mono WAV with a RIFF header,
             // which the clip pipeline plays as-is.

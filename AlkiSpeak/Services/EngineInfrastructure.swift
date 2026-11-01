@@ -46,43 +46,115 @@ enum EngineState: Equatable {
 }
 
 enum TextBatcher {
-    private static let targetCharacters = 200
-    private static let hardCutCharacters = 250
-    private static let boundarySearchLimit = 300
+    /// How big a text's requests are.
+    struct Sizing: Hashable {
+        /// What each segment aims for; a text's segments are evened out around it.
+        let target: Int
+        /// The most a segment of several sentences may hold.
+        let limit: Int
+        /// One sentence up to this long stays whole instead of being split.
+        let sentenceLimit: Int
+
+        static let standard = Sizing(target: 200, limit: 250, sentenceLimit: 300)
+        /// mlx-audio voices pay a large fixed cost per request and run faster
+        /// than real time, so after the opening they read paragraph-sized
+        /// requests: fewer seams where the delivery can change.
+        static let long = Sizing(target: 400, limit: 550, sentenceLimit: 650)
+    }
+
     private static let abbreviations: Set<String> = [
         "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "st.",
         "e.g.", "i.e.", "etc.", "vs."
     ]
 
-    static func segments(for input: String) -> [String] {
-        var remaining = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !remaining.isEmpty else { return [] }
-
-        var result: [String] = []
-        while remaining.count > hardCutCharacters {
-            let characters = Array(remaining)
-            let searchEnd = min(boundarySearchLimit, characters.count)
-            var boundary: Int?
-
-            if targetCharacters < searchEnd {
-                for index in targetCharacters..<searchEnd where isSentenceBoundary(characters, at: index) {
-                    boundary = index + 1
-                    break
-                }
-            }
-
-            let cut = boundary ?? tagSafeCut(characters, at: min(hardCutCharacters, characters.count))
-            let segment = String(characters[..<cut]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !segment.isEmpty {
-                result.append(segment)
-            }
-            remaining = String(characters[cut...]).trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Splits `input` into requests that end at sentence ends where they can,
+    /// else at a clause break, else between words; a word is cut only when
+    /// there is no space to cut at. Segments come out about the same size:
+    /// very short and very long requests get noticeably different delivery.
+    /// The first segment uses `opening` when given, so sound starts as soon
+    /// as it did with `.standard` requests.
+    static func segments(for input: String, sizing: Sizing = .standard, opening: Sizing? = nil) -> [String] {
+        let characters = Array(input.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !characters.isEmpty else { return [] }
+        let strictest = opening.map { min($0.sentenceLimit, sizing.sentenceLimit) } ?? sizing.sentenceLimit
+        let pieceLimit = opening.map { min($0.limit, sizing.limit) } ?? sizing.limit
+        let units = sentenceRanges(characters).flatMap { range in
+            range.count > strictest ? splitLongSentence(characters, range, limit: pieceLimit) : [range]
         }
 
-        if !remaining.isEmpty {
-            result.append(remaining)
+        var chunks: [Range<Int>] = []
+        var next = 0
+        while next < units.count {
+            let chunkSizing = chunks.isEmpty ? (opening ?? sizing) : sizing
+            let remaining = units[units.count - 1].upperBound - units[next].lowerBound
+            // Rounded to nearest, so a tail just over the target stays whole.
+            let pieces = max(1, Int((Double(remaining) / Double(chunkSizing.target)).rounded()))
+            let desired = remaining / pieces
+            var range = units[next]
+            next += 1
+            while next < units.count {
+                let grown = range.lowerBound..<units[next].upperBound
+                guard grown.count <= chunkSizing.limit,
+                      abs(grown.count - desired) < abs(range.count - desired)
+                else { break }
+                range = grown
+                next += 1
+            }
+            chunks.append(range)
         }
-        return result
+        // A scrap at the end sounds clipped; fold it into the segment before.
+        if chunks.count > 1, let last = chunks.last,
+           last.count < sizing.target / 3,
+           last.upperBound - chunks[chunks.count - 2].lowerBound <= sizing.limit {
+            chunks.removeLast()
+            chunks[chunks.count - 1] = chunks[chunks.count - 1].lowerBound..<last.upperBound
+        }
+        return chunks.compactMap { range in
+            let text = String(characters[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
+        }
+    }
+
+    /// Each sentence's characters, including the space before the next one.
+    private static func sentenceRanges(_ characters: [Character]) -> [Range<Int>] {
+        var ranges: [Range<Int>] = []
+        var start = 0
+        for index in characters.indices where isSentenceBoundary(characters, at: index) {
+            ranges.append(start..<index + 1)
+            start = index + 1
+        }
+        if start < characters.count { ranges.append(start..<characters.count) }
+        return ranges
+    }
+
+    /// Cuts a sentence too long for one request into even pieces of at most
+    /// `limit`, preferring clause breaks, then spaces. Never inside a `[tag]`.
+    private static func splitLongSentence(_ characters: [Character], _ sentence: Range<Int>, limit: Int) -> [Range<Int>] {
+        var pieces: [Range<Int>] = []
+        var start = sentence.lowerBound
+        while sentence.upperBound - start > limit {
+            let remaining = sentence.upperBound - start
+            let count = Int((Double(remaining) / Double(limit)).rounded(.up))
+            let ideal = start + remaining / count
+            let window = (start + max(1, limit / 3))...(start + limit)
+            let cut = nearestCut(characters, in: window, to: ideal) { isClauseBoundary(characters, at: $0 - 1) }
+                ?? nearestCut(characters, in: window, to: ideal) { characters[$0].isWhitespace }
+                ?? max(start + 1, tagSafeCut(characters, at: ideal))
+            pieces.append(start..<cut)
+            start = cut
+        }
+        pieces.append(start..<sentence.upperBound)
+        return pieces
+    }
+
+    /// The cut position in `window` closest to `ideal` that passes `isCut`
+    /// and doesn't fall inside an open `[tag]`.
+    private static func nearestCut(_ characters: [Character], in window: ClosedRange<Int>, to ideal: Int, where isCut: (Int) -> Bool) -> Int? {
+        let upper = min(window.upperBound, characters.count - 1)
+        guard window.lowerBound <= upper else { return nil }
+        return (window.lowerBound...upper)
+            .filter { isCut($0) && tagSafeCut(characters, at: $0) == $0 }
+            .min { abs($0 - ideal) < abs($1 - ideal) }
     }
 
     /// Longest opening chunk `leadIn` aims for. Synthesis time grows with

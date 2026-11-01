@@ -142,11 +142,12 @@ final class EngineSupervisorTests: XCTestCase {
         XCTAssertTrue(segments[0].hasSuffix("here."))
     }
 
-    func testSentenceBatcherHardCutsAt250WhenNoBoundaryExistsBy300() {
+    func testSentenceBatcherHardCutsUnbrokenTextIntoEvenPieces() {
         let text = String(repeating: "x", count: 620)
         let segments = TextBatcher.segments(for: text)
 
-        XCTAssertEqual(segments.map(\.count), [250, 250, 120])
+        XCTAssertEqual(segments.map(\.count), [206, 207, 207])
+        XCTAssertEqual(segments.joined(), text)
     }
 
     func testRequestPolicyNeverCreatesSegmentOver250Characters() {

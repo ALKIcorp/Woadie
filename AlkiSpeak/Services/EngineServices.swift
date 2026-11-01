@@ -26,7 +26,9 @@ struct EngineRequestPolicy: Hashable {
     )
 
     /// `leadIn` splits a short opening off so the first request returns sooner.
-    func segments(for text: String, leadIn: Bool = true) -> [SpeechSegment] {
+    /// `.long` sizing keeps a standard-size first request, then reads
+    /// paragraph-sized ones.
+    func segments(for text: String, leadIn: Bool = true, sizing: TextBatcher.Sizing = .standard) -> [SpeechSegment] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let texts: [String]
         if maxDirectCharacters < 200 {
@@ -39,7 +41,9 @@ struct EngineRequestPolicy: Hashable {
             // batched as usual and generated while the opening plays.
             texts = [lead] + TextBatcher.segments(for: rest)
         } else if trimmed.count > maxDirectCharacters {
-            texts = TextBatcher.segments(for: trimmed)
+            texts = sizing == .standard
+                ? TextBatcher.segments(for: trimmed)
+                : TextBatcher.segments(for: trimmed, sizing: sizing, opening: .standard)
         } else {
             return [SpeechSegment(index: 0, text: trimmed)]
         }
@@ -52,8 +56,10 @@ struct EngineRequestPolicy: Hashable {
     /// generate ahead of playback so a slow response doesn't leave a gap.
     /// Engines on this Mac (Python Kokoro, native Kokoro, mlx-audio) already
     /// use the whole CPU/GPU for one request, so they go one at a time.
-    static func generationConcurrency(forVoice voice: String, runsOnThisMac: Bool) -> Int {
-        if runsOnThisMac { return 1 }
+    /// Voices that continue from the previous request's ID (`chainsRequests`,
+    /// ElevenLabs) go one at a time too; they're fast enough to stay ahead.
+    static func generationConcurrency(forVoice voice: String, runsOnThisMac: Bool, chainsRequests: Bool = false) -> Int {
+        if runsOnThisMac || chainsRequests { return 1 }
         if voice.hasPrefix(EdgeSpeechGenerationService.idPrefix) || CloudSpeechGenerationService.isCloudVoice(voice) {
             return 2
         }

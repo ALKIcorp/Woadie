@@ -67,6 +67,7 @@ private final class StubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var handler: ((URLRequest) -> (Int, Data))?
     nonisolated(unsafe) static var lastRequest: URLRequest?
     nonisolated(unsafe) static var lastBody: Data?
+    nonisolated(unsafe) static var responseHeaders: [String: String]?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -75,7 +76,7 @@ private final class StubURLProtocol: URLProtocol {
         Self.lastRequest = request
         Self.lastBody = request.httpBody ?? request.httpBodyStream.map(Self.readAll)
         let (status, data) = Self.handler?(request) ?? (500, Data())
-        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil)!
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: Self.responseHeaders)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
@@ -117,6 +118,7 @@ final class CloudSpeechServiceTests: XCTestCase {
         StubURLProtocol.handler = nil
         StubURLProtocol.lastRequest = nil
         StubURLProtocol.lastBody = nil
+        StubURLProtocol.responseHeaders = nil
     }
 
     func testFetchVoicesReturnsPrefixedConfiguredIDs() async throws {
@@ -1796,5 +1798,260 @@ final class AutomationTests: XCTestCase {
         XCTAssertEqual(file.fileFormat.sampleRate, 24_000)
         XCTAssertEqual(file.fileFormat.channelCount, 1)
         XCTAssertEqual(Double(file.length) / 24_000, 1.0, accuracy: 0.05)
+    }
+}
+
+// MARK: - One delivery across segments
+
+extension CloudSpeechServiceTests {
+    private func clonedVoice(reference: String = "/tmp/ref.wav") -> CloudVoice {
+        CloudVoice(
+            providerID: CloudProvider.localMLX.id,
+            model: LocalVoiceCatalog.cloningModelID,
+            voice: "",
+            label: "My voice (local)",
+            referenceAudioPath: reference,
+            referenceText: "Hi, this is my voice."
+        )
+    }
+
+    private func jsonBody(_ request: URLRequest) throws -> [String: Any] {
+        try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+    }
+
+    func testClonedVoiceSamplesCloseToTheLikeliestReading() throws {
+        let cloned = clonedVoice()
+        settings.settings.voices = [cloned]
+
+        let body = try jsonBody(service.makeRequest(text: "Read this.", voiceID: cloned.voiceID))
+
+        XCTAssertEqual(body["temperature"] as? Double, 0.3)
+        XCTAssertEqual(body["top_p"] as? Double, 0.8)
+        XCTAssertEqual(body["repetition_penalty"] as? Double, 1.05)
+    }
+
+    func testClonedVoiceContinuesFromThePreviousSegment() throws {
+        let dir = try temporaryDirectory()
+        let reference = try writeTone(seconds: 4, sampleRate: 24_000, channels: 1, in: dir)
+        let previous = try writeTone(seconds: 2, sampleRate: 48_000, channels: 2, in: dir)
+        let cloned = clonedVoice(reference: reference.path)
+        settings.settings.voices = [cloned]
+        let context = SpeechContext(previousText: "The morning started quietly.", previousAudioURL: previous)
+
+        let continuation = try XCTUnwrap(CloudSpeechGenerationService.continuationReference(for: cloned, context: context))
+        defer { try? FileManager.default.removeItem(at: continuation.url) }
+
+        XCTAssertEqual(continuation.text, "Hi, this is my voice. The morning started quietly.")
+        let file = try AVAudioFile(forReading: continuation.url)
+        XCTAssertEqual(file.fileFormat.sampleRate, 24_000)
+        XCTAssertEqual(file.fileFormat.channelCount, 1)
+        XCTAssertEqual(Double(file.length) / 24_000, 4 + VoiceCloneReference.continuationGap + 2, accuracy: 0.05)
+
+        let body = try jsonBody(service.makeRequest(text: "Next.", voiceID: cloned.voiceID, context: context, continuation: continuation))
+        XCTAssertEqual(body["ref_audio"] as? String, continuation.url.path)
+        XCTAssertEqual(body["ref_text"] as? String, continuation.text)
+    }
+
+    func testContinuationNeedsTheClonedVoicesOwnPreviousClip() throws {
+        let dir = try temporaryDirectory()
+        let reference = try writeTone(seconds: 4, sampleRate: 24_000, channels: 1, in: dir)
+        let previous = try writeTone(seconds: 2, sampleRate: 24_000, channels: 1, in: dir)
+        let cloned = clonedVoice(reference: reference.path)
+
+        XCTAssertNil(CloudSpeechGenerationService.continuationReference(for: cloned, context: .none), "the first segment starts from the recording")
+        XCTAssertNil(CloudSpeechGenerationService.continuationReference(for: cloned, context: SpeechContext(previousAudioURL: previous)), "the words must come with the audio")
+        XCTAssertNil(CloudSpeechGenerationService.continuationReference(for: openRouterVoice, context: SpeechContext(previousText: "Hi.", previousAudioURL: previous)))
+        XCTAssertNil(try VoiceCloneReference.continuation(of: reference, then: previous, maximumAddedSeconds: 1), "a long previous clip would slow every request")
+    }
+
+    func testElevenLabsStitchesOntoTheSegmentsAround() throws {
+        let voice = CloudVoice(providerID: CloudProvider.elevenLabs.id, model: "eleven_multilingual_v2", voice: "abc", label: "A")
+        settings.settings.voices = [voice]
+        try secrets.setSecret("xi-test", for: CloudProvider.elevenLabs.id)
+        let context = SpeechContext(previousText: "Before.", nextText: "After.", previousRequestIDs: ["r1", "r2", "r3", "r4"])
+
+        let body = try jsonBody(service.makeRequest(text: "Now.", voiceID: voice.voiceID, context: context))
+
+        XCTAssertEqual(body["previous_text"] as? String, "Before.")
+        XCTAssertEqual(body["next_text"] as? String, "After.")
+        XCTAssertEqual(body["previous_request_ids"] as? [String], ["r2", "r3", "r4"], "ElevenLabs reads at most the last three")
+    }
+
+    func testElevenLabsReadsTheSegmentAloneWhenStitchingIsRefused() async throws {
+        let voice = CloudVoice(providerID: CloudProvider.elevenLabs.id, model: "eleven_v4", voice: "abc", label: "A")
+        settings.settings.voices = [voice]
+        try secrets.setSecret("xi-test", for: CloudProvider.elevenLabs.id)
+        StubURLProtocol.responseHeaders = ["request-id": "req-7"]
+        var bodies: [[String: Any]] = []
+        StubURLProtocol.handler = { request in
+            let body = (try? JSONSerialization.jsonObject(with: StubURLProtocol.lastBody ?? Data())) as? [String: Any] ?? [:]
+            bodies.append(body)
+            return body["previous_text"] == nil ? (200, Data("mp3".utf8)) : (400, Data(#"{"detail":{"message":"not supported"}}"#.utf8))
+        }
+
+        let result = try await service.synthesize(text: "Now.", voice: voice.voiceID, jobID: nil, context: SpeechContext(previousText: "Before."))
+
+        XCTAssertEqual(bodies.count, 2)
+        XCTAssertNil(bodies[1]["previous_text"])
+        XCTAssertEqual(result.audioData, Data("mp3".utf8))
+        XCTAssertEqual(result.requestID, "req-7")
+    }
+}
+
+final class SegmentConsistencyTests: XCTestCase {
+    // MARK: Segments
+
+    func testSegmentsEndAtSentencesAndComeOutEven() {
+        let text = (1...12).map { "Sentence number \($0) carries on for a little while here." }.joined(separator: " ")
+        let segments = TextBatcher.segments(for: text)
+        let lengths = segments.map(\.count)
+
+        XCTAssertGreaterThan(segments.count, 1)
+        XCTAssertTrue(segments.allSatisfy { $0.hasSuffix(".") })
+        XCTAssertEqual(segments.joined(separator: " "), text)
+        XCTAssertTrue(lengths.allSatisfy { $0 <= 250 })
+        XCTAssertLessThanOrEqual(lengths.max()! - lengths.min()!, 60, "segments should be about the same size: \(lengths)")
+    }
+
+    func testALongSentenceSplitsAtClausesBeforeSpaces() {
+        let text = Array(repeating: "this clause runs on for quite a while", count: 10).joined(separator: ", ") + "."
+        XCTAssertGreaterThan(text.count, 300)
+
+        let segments = TextBatcher.segments(for: text)
+
+        XCTAssertGreaterThan(segments.count, 1)
+        XCTAssertTrue(segments.dropLast().allSatisfy { $0.hasSuffix(",") }, "\(segments)")
+        XCTAssertEqual(segments.joined(separator: " "), text)
+    }
+
+    func testUnpunctuatedTextIsCutBetweenWords() {
+        let text = String(repeating: "Long text without punctuation ", count: 40).trimmingCharacters(in: .whitespaces)
+
+        let segments = TextBatcher.segments(for: text)
+
+        XCTAssertGreaterThan(segments.count, 1)
+        XCTAssertTrue(segments.allSatisfy { $0.count <= 250 })
+        XCTAssertEqual(segments.joined(separator: " "), text, "every cut falls on a space")
+    }
+
+    func testAScrapAtTheEndJoinsTheSegmentBefore() {
+        let first = String(repeating: "A", count: 205) + "."
+        XCTAssertEqual(TextBatcher.segments(for: first + " Ok."), [first + " Ok."])
+    }
+
+    func testLongSizingKeepsAQuickOpeningThenReadsParagraphs() {
+        let text = (1...30).map { "Sentence \($0) of a longer reading goes on like this." }.joined(separator: " ")
+
+        let segments = EngineRequestPolicy.live.segments(for: text, leadIn: false, sizing: .long).map(\.text)
+
+        XCTAssertGreaterThan(segments.count, 2)
+        XCTAssertLessThanOrEqual(segments[0].count, 250, "the first request is as quick as before")
+        XCTAssertTrue(segments.dropFirst().allSatisfy { $0.count > 250 && $0.count <= 550 }, "\(segments.map(\.count))")
+        XCTAssertEqual(segments.joined(separator: " "), text)
+    }
+
+    func testVoicesThatStitchRequestsGenerateOneAtATime() {
+        XCTAssertEqual(EngineRequestPolicy.generationConcurrency(forVoice: "cloud:\(UUID())", runsOnThisMac: false, chainsRequests: true), 1)
+        XCTAssertEqual(EngineRequestPolicy.generationConcurrency(forVoice: "cloud:\(UUID())", runsOnThisMac: false), 2)
+    }
+
+    // MARK: Chain
+
+    func testSegmentChainHandsOnTextAudioAndAnUnbrokenRunOfRequestIDs() async {
+        let chain = SegmentChain(texts: ["a.", "b.", "c.", "d.", "e."])
+        for index in 0..<4 {
+            await chain.record(index: index, audioURL: URL(fileURLWithPath: "/tmp/\(index).wav"), requestID: "r\(index)")
+        }
+
+        let first = await chain.context(for: 0)
+        XCTAssertNil(first.previousText)
+        XCTAssertEqual(first.nextText, "b.")
+        XCTAssertNil(first.previousAudioURL)
+        XCTAssertEqual(first.previousRequestIDs, [])
+
+        let last = await chain.context(for: 4)
+        XCTAssertEqual(last.previousText, "d.")
+        XCTAssertNil(last.nextText)
+        XCTAssertEqual(last.previousAudioURL, URL(fileURLWithPath: "/tmp/3.wav"))
+        XCTAssertEqual(last.previousRequestIDs, ["r1", "r2", "r3"])
+
+        // A cached segment has no request ID, which breaks the run.
+        await chain.record(index: 2, audioURL: URL(fileURLWithPath: "/tmp/2.wav"), requestID: nil)
+        let afterGap = await chain.context(for: 4)
+        XCTAssertEqual(afterGap.previousRequestIDs, ["r3"])
+    }
+
+    func testAFallbackVoiceGetsOnlyTheSurroundingText() {
+        let context = SpeechContext(previousText: "a.", nextText: "c.", previousAudioURL: URL(fileURLWithPath: "/tmp/a.wav"), previousRequestIDs: ["r"])
+        XCTAssertEqual(context.textOnly, SpeechContext(previousText: "a.", nextText: "c."))
+    }
+
+    func testChainPausesFitWhereTheTextWasSplit() {
+        let chain = SegmentChain(texts: ["It ended.", "and then,", "mid", "Done."])
+        XCTAssertEqual(chain.pause(after: 0), ClipConditioner.sentencePause)
+        XCTAssertEqual(chain.pause(after: 1), ClipConditioner.clausePause)
+        XCTAssertEqual(chain.pause(after: 2), ClipConditioner.wordPause)
+        XCTAssertEqual(chain.pause(after: 3), 0, "nothing after the last segment")
+        XCTAssertEqual(ClipConditioner.pause(after: "He said “stop.”", isLast: false), ClipConditioner.sentencePause)
+    }
+
+    // MARK: Conditioning
+
+    private let rate: Double = 24_000
+
+    private func tone(seconds: Double, amplitude: Float) -> [Float] {
+        (0..<Int(seconds * rate)).map { amplitude * sin(2 * .pi * 220 * Float($0) / Float(rate)) }
+    }
+
+    private func silence(_ seconds: Double) -> [Float] {
+        [Float](repeating: 0, count: Int(seconds * rate))
+    }
+
+    private func rms(_ samples: ArraySlice<Float>) -> Float {
+        (samples.reduce(0) { $0 + $1 * $1 } / Float(samples.count)).squareRoot()
+    }
+
+    func testConditioningTrimsSilenceLevelsSpeechAndEndsOnThePause() {
+        let clip = silence(0.5) + tone(seconds: 1, amplitude: 0.05) + silence(0.7)
+
+        let output = ClipConditioner.condition(clip, sampleRate: rate, trailingPause: 0.25)
+
+        let seconds = Double(output.count) / rate
+        XCTAssertEqual(seconds, 1 + 2 * ClipConditioner.edgeMargin + 0.25, accuracy: 0.03)
+        XCTAssertEqual(output[0], 0, "faded in")
+        let speech = output[Int(0.3 * rate)..<Int(0.8 * rate)]
+        XCTAssertEqual(rms(speech), ClipConditioner.targetLevel, accuracy: 0.005)
+        XCTAssertTrue(output.suffix(Int(0.25 * rate)).allSatisfy { $0 == 0 })
+    }
+
+    func testConditioningBringsQuietAndLoudClipsToOneLevel() {
+        let quiet = ClipConditioner.condition(tone(seconds: 1, amplitude: 0.03), sampleRate: rate, trailingPause: 0)
+        let loud = ClipConditioner.condition(tone(seconds: 1, amplitude: 0.4), sampleRate: rate, trailingPause: 0)
+
+        XCTAssertEqual(rms(quiet[2_400..<21_600]), rms(loud[2_400..<21_600]), accuracy: 0.003)
+    }
+
+    func testConditioningNeverPushesPeaksPastTheCeiling() {
+        var clip = tone(seconds: 1, amplitude: 0.02)
+        clip[12_000] = 0.6
+
+        let output = ClipConditioner.condition(clip, sampleRate: rate, trailingPause: 0)
+
+        XCTAssertLessThanOrEqual(output.map(abs).max()!, ClipConditioner.peakCeiling + 0.0001)
+    }
+
+    func testConditionedClipIsAWAVAtTheSameRate() throws {
+        let data = AudioPCM.wav(silence(0.2) + tone(seconds: 0.5, amplitude: 0.1) + silence(0.2), sampleRate: rate)
+
+        let conditioned = ClipConditioner.condition(data, trailingPause: 0.1)
+        let decoded = try AudioPCM.decode(conditioned)
+
+        XCTAssertEqual(decoded.sampleRate, rate)
+        XCTAssertEqual(Double(decoded.samples.count) / rate, 0.5 + 2 * ClipConditioner.edgeMargin + 0.1, accuracy: 0.03)
+    }
+
+    func testConditioningLeavesUnreadableAudioAlone() {
+        let data = Data("not audio".utf8)
+        XCTAssertEqual(ClipConditioner.condition(data, trailingPause: 0.2), data)
     }
 }
