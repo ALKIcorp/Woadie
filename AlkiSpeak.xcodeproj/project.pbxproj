@@ -33,6 +33,8 @@
 		A1000107 /* KokoroEngineController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000107 /* KokoroEngineController.swift */; };
 		A1000106 /* SpeechPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000106 /* SpeechPipeline.swift */; };
 		A1000108 /* SpeechReliability.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000108 /* SpeechReliability.swift */; };
+		A1000109 /* Automation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000109 /* Automation.swift */; };
+		A1000110 /* SpeechIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000110 /* SpeechIntents.swift */; };
 		A1000105 /* SpeechDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000105 /* SpeechDiagnostics.swift */; };
 		A1000104 /* VoiceCatalogController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000104 /* VoiceCatalogController.swift */; };
 		A1000103 /* HistoryController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000103 /* HistoryController.swift */; };
@@ -106,6 +108,8 @@
 		A2000107 /* KokoroEngineController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokoroEngineController.swift; sourceTree = "<group>"; };
 		A2000106 /* SpeechPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechPipeline.swift; sourceTree = "<group>"; };
 		A2000108 /* SpeechReliability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechReliability.swift; sourceTree = "<group>"; };
+		A2000109 /* Automation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Automation.swift; sourceTree = "<group>"; };
+		A2000110 /* SpeechIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechIntents.swift; sourceTree = "<group>"; };
 		A2000105 /* SpeechDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechDiagnostics.swift; sourceTree = "<group>"; };
 		A2000104 /* VoiceCatalogController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCatalogController.swift; sourceTree = "<group>"; };
 		A2000103 /* HistoryController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryController.swift; sourceTree = "<group>"; };
@@ -254,6 +258,8 @@
 				A2000107 /* KokoroEngineController.swift */,
 				A2000106 /* SpeechPipeline.swift */,
 				A2000108 /* SpeechReliability.swift */,
+				A2000109 /* Automation.swift */,
+				A2000110 /* SpeechIntents.swift */,
 				A2000105 /* SpeechDiagnostics.swift */,
 				A2000104 /* VoiceCatalogController.swift */,
 				A2000103 /* HistoryController.swift */,
@@ -447,6 +453,8 @@
 				A1000107 /* KokoroEngineController.swift in Sources */,
 				A1000106 /* SpeechPipeline.swift in Sources */,
 				A1000108 /* SpeechReliability.swift in Sources */,
+				A1000109 /* Automation.swift in Sources */,
+				A1000110 /* SpeechIntents.swift in Sources */,
 				A1000105 /* SpeechDiagnostics.swift in Sources */,
 				A1000104 /* VoiceCatalogController.swift in Sources */,
 				A1000103 /* HistoryController.swift in Sources */,

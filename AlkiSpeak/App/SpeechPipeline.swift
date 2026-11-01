@@ -169,8 +169,6 @@ final class SpeechPipeline {
     }
 
     /// Audio for one request without playing it: from the cache, or
-    /// generated and cached. Used to render books ahead and compare voices.
-    /// Audio for one request without playing it: from the cache, or
     /// generated and cached. Used to render books ahead and compare voices,
     /// so it never swaps in a different voice.
     func audio(for text: String, voice: String) async throws -> (data: Data, latencyMs: Int, fromCache: Bool) {

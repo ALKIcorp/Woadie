@@ -1,0 +1,46 @@
+#!/bin/bash
+# Speak text through AlkiSpeak from the command line.
+#
+#   alkispeak "Build finished"
+#   alkispeak -v Heart "Hello there"
+#   make 2>&1 | tail -1 | alkispeak
+#   alkispeak --stop
+#   alkispeak --pause        # pause or resume
+#
+# Uses alkispeak:// links, so it needs no token. For audio files, use the
+# local API (Settings → Automation).
+set -euo pipefail
+
+urlencode() {
+    local LC_ALL=C s="$1" out="" c i
+    for ((i = 0; i < ${#s}; i++)); do
+        c="${s:i:1}"
+        case "$c" in
+            [a-zA-Z0-9.~_-]) out+="$c" ;;
+            *) out+=$(printf '%%%02X' "$(( $(printf '%d' "'$c") & 255 ))") ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
+voice=""
+case "${1:-}" in
+    --stop) exec open -g "alkispeak://stop" ;;
+    --pause) exec open -g "alkispeak://pause" ;;
+    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -v|--voice) voice="${2:?voice name missing}"; shift 2 ;;
+esac
+
+if [ $# -gt 0 ]; then
+    text="$*"
+elif [ ! -t 0 ]; then
+    text="$(cat)"
+else
+    echo "usage: alkispeak [-v voice] text   (or pipe text in)" >&2
+    exit 64
+fi
+[ -n "${text//[[:space:]]/}" ] || { echo "alkispeak: nothing to say" >&2; exit 64; }
+
+url="alkispeak://speak?text=$(urlencode "$text")"
+[ -z "$voice" ] || url+="&voice=$(urlencode "$voice")"
+open -g "$url"

@@ -97,7 +97,7 @@ final class AppModel {
     }
 
     var canSpeak: Bool {
-        canSpeak(text: inputText)
+        canSpeak(text: inputText, voice: selectedVoice)
     }
 
     var canEditText: Bool {
@@ -451,22 +451,26 @@ final class AppModel {
 
     var isResourceSamplingActiveForTesting: Bool { diagnostics.isResourceSamplingActive }
 
-    private var isSelectedVoiceLocal: Bool {
-        selectedVoice.hasPrefix("apple:")
+    private var isSelectedVoiceLocal: Bool { Self.isLocal(selectedVoice) }
+    private var isSelectedVoiceEngineIndependent: Bool { Self.isEngineIndependent(selectedVoice) }
+    private var isSelectedVoicePythonKokoro: Bool { Self.isPythonKokoro(selectedVoice) }
+
+    private static func isLocal(_ voice: String) -> Bool {
+        voice.hasPrefix("apple:")
     }
 
     /// Edge and cloud voices are reached over the network like Kokoro, but
     /// don't depend on the local Kokoro engine being up — they should remain
     /// speakable even while the engine is starting, stopped, or failed.
-    private var isSelectedVoiceEngineIndependent: Bool {
-        selectedVoice.hasPrefix(EdgeSpeechGenerationService.idPrefix)
-            || CloudSpeechGenerationService.isCloudVoice(selectedVoice)
-            || NativeKokoroSpeechService.isNativeKokoroVoice(selectedVoice)
+    private static func isEngineIndependent(_ voice: String) -> Bool {
+        voice.hasPrefix(EdgeSpeechGenerationService.idPrefix)
+            || CloudSpeechGenerationService.isCloudVoice(voice)
+            || NativeKokoroSpeechService.isNativeKokoroVoice(voice)
     }
 
     /// Only the Python Kokoro voices need the engine on port 7777.
-    private var isSelectedVoicePythonKokoro: Bool {
-        !selectedVoice.isEmpty && !isSelectedVoiceLocal && !isSelectedVoiceEngineIndependent
+    private static func isPythonKokoro(_ voice: String) -> Bool {
+        !voice.isEmpty && !isLocal(voice) && !isEngineIndependent(voice)
     }
 
     private var isSelectedVoiceLocalMLX: Bool {
@@ -623,9 +627,13 @@ final class AppModel {
     /// What the selected voice will actually be sent for `text`: cleaned up,
     /// then with the pronunciation list applied.
     func spokenText(for text: String) -> String {
+        spokenText(for: text, voice: selectedVoice)
+    }
+
+    func spokenText(for text: String, voice: String) -> String {
         let cleaned = TextNormalizer.clean(text, options: store.textCleanup)
         // Phoneme markup is a Kokoro (Python engine) feature.
-        return TextNormalizer.applyPronunciations(cleaned, entries: store.pronunciations, phonemesSupported: isSelectedVoicePythonKokoro)
+        return TextNormalizer.applyPronunciations(cleaned, entries: store.pronunciations, phonemesSupported: Self.isPythonKokoro(voice))
     }
 
     func setTextCleanup(_ options: TextCleanupOptions) {
@@ -1154,15 +1162,18 @@ final class AppModel {
         pipeline.speak(text: text, voice: voiceID, dialogueSpeakers: speakers, addToHistory: false, targetLogEntryID: nil)
     }
 
-    func speakExternalText(_ text: String) {
+    /// Speaks text from outside the window (the Services menu, a hotkey, a
+    /// link, Shortcuts or the local API), in `voice` or the selected voice.
+    func speakExternalText(_ text: String, voice: String? = nil) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        let voice = voice ?? selectedVoice
         if appMode == .quick {
             pipeline.deleteActiveClips()
         }
         interruptForOverride()
         inputText = trimmed
-        if !status.isProcessExpectedAlive && !dependencies.engineSupervisor.isRunning && isSelectedVoicePythonKokoro {
+        if !status.isProcessExpectedAlive && !dependencies.engineSupervisor.isRunning && Self.isPythonKokoro(voice) {
             if status == .stopped {
                 // The request below starts the engine and waits for it.
                 engine.markSleeping()
@@ -1170,7 +1181,55 @@ final class AppModel {
                 startEngine()
             }
         }
-        speak(text: trimmed, addToHistory: false, targetLogEntryID: nil)
+        speak(text: trimmed, voice: voice, addToHistory: false, targetLogEntryID: nil)
+    }
+
+    // MARK: Automation
+
+    /// Starts the local API if it's turned on. Links and Shortcuts need no setup.
+    func startAutomation() {
+        LocalAPIController.shared.configure(target: self, secrets: dependencies.secretStore)
+    }
+
+    /// Runs an `alkispeak://` link.
+    func perform(_ command: AutomationCommand) {
+        switch command {
+        case .speak(let text, let voiceQuery):
+            let voice = resolveAutomationVoice(voiceQuery)
+            speakExternalText(text, voice: voice)
+            if voice == nil, let voiceQuery {
+                store.userMessage = "There's no voice called \u{201C}\(voiceQuery)\u{201D}, so this uses \(selectedVoiceLabel)."
+            }
+        case .stop:
+            stopPlayback()
+        case .pauseOrResume:
+            handlePauseHotKey()
+        }
+    }
+
+    /// The voice an automation request names: an exact ID, or a voice whose
+    /// name or label matches, ignoring case. nil names the selected voice.
+    func resolveAutomationVoice(_ query: String?) -> String? {
+        AutomationVoices.resolve(query, in: voiceOptions, selected: selectedVoice)
+    }
+
+    /// One WAV of `text` in `voice`, without playing it. Apple voices only
+    /// speak live, so they can't be saved this way.
+    func renderAutomationAudio(text: String, voice: String) async throws -> Data {
+        guard !Self.isLocal(voice) else {
+            throw AlkiSpeakError.generation(
+                code: "automation.live-only-voice",
+                title: "Voice Can't Be Saved",
+                message: "Apple voices speak live and can't be saved as audio.",
+                recoverySuggestion: "Pick a Kokoro, Edge or cloud voice."
+            )
+        }
+        let spoken = spokenText(for: text, voice: voice)
+        var clips: [Data] = []
+        for segment in pipeline.segmentTexts(for: spoken, voice: voice) {
+            clips.append(try await pipeline.audio(for: segment, voice: voice).data)
+        }
+        return try AudioJoiner.wav(from: clips)
     }
 
     func speakSelectedTextFromMenuBar() {
@@ -1343,16 +1402,17 @@ final class AppModel {
         engine.takeOverPortAndStart()
     }
 
-    private func speak(text: String, addToHistory: Bool, targetLogEntryID: UUID?) {
+    private func speak(text: String, voice: String? = nil, addToHistory: Bool, targetLogEntryID: UUID?) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard canSpeak(text: trimmed) else { return }
+        let voice = voice ?? selectedVoice
+        guard canSpeak(text: trimmed, voice: voice) else { return }
         guard !trimmed.isEmpty else { return }
         store.clearErrorMessage()
         store.appleSpokenRange = nil
         pipeline.speak(
-            text: spokenText(for: trimmed),
-            voice: selectedVoice,
-            dialogueSpeakers: selectedDialogueSpeakers?.map(\.name),
+            text: spokenText(for: trimmed, voice: voice),
+            voice: voice,
+            dialogueSpeakers: voice == selectedVoice ? selectedDialogueSpeakers?.map(\.name) : nil,
             addToHistory: addToHistory,
             targetLogEntryID: targetLogEntryID
         )
@@ -1486,14 +1546,14 @@ final class AppModel {
         }
     }
 
-    private func canSpeak(text: String) -> Bool {
+    private func canSpeak(text: String, voice: String) -> Bool {
         // Intentionally does not gate on the current playback state: a new
         // request is allowed to override whatever is playing or generating
         // (`speak()` interrupts it first), so the user never has to pause or
         // stop before generating again.
         let hasText = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return hasText
-            && (status.isAvailableForRemoteSpeech || isSelectedVoiceLocal || isSelectedVoiceEngineIndependent || isEngineOnStandby)
+            && (status.isAvailableForRemoteSpeech || Self.isLocal(voice) || Self.isEngineIndependent(voice) || isEngineOnStandby)
     }
 }
 

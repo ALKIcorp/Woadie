@@ -17,6 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         FrontmostAppTracker.shared.start()
         installSelectedTextServiceProvider()
         installGlobalHotKeys()
+        if !AppConfig.isRunningUnitTests {
+            model?.startAutomation()
+        }
         DispatchQueue.main.async {
             self.applyWindowChrome(NSApplication.shared.windows)
         }
@@ -71,10 +74,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model?.shutDownLocalVoiceServer()
     }
 
-    /// Files opened from Finder ("Open With", or dropped on the Dock icon).
+    /// Files opened from Finder ("Open With", or dropped on the Dock icon),
+    /// and `alkispeak://` links.
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let url = urls.first else { return }
-        if url.isFileURL {
+        if url.scheme?.lowercased() == AutomationCommand.scheme {
+            if let command = AutomationCommand(url: url) {
+                model?.perform(command)
+            } else {
+                model?.store.userMessage = "AlkiSpeak doesn't understand that link. Try alkispeak://speak?text=Hello."
+            }
+        } else if url.isFileURL {
             model?.importDocument(at: url)
         } else {
             model?.importWebPage(url)

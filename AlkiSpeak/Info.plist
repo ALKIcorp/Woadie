@@ -18,6 +18,17 @@
     <string>15.0</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Woadie records a short clip of your voice, only when you press Record, to create a cloned voice that stays on this Mac.</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.alki.Woadie.automation</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>alkispeak</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

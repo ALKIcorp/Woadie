@@ -1548,3 +1548,253 @@ final class VoiceFallbackTests: XCTestCase {
         XCTAssertEqual(Double(converted.length) / 24_000, 1.0, accuracy: 0.05, "one second in, one second out")
     }
 }
+
+@MainActor
+final class FakeAutomationTarget: SpeechAutomationTarget {
+    var automationVoices: [VoiceOption] = [
+        VoiceOption(id: "af_heart", label: "Heart", isLocal: false),
+        VoiceOption(id: "edge:en-US-AriaNeural", label: "Aria", isLocal: false)
+    ]
+    var selectedVoice = "af_heart"
+    var spoken: [(text: String, voice: String?)] = []
+    var rendered: [(text: String, voice: String)] = []
+    var stops = 0
+    var audio = Data("RIFFfake".utf8)
+    var renderError: Error?
+
+    func resolveAutomationVoice(_ query: String?) -> String? {
+        AutomationVoices.resolve(query, in: automationVoices, selected: selectedVoice)
+    }
+
+    func speakExternalText(_ text: String, voice: String?) {
+        spoken.append((text, voice))
+    }
+
+    func renderAutomationAudio(text: String, voice: String) async throws -> Data {
+        if let renderError { throw renderError }
+        rendered.append((text, voice))
+        return audio
+    }
+
+    func stopPlayback() {
+        stops += 1
+    }
+}
+
+final class AutomationTests: XCTestCase {
+    // MARK: Links
+
+    func testLinksParse() {
+        XCTAssertEqual(
+            AutomationCommand(url: URL(string: "alkispeak://speak?text=Hello%20there%2C%20you&voice=Aria")!),
+            .speak(text: "Hello there, you", voice: "Aria")
+        )
+        XCTAssertEqual(AutomationCommand(url: URL(string: "AlkiSpeak://Speak?text=Hi")!), .speak(text: "Hi", voice: nil))
+        XCTAssertEqual(AutomationCommand(url: URL(string: "alkispeak://speak?text=Hi&voice=")!), .speak(text: "Hi", voice: nil))
+        XCTAssertEqual(AutomationCommand(url: URL(string: "alkispeak://stop")!), .stop)
+        XCTAssertEqual(AutomationCommand(url: URL(string: "alkispeak://pause")!), .pauseOrResume)
+        XCTAssertEqual(AutomationCommand(url: URL(string: "alkispeak:stop")!), .stop)
+    }
+
+    func testBadLinksAreRejected() {
+        XCTAssertNil(AutomationCommand(url: URL(string: "alkispeak://speak")!), "no text")
+        XCTAssertNil(AutomationCommand(url: URL(string: "alkispeak://speak?text=%20%20")!), "blank text")
+        XCTAssertNil(AutomationCommand(url: URL(string: "alkispeak://delete-everything")!))
+        XCTAssertNil(AutomationCommand(url: URL(string: "https://speak?text=Hi")!))
+    }
+
+    func testVoicesResolveByIDOrName() {
+        let options = [
+            VoiceOption(id: "af_heart", label: "Heart", isLocal: false),
+            VoiceOption(id: "edge:en-US-AriaNeural", label: "Aria", isLocal: false),
+            VoiceOption(id: "cloud:gone", label: "Gone", source: .api, isAvailable: false, appleQuality: nil)
+        ]
+        XCTAssertEqual(AutomationVoices.resolve(nil, in: options, selected: "af_heart"), "af_heart")
+        XCTAssertEqual(AutomationVoices.resolve("  ", in: options, selected: "af_heart"), "af_heart")
+        XCTAssertEqual(AutomationVoices.resolve("edge:en-US-AriaNeural", in: options, selected: "af_heart"), "edge:en-US-AriaNeural")
+        XCTAssertEqual(AutomationVoices.resolve(options[1].name.uppercased(), in: options, selected: "af_heart"), "edge:en-US-AriaNeural")
+        XCTAssertNil(AutomationVoices.resolve("cloud:gone", in: options, selected: "af_heart"), "unavailable voices aren't used")
+        XCTAssertNil(AutomationVoices.resolve("Nobody", in: options, selected: "af_heart"))
+    }
+
+    // MARK: HTTP
+
+    func testRequestParsesOnceComplete() throws {
+        let raw = "POST /v1/speak?x=1 HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 13\r\nAuthorization: Bearer abc\r\n\r\n"
+        XCTAssertNil(try HTTPRequest.parse(Data((raw + "{\"text\":").utf8)), "body still arriving")
+        XCTAssertNil(try HTTPRequest.parse(Data("POST /v1/speak HTTP/1.1\r\nHost: l".utf8)), "headers still arriving")
+
+        let request = try XCTUnwrap(try HTTPRequest.parse(Data((raw + "{\"text\":\"Hi\"}").utf8)))
+        XCTAssertEqual(request.method, "POST")
+        XCTAssertEqual(request.path, "/v1/speak")
+        XCTAssertEqual(request.headers["authorization"], "Bearer abc")
+        XCTAssertEqual(String(data: request.body, encoding: .utf8), "{\"text\":\"Hi\"}")
+    }
+
+    func testOversizedRequestsAreRefused() {
+        let raw = "POST /v1/speak HTTP/1.1\r\nContent-Length: 999999999\r\n\r\n"
+        XCTAssertThrowsError(try HTTPRequest.parse(Data(raw.utf8))) { XCTAssertEqual($0 as? HTTPError, .payloadTooLarge) }
+        XCTAssertThrowsError(try HTTPRequest.parse(Data(repeating: 65, count: 20_000)))
+    }
+
+    func testResponseSerializes() {
+        let text = String(decoding: HTTPResponse.json(202, ["status": "speaking"]).serialized, as: UTF8.self)
+        XCTAssertTrue(text.hasPrefix("HTTP/1.1 202 Accepted\r\n"))
+        XCTAssertTrue(text.contains("Content-Length: 21\r\n"))
+        XCTAssertTrue(text.hasSuffix("\r\n\r\n{\"status\":\"speaking\"}"))
+    }
+
+    // MARK: Routing
+
+    private func request(_ method: String, _ path: String, _ body: Any? = nil) -> HTTPRequest {
+        HTTPRequest(
+            method: method,
+            path: path,
+            headers: [:],
+            body: body.map { try! JSONSerialization.data(withJSONObject: $0) } ?? Data()
+        )
+    }
+
+    private func json(_ response: HTTPResponse) -> [String: Any] {
+        (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any] ?? [:]
+    }
+
+    @MainActor
+    func testListsVoices() async {
+        let target = FakeAutomationTarget()
+        let response = await LocalAPIRouter.respond(to: request("GET", "/v1/voices"), target: target)
+        XCTAssertEqual(response.status, 200)
+        let voices = json(response)["data"] as? [[String: Any]]
+        XCTAssertEqual(voices?.compactMap { $0["id"] as? String }, ["af_heart", "edge:en-US-AriaNeural"])
+        XCTAssertEqual(voices?.first?["selected"] as? Bool, true)
+    }
+
+    @MainActor
+    func testSpeakSpeaksAndReturnsAtOnce() async {
+        let target = FakeAutomationTarget()
+        let response = await LocalAPIRouter.respond(to: request("POST", "/v1/speak", ["text": "Hello", "voice": "Aria"]), target: target)
+        XCTAssertEqual(response.status, 202)
+        XCTAssertEqual(json(response)["voice"] as? String, "edge:en-US-AriaNeural")
+        XCTAssertEqual(target.spoken.map(\.text), ["Hello"])
+        XCTAssertEqual(target.spoken.first?.voice, "edge:en-US-AriaNeural")
+
+        let withoutVoice = await LocalAPIRouter.respond(to: request("POST", "/speak", ["text": "Again"]), target: target)
+        XCTAssertEqual(withoutVoice.status, 202)
+        XCTAssertEqual(target.spoken.last?.voice, "af_heart", "no voice means the selected one")
+    }
+
+    @MainActor
+    func testBadSpeakRequestsAreRejected() async {
+        let target = FakeAutomationTarget()
+        let noText = await LocalAPIRouter.respond(to: request("POST", "/v1/speak", ["voice": "Aria"]), target: target)
+        let badVoice = await LocalAPIRouter.respond(to: request("POST", "/v1/speak", ["text": "Hi", "voice": "Nobody"]), target: target)
+        let notJSON = await LocalAPIRouter.respond(to: HTTPRequest(method: "POST", path: "/v1/speak", headers: [:], body: Data("hi".utf8)), target: target)
+        let tooLong = await LocalAPIRouter.respond(
+            to: request("POST", "/v1/speak", ["text": String(repeating: "a", count: LocalAPIRouter.maxInputCharacters + 1)]),
+            target: target
+        )
+        XCTAssertEqual([noText.status, badVoice.status, notJSON.status, tooLong.status], [400, 400, 400, 413])
+        XCTAssertTrue(target.spoken.isEmpty)
+        XCTAssertNotNil((json(badVoice)["error"] as? [String: Any])?["message"])
+    }
+
+    @MainActor
+    func testSpeechEndpointReturnsWAV() async {
+        let target = FakeAutomationTarget()
+        let response = await LocalAPIRouter.respond(
+            to: request("POST", "/v1/audio/speech", ["model": "tts-1", "input": "Hello", "voice": "af_heart"]),
+            target: target
+        )
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(response.contentType, "audio/wav")
+        XCTAssertEqual(response.body, target.audio)
+        XCTAssertEqual(response.headers["X-AlkiSpeak-Voice"], "af_heart")
+        XCTAssertEqual(target.rendered.map(\.text), ["Hello"])
+        XCTAssertTrue(target.spoken.isEmpty, "making audio doesn't play it")
+
+        let mp3 = await LocalAPIRouter.respond(to: request("POST", "/v1/audio/speech", ["input": "Hi", "response_format": "mp3"]), target: target)
+        XCTAssertEqual(mp3.status, 400)
+    }
+
+    @MainActor
+    func testSpeechEndpointReportsGenerationFailures() async {
+        let target = FakeAutomationTarget()
+        target.renderError = AlkiSpeakError.generation(code: "x", title: "T", message: "Voice is down.", recoverySuggestion: "")
+        let response = await LocalAPIRouter.respond(to: request("POST", "/v1/audio/speech", ["input": "Hi"]), target: target)
+        XCTAssertEqual(response.status, 503)
+        XCTAssertEqual((json(response)["error"] as? [String: Any])?["message"] as? String, "Voice is down.")
+    }
+
+    @MainActor
+    func testStopAndUnknownRoutes() async {
+        let target = FakeAutomationTarget()
+        let stop = await LocalAPIRouter.respond(to: request("POST", "/v1/stop"), target: target)
+        let wrongMethod = await LocalAPIRouter.respond(to: request("GET", "/v1/speak"), target: target)
+        let missing = await LocalAPIRouter.respond(to: request("GET", "/v1/nothing"), target: target)
+        XCTAssertEqual([stop.status, wrongMethod.status, missing.status], [200, 405, 404])
+        XCTAssertEqual(target.stops, 1)
+    }
+
+    // MARK: Server
+
+    func testServerNeedsTheTokenAndOnlyListensLocally() async throws {
+        let port = UInt16.random(in: 48_000...58_000)
+        let server = LocalSpeechAPIServer(port: port, token: "secret") { request in
+            .json(200, ["path": request.path])
+        }
+        try server.start()
+        defer { server.stop() }
+        try await Task.sleep(for: .milliseconds(200))
+
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/voices")!)
+        let (_, denied) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((denied as? HTTPURLResponse)?.statusCode, 401)
+
+        request.setValue("Bearer wrong", forHTTPHeaderField: "Authorization")
+        let (_, wrong) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((wrong as? HTTPURLResponse)?.statusCode, 401)
+
+        request.setValue("Bearer secret", forHTTPHeaderField: "Authorization")
+        let (body, allowed) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((allowed as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(String(data: body, encoding: .utf8), "{\"path\":\"/v1/voices\"}")
+    }
+
+    // MARK: Joining audio
+
+    private func wav(seconds: Double, sampleRate: Double, channels: AVAudioChannelCount) throws -> Data {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("join-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channels)!
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: sampleRate,
+                AVNumberOfChannelsKey: channels,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false
+            ])
+            let frames = AVAudioFrameCount(seconds * sampleRate)
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+            buffer.frameLength = frames
+            try file.write(from: buffer)
+        }
+        return try Data(contentsOf: url)
+    }
+
+    func testJoinsClipsOfDifferentFormatsIntoOneWAV() throws {
+        let joined = try AudioJoiner.wav(from: [
+            wav(seconds: 0.5, sampleRate: 24_000, channels: 1),
+            wav(seconds: 0.5, sampleRate: 44_100, channels: 2)
+        ])
+        XCTAssertEqual(joined.prefix(4), Data("RIFF".utf8))
+
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("joined-\(UUID().uuidString).wav")
+        try joined.write(to: url)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let file = try AVAudioFile(forReading: url)
+        XCTAssertEqual(file.fileFormat.sampleRate, 24_000)
+        XCTAssertEqual(file.fileFormat.channelCount, 1)
+        XCTAssertEqual(Double(file.length) / 24_000, 1.0, accuracy: 0.05)
+    }
+}

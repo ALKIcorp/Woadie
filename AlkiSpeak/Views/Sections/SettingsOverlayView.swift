@@ -67,6 +67,7 @@ struct SettingsOverlayView: View {
         case voices = "Voices & Services"
         case engines = "Downloads & Engines"
         case usage = "Usage & Fallback"
+        case automation = "Automation"
         case storage = "Storage"
 
         var id: Self { self }
@@ -79,6 +80,7 @@ struct SettingsOverlayView: View {
             case .voices: return "person.wave.2"
             case .engines: return "arrow.down.circle"
             case .usage: return "chart.bar"
+            case .automation: return "point.3.connected.trianglepath.dotted"
             case .storage: return "internaldrive"
             }
         }
@@ -202,6 +204,8 @@ struct SettingsOverlayView: View {
             }
         case .usage:
             UsageAndFallbackSettings(model: model)
+        case .automation:
+            AutomationSettings()
         case .storage:
             SettingsSection("Saved Clips", subtitle: storageSubtitle) {
                 VStack(alignment: .leading, spacing: 10) {
@@ -225,6 +229,124 @@ struct SettingsOverlayView: View {
 
 /// Size of the replay cache, and a way to empty it.
 /// Fallback voices, and characters and spend per provider this month.
+private struct AutomationSettings: View {
+    private var api = LocalAPIController.shared
+    @State private var portText = ""
+    @State private var copied = false
+
+    var body: some View {
+        SettingsSection(
+            "Shortcuts and Links",
+            subtitle: "AlkiSpeak's actions (Speak Text, Stop Speaking, Make Spoken Audio, Set Voice) are in the Shortcuts app and work with Siri. Any app can also open a link."
+        ) {
+            VStack(alignment: .leading, spacing: 6) {
+                example("alkispeak://speak?text=Hello%20there&voice=Heart")
+                example("alkispeak://stop")
+                example("alkispeak://pause")
+            }
+        }
+
+        SettingsSection(
+            "Local Speech API",
+            subtitle: "Lets scripts and agents on this Mac speak or make audio. It only answers on this Mac (127.0.0.1) and every request needs the token."
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Turn on the local API", isOn: Binding(
+                    get: { api.settings.enabled },
+                    set: { value in api.update { $0.enabled = value } }
+                ))
+                .font(WoadieTheme.rounded(size: 12, weight: .regular))
+
+                HStack(spacing: 8) {
+                    Text("Port").font(WoadieTheme.rounded(size: 12, weight: .regular))
+                    TextField("7790", text: $portText)
+                        .frame(width: 70)
+                        .onSubmit(applyPort)
+                    WoadieButton(title: "Apply", systemImage: "checkmark", variant: .default, action: applyPort)
+                        .disabled(UInt16(portText) == api.settings.port || UInt16(portText).map { $0 < 1024 } ?? true)
+                    status
+                }
+
+                if api.settings.enabled {
+                    HStack(spacing: 8) {
+                        Text("Token").font(WoadieTheme.rounded(size: 12, weight: .regular))
+                        Text(maskedToken)
+                            .font(WoadieTheme.mono(size: 11, weight: .regular))
+                            .foregroundStyle(WoadieTheme.foregroundSubtle)
+                        WoadieButton(title: copied ? "Copied" : "Copy", systemImage: "doc.on.doc", variant: .default) {
+                            copy(api.token ?? "")
+                        }
+                        WoadieButton(title: "New Token", systemImage: "arrow.clockwise", variant: .default) {
+                            api.regenerateToken()
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        example("curl -H \"Authorization: Bearer $TOKEN\" -d '{\"text\":\"Build passed\"}' http://127.0.0.1:\(api.settings.port)/v1/speak")
+                        example("curl -H \"Authorization: Bearer $TOKEN\" -d '{\"input\":\"Hello\",\"voice\":\"Heart\"}' -o hello.wav http://127.0.0.1:\(api.settings.port)/v1/audio/speech")
+                        Text("Also: GET /v1/voices, POST /v1/stop. /v1/audio/speech takes OpenAI-style requests and returns WAV.")
+                            .font(WoadieTheme.rounded(size: 11, weight: .regular))
+                            .foregroundStyle(WoadieTheme.foregroundSubtle)
+                    }
+                }
+            }
+        }
+        .onAppear { portText = String(api.settings.port) }
+    }
+
+    @ViewBuilder
+    private var status: some View {
+        if let error = api.errorMessage {
+            Text(error)
+                .font(WoadieTheme.rounded(size: 11, weight: .regular))
+                .foregroundStyle(WoadieTheme.destructive)
+        } else if let port = api.runningPort {
+            Text("Listening on 127.0.0.1:\(port)")
+                .font(WoadieTheme.rounded(size: 11, weight: .regular))
+                .foregroundStyle(WoadieTheme.success)
+        } else {
+            Text("Off")
+                .font(WoadieTheme.rounded(size: 11, weight: .regular))
+                .foregroundStyle(WoadieTheme.foregroundSubtle)
+        }
+    }
+
+    private var maskedToken: String {
+        guard let token = api.token, token.count > 8 else { return "–" }
+        return String(token.prefix(4)) + "••••••••" + String(token.suffix(4))
+    }
+
+    private func applyPort() {
+        guard let port = UInt16(portText), port >= 1024 else { return }
+        api.update { $0.port = port }
+    }
+
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copied = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            copied = false
+        }
+    }
+
+    private func example(_ text: String) -> some View {
+        HStack(spacing: 6) {
+            Text(text)
+                .font(WoadieTheme.mono(size: 11, weight: .regular))
+                .textSelection(.enabled)
+                .lineLimit(2)
+            Button {
+                copy(text)
+            } label: {
+                Image(systemName: "doc.on.doc")
+            }
+            .buttonStyle(.borderless)
+            .help("Copy")
+        }
+    }
+}
+
 private struct UsageAndFallbackSettings: View {
     var model: AppModel
     @State private var settings = UsageSettings.load()
